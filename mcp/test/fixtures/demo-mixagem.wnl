@@ -1,0 +1,1168 @@
+{
+  "format": "whynot-lab-project",
+  "schemaVersion": 4,
+  "app": {
+    "name": "WHYNOT LAB",
+    "version": "0.1.0"
+  },
+  "project": {
+    "name": "Demo 3.2",
+    "bpm": 140.0,
+    "timeSignature": [
+      4,
+      4
+    ],
+    "key": {
+      "root": "C",
+      "scale": "minor"
+    },
+    "metronome": false,
+    "loop": true,
+    "songMode": true,
+    "currentPattern": "pt_f552a8d9"
+  },
+  "channels": [
+    {
+      "id": "ch_e2f3ead1",
+      "name": "Kick",
+      "kind": "sampler",
+      "color": "#FF751F",
+      "sample": {
+        "path": "samples/WHYNOT Kick.wav",
+        "originalPath": "C:/Users/exemplo/AppData/Roaming/WHYNOT LAB/Kit/WHYNOT Kick.wav"
+      },
+      "sampler": {
+        "rootKey": 60,
+        "oneShot": true,
+        "cutItself": false,
+        "mono": false,
+        "glideMs": 80.0,
+        "rootCents": 0.0,
+        "tune": 0.0,
+        "attackMs": 1.0,
+        "decayMs": 300.0,
+        "sustain": 1.0,
+        "pitchDrop": 0.0,
+        "pitchDropMs": 60.0,
+        "start": 0.0
+      },
+      "mute": false,
+      "output": "mx_71b439e5"
+    },
+    {
+      "id": "ch_149344a9",
+      "name": "Clap",
+      "kind": "sampler",
+      "color": "#FFFFFF",
+      "sample": {
+        "path": "samples/WHYNOT Clap.wav",
+        "originalPath": "C:/Users/exemplo/AppData/Roaming/WHYNOT LAB/Kit/WHYNOT Clap.wav"
+      },
+      "sampler": {
+        "rootKey": 60,
+        "oneShot": true,
+        "cutItself": false,
+        "mono": false,
+        "glideMs": 80.0,
+        "rootCents": 0.0,
+        "tune": 0.0,
+        "attackMs": 1.0,
+        "decayMs": 300.0,
+        "sustain": 1.0,
+        "pitchDrop": 0.0,
+        "pitchDropMs": 60.0,
+        "start": 0.0
+      },
+      "mute": false,
+      "output": "mx_6050e0b2"
+    },
+    {
+      "id": "ch_900bc2e4",
+      "name": "Hat",
+      "kind": "sampler",
+      "color": "#A6A6A6",
+      "sample": {
+        "path": "samples/WHYNOT Hat.wav",
+        "originalPath": "C:/Users/exemplo/AppData/Roaming/WHYNOT LAB/Kit/WHYNOT Hat.wav"
+      },
+      "sampler": {
+        "rootKey": 60,
+        "oneShot": true,
+        "cutItself": false,
+        "mono": false,
+        "glideMs": 80.0,
+        "rootCents": 0.0,
+        "tune": 0.0,
+        "attackMs": 1.0,
+        "decayMs": 300.0,
+        "sustain": 1.0,
+        "pitchDrop": 0.0,
+        "pitchDropMs": 60.0,
+        "start": 0.0
+      },
+      "mute": false,
+      "output": "mx_b93bd30c"
+    },
+    {
+      "id": "ch_55aa8f0b",
+      "name": "Open hat",
+      "kind": "sampler",
+      "color": "#FFA366",
+      "sample": {
+        "path": "samples/WHYNOT Open Hat.wav",
+        "originalPath": "C:/Users/exemplo/AppData/Roaming/WHYNOT LAB/Kit/WHYNOT Open Hat.wav"
+      },
+      "sampler": {
+        "rootKey": 60,
+        "oneShot": true,
+        "cutItself": true,
+        "mono": false,
+        "glideMs": 80.0,
+        "rootCents": 0.0,
+        "tune": 0.0,
+        "attackMs": 1.0,
+        "decayMs": 300.0,
+        "sustain": 1.0,
+        "pitchDrop": 0.0,
+        "pitchDropMs": 60.0,
+        "start": 0.0
+      },
+      "mute": false,
+      "output": "mx_f436555b"
+    },
+    {
+      "id": "ch_57378509",
+      "name": "808",
+      "kind": "sampler",
+      "color": "#D9D9D9",
+      "sample": {
+        "path": "samples/WHYNOT 808.wav",
+        "originalPath": "C:/Users/exemplo/AppData/Roaming/WHYNOT LAB/Kit/WHYNOT 808.wav"
+      },
+      "sampler": {
+        "rootKey": 36,
+        "oneShot": false,
+        "cutItself": false,
+        "mono": true,
+        "glideMs": 80.0,
+        "rootCents": 0.0,
+        "tune": 0.0,
+        "attackMs": 1.0,
+        "decayMs": 300.0,
+        "sustain": 1.0,
+        "pitchDrop": 0.0,
+        "pitchDropMs": 60.0,
+        "start": 0.0
+      },
+      "mute": false,
+      "output": "mx_1a5b2f4d"
+    },
+    {
+      "id": "ch_5a22eb9f",
+      "name": "Bell",
+      "kind": "sampler",
+      "color": "#C25712",
+      "sample": {
+        "path": "samples/WHYNOT Bell.wav",
+        "originalPath": "C:/Users/exemplo/AppData/Roaming/WHYNOT LAB/Kit/WHYNOT Bell.wav"
+      },
+      "sampler": {
+        "rootKey": 72,
+        "oneShot": true,
+        "cutItself": false,
+        "mono": false,
+        "glideMs": 80.0,
+        "rootCents": 0.0,
+        "tune": 0.0,
+        "attackMs": 1.0,
+        "decayMs": 300.0,
+        "sustain": 1.0,
+        "pitchDrop": 0.0,
+        "pitchDropMs": 60.0,
+        "start": 0.0
+      },
+      "mute": false,
+      "output": "mx_336c4a1a"
+    }
+  ],
+  "patterns": [
+    {
+      "id": "pt_f552a8d9",
+      "name": "Beat",
+      "lengthSteps": 16,
+      "lanes": {
+        "ch_e2f3ead1": {
+          "steps": [
+            {
+              "i": 0,
+              "vel": 100
+            },
+            {
+              "i": 10,
+              "vel": 100
+            }
+          ]
+        },
+        "ch_149344a9": {
+          "steps": [
+            {
+              "i": 4,
+              "vel": 100
+            },
+            {
+              "i": 12,
+              "vel": 100
+            }
+          ]
+        },
+        "ch_900bc2e4": {
+          "steps": [
+            {
+              "i": 0,
+              "vel": 100
+            },
+            {
+              "i": 1,
+              "vel": 100
+            },
+            {
+              "i": 2,
+              "vel": 100
+            },
+            {
+              "i": 3,
+              "vel": 100
+            },
+            {
+              "i": 4,
+              "vel": 100
+            },
+            {
+              "i": 5,
+              "vel": 100
+            },
+            {
+              "i": 6,
+              "vel": 100
+            },
+            {
+              "i": 7,
+              "vel": 100
+            },
+            {
+              "i": 8,
+              "vel": 100
+            },
+            {
+              "i": 9,
+              "vel": 100
+            },
+            {
+              "i": 10,
+              "vel": 100
+            },
+            {
+              "i": 11,
+              "vel": 100
+            },
+            {
+              "i": 12,
+              "vel": 100
+            },
+            {
+              "i": 13,
+              "vel": 100
+            },
+            {
+              "i": 14,
+              "vel": 100
+            },
+            {
+              "i": 15,
+              "vel": 100
+            }
+          ]
+        },
+        "ch_55aa8f0b": {
+          "steps": [
+            {
+              "i": 14,
+              "vel": 100
+            }
+          ]
+        },
+        "ch_57378509": {
+          "notes": [
+            {
+              "id": 1,
+              "t": 0,
+              "len": 1440,
+              "key": 36,
+              "vel": 110
+            },
+            {
+              "id": 2,
+              "t": 1440,
+              "len": 960,
+              "key": 43,
+              "vel": 110,
+              "slide": true
+            },
+            {
+              "id": 3,
+              "t": 2400,
+              "len": 1440,
+              "key": 36,
+              "vel": 110
+            }
+          ]
+        },
+        "ch_5a22eb9f": {
+          "notes": [
+            {
+              "id": 1,
+              "t": 0,
+              "len": 480,
+              "key": 72,
+              "vel": 110
+            },
+            {
+              "id": 2,
+              "t": 480,
+              "len": 480,
+              "key": 70,
+              "vel": 110
+            },
+            {
+              "id": 3,
+              "t": 960,
+              "len": 480,
+              "key": 67,
+              "vel": 110
+            },
+            {
+              "id": 4,
+              "t": 1440,
+              "len": 480,
+              "key": 70,
+              "vel": 110
+            },
+            {
+              "id": 5,
+              "t": 1920,
+              "len": 480,
+              "key": 72,
+              "vel": 110
+            },
+            {
+              "id": 6,
+              "t": 2400,
+              "len": 480,
+              "key": 75,
+              "vel": 110
+            },
+            {
+              "id": 7,
+              "t": 2880,
+              "len": 480,
+              "key": 74,
+              "vel": 110
+            },
+            {
+              "id": 8,
+              "t": 3360,
+              "len": 480,
+              "key": 70,
+              "vel": 110
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "playlist": {
+    "tracks": [
+      {
+        "id": "pl_01",
+        "name": "Beat"
+      },
+      {
+        "id": "pl_02",
+        "name": "Track 2"
+      },
+      {
+        "id": "pl_03",
+        "name": "Track 3"
+      },
+      {
+        "id": "pl_04",
+        "name": "Track 4"
+      },
+      {
+        "id": "pl_05",
+        "name": "Track 5"
+      },
+      {
+        "id": "pl_06",
+        "name": "Track 6"
+      },
+      {
+        "id": "pl_07",
+        "name": "Track 7"
+      },
+      {
+        "id": "pl_08",
+        "name": "Track 8"
+      },
+      {
+        "id": "pl_09",
+        "name": "Track 9"
+      },
+      {
+        "id": "pl_10",
+        "name": "Track 10"
+      },
+      {
+        "id": "pl_11",
+        "name": "Track 11"
+      },
+      {
+        "id": "pl_12",
+        "name": "Track 12"
+      }
+    ],
+    "items": [
+      {
+        "id": "it_0017778b",
+        "kind": "pattern",
+        "ref": "pt_f552a8d9",
+        "track": "pl_01",
+        "start": 0,
+        "length": 3840
+      },
+      {
+        "id": "it_3c5092f6",
+        "kind": "pattern",
+        "ref": "pt_f552a8d9",
+        "track": "pl_01",
+        "start": 3840,
+        "length": 3840
+      },
+      {
+        "id": "it_66c5749e",
+        "kind": "pattern",
+        "ref": "pt_f552a8d9",
+        "track": "pl_01",
+        "start": 7680,
+        "length": 3840
+      },
+      {
+        "id": "it_035388fe",
+        "kind": "pattern",
+        "ref": "pt_f552a8d9",
+        "track": "pl_01",
+        "start": 11520,
+        "length": 3840
+      },
+      {
+        "id": "it_82189430",
+        "kind": "pattern",
+        "ref": "pt_f552a8d9",
+        "track": "pl_01",
+        "start": 15360,
+        "length": 15360
+      }
+    ]
+  },
+  "mixer": {
+    "tracks": [
+      {
+        "id": "mx_71b439e5",
+        "name": "Kick",
+        "color": "#FF751F",
+        "volumeDb": -6.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "output": "",
+        "autoFor": "ch_e2f3ead1",
+        "inserts": [
+          {
+            "id": "fx_9cbd43b3",
+            "kind": "whynot",
+            "type": "eq",
+            "bypass": false,
+            "preset": "kick-trap",
+            "params": {
+              "hpOn": 1.0,
+              "hpFreq": 30.0,
+              "hpSlope": 1.0,
+              "lowFreq": 100.0,
+              "lowGain": 0.0,
+              "b1Freq": 60.0,
+              "b1Gain": 2.0,
+              "b1Q": 1.2,
+              "b2Freq": 320.0,
+              "b2Gain": -3.0,
+              "b2Q": 1.4,
+              "b3Freq": 4500.0,
+              "b3Gain": 2.5,
+              "b3Q": 1.0,
+              "highFreq": 8000.0,
+              "highGain": 0.0,
+              "lpOn": 0.0,
+              "lpFreq": 18000.0,
+              "lpSlope": 0.0,
+              "output": 0.0
+            }
+          },
+          {
+            "id": "fx_c8e72e86",
+            "kind": "whynot",
+            "type": "transient",
+            "bypass": false,
+            "preset": "kick-punch",
+            "params": {
+              "attack": 40.0,
+              "sustain": -15.0,
+              "output": 0.0,
+              "mix": 100.0
+            }
+          },
+          {
+            "id": "fx_7b7bf7be",
+            "kind": "whynot",
+            "type": "comp",
+            "bypass": false,
+            "preset": "kick-punch",
+            "params": {
+              "threshold": -14.0,
+              "ratio": 4.0,
+              "attack": 15.0,
+              "release": 80.0,
+              "knee": 4.0,
+              "makeup": 2.0,
+              "mix": 100.0,
+              "detector": 0.0,
+              "scHpf": 20.0
+            }
+          }
+        ],
+        "sends": []
+      },
+      {
+        "id": "mx_6050e0b2",
+        "name": "Clap",
+        "color": "#FFFFFF",
+        "volumeDb": -6.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "output": "",
+        "autoFor": "ch_149344a9",
+        "inserts": [
+          {
+            "id": "fx_eb96f9f8",
+            "kind": "whynot",
+            "type": "eq",
+            "bypass": false,
+            "preset": "snare-clap",
+            "params": {
+              "hpOn": 1.0,
+              "hpFreq": 120.0,
+              "hpSlope": 1.0,
+              "lowFreq": 100.0,
+              "lowGain": 0.0,
+              "b1Freq": 200.0,
+              "b1Gain": 1.5,
+              "b1Q": 1.2,
+              "b2Freq": 800.0,
+              "b2Gain": -2.0,
+              "b2Q": 1.4,
+              "b3Freq": 4000.0,
+              "b3Gain": 0.0,
+              "b3Q": 1.0,
+              "highFreq": 8000.0,
+              "highGain": 2.5,
+              "lpOn": 0.0,
+              "lpFreq": 18000.0,
+              "lpSlope": 0.0,
+              "output": 0.0
+            }
+          },
+          {
+            "id": "fx_0f1f5cec",
+            "kind": "whynot",
+            "type": "transient",
+            "bypass": false,
+            "preset": "snare-snap",
+            "params": {
+              "attack": 35.0,
+              "sustain": 10.0,
+              "output": 0.0,
+              "mix": 100.0
+            }
+          },
+          {
+            "id": "fx_efabe049",
+            "kind": "whynot",
+            "type": "comp",
+            "bypass": false,
+            "preset": "snare-punch",
+            "params": {
+              "threshold": -16.0,
+              "ratio": 4.0,
+              "attack": 8.0,
+              "release": 100.0,
+              "knee": 4.0,
+              "makeup": 3.0,
+              "mix": 100.0,
+              "detector": 0.0,
+              "scHpf": 20.0
+            }
+          }
+        ],
+        "sends": [
+          {
+            "to": "mx_c1ed3115",
+            "db": -14.0
+          }
+        ]
+      },
+      {
+        "id": "mx_b93bd30c",
+        "name": "Hat",
+        "color": "#A6A6A6",
+        "volumeDb": -6.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "output": "",
+        "autoFor": "ch_900bc2e4",
+        "inserts": [
+          {
+            "id": "fx_f34614f8",
+            "kind": "whynot",
+            "type": "eq",
+            "bypass": false,
+            "preset": "hats",
+            "params": {
+              "hpOn": 1.0,
+              "hpFreq": 400.0,
+              "hpSlope": 1.0,
+              "lowFreq": 100.0,
+              "lowGain": 0.0,
+              "b1Freq": 250.0,
+              "b1Gain": 0.0,
+              "b1Q": 1.0,
+              "b2Freq": 2500.0,
+              "b2Gain": -1.5,
+              "b2Q": 1.0,
+              "b3Freq": 4000.0,
+              "b3Gain": 0.0,
+              "b3Q": 1.0,
+              "highFreq": 12000.0,
+              "highGain": 1.5,
+              "lpOn": 0.0,
+              "lpFreq": 18000.0,
+              "lpSlope": 0.0,
+              "output": 0.0
+            }
+          },
+          {
+            "id": "fx_7482ea79",
+            "kind": "whynot",
+            "type": "transient",
+            "bypass": false,
+            "preset": "hats-short",
+            "params": {
+              "attack": 10.0,
+              "sustain": -35.0,
+              "output": 0.0,
+              "mix": 100.0
+            }
+          },
+          {
+            "id": "fx_c94ed4b0",
+            "kind": "whynot",
+            "type": "stereo",
+            "bypass": false,
+            "preset": "hats-wide",
+            "params": {
+              "width": 140.0,
+              "monoBass": 0.0,
+              "pan": 0.0,
+              "gain": 0.0,
+              "invertLeft": 0.0,
+              "invertRight": 0.0,
+              "mono": 0.0
+            }
+          }
+        ],
+        "sends": []
+      },
+      {
+        "id": "mx_f436555b",
+        "name": "Open hat",
+        "color": "#FFA366",
+        "volumeDb": -6.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "output": "",
+        "autoFor": "ch_55aa8f0b",
+        "inserts": [
+          {
+            "id": "fx_308c2b26",
+            "kind": "whynot",
+            "type": "eq",
+            "bypass": false,
+            "preset": "hats",
+            "params": {
+              "hpOn": 1.0,
+              "hpFreq": 400.0,
+              "hpSlope": 1.0,
+              "lowFreq": 100.0,
+              "lowGain": 0.0,
+              "b1Freq": 250.0,
+              "b1Gain": 0.0,
+              "b1Q": 1.0,
+              "b2Freq": 2500.0,
+              "b2Gain": -1.5,
+              "b2Q": 1.0,
+              "b3Freq": 4000.0,
+              "b3Gain": 0.0,
+              "b3Q": 1.0,
+              "highFreq": 12000.0,
+              "highGain": 1.5,
+              "lpOn": 0.0,
+              "lpFreq": 18000.0,
+              "lpSlope": 0.0,
+              "output": 0.0
+            }
+          },
+          {
+            "id": "fx_e9da9a75",
+            "kind": "whynot",
+            "type": "transient",
+            "bypass": false,
+            "preset": "hats-short",
+            "params": {
+              "attack": 10.0,
+              "sustain": -35.0,
+              "output": 0.0,
+              "mix": 100.0
+            }
+          },
+          {
+            "id": "fx_a63c760b",
+            "kind": "whynot",
+            "type": "stereo",
+            "bypass": false,
+            "preset": "hats-wide",
+            "params": {
+              "width": 140.0,
+              "monoBass": 0.0,
+              "pan": 0.0,
+              "gain": 0.0,
+              "invertLeft": 0.0,
+              "invertRight": 0.0,
+              "mono": 0.0
+            }
+          }
+        ],
+        "sends": []
+      },
+      {
+        "id": "mx_1a5b2f4d",
+        "name": "808",
+        "color": "#D9D9D9",
+        "volumeDb": -6.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "output": "",
+        "autoFor": "ch_57378509",
+        "inserts": [
+          {
+            "id": "fx_7881ac53",
+            "kind": "whynot",
+            "type": "eq",
+            "bypass": false,
+            "preset": "808-trap",
+            "params": {
+              "hpOn": 1.0,
+              "hpFreq": 25.0,
+              "hpSlope": 1.0,
+              "lowFreq": 100.0,
+              "lowGain": 0.0,
+              "b1Freq": 55.0,
+              "b1Gain": 1.5,
+              "b1Q": 1.0,
+              "b2Freq": 250.0,
+              "b2Gain": -2.0,
+              "b2Q": 1.5,
+              "b3Freq": 900.0,
+              "b3Gain": 1.5,
+              "b3Q": 1.0,
+              "highFreq": 8000.0,
+              "highGain": 0.0,
+              "lpOn": 0.0,
+              "lpFreq": 18000.0,
+              "lpSlope": 0.0,
+              "output": 0.0
+            }
+          },
+          {
+            "id": "fx_6a1856b5",
+            "kind": "whynot",
+            "type": "sat",
+            "bypass": false,
+            "preset": "808-trap",
+            "params": {
+              "mode": 0.0,
+              "drive": 12.0,
+              "tone": 15.0,
+              "protect": 100.0,
+              "mix": 100.0,
+              "autoGain": 1.0,
+              "output": 0.0
+            }
+          },
+          {
+            "id": "fx_9c08eacb",
+            "kind": "whynot",
+            "type": "comp",
+            "bypass": false,
+            "preset": "sidechain-duck",
+            "sidechain": "mx_71b439e5",
+            "params": {
+              "threshold": -30.0,
+              "ratio": 10.0,
+              "attack": 0.5,
+              "release": 90.0,
+              "knee": 2.0,
+              "makeup": 0.0,
+              "mix": 100.0,
+              "detector": 0.0,
+              "scHpf": 20.0
+            }
+          },
+          {
+            "id": "fx_54f282e9",
+            "kind": "whynot",
+            "type": "stereo",
+            "bypass": false,
+            "preset": "bass-mono",
+            "params": {
+              "width": 100.0,
+              "monoBass": 200.0,
+              "pan": 0.0,
+              "gain": 0.0,
+              "invertLeft": 0.0,
+              "invertRight": 0.0,
+              "mono": 0.0
+            }
+          }
+        ],
+        "sends": []
+      },
+      {
+        "id": "mx_336c4a1a",
+        "name": "Bell",
+        "color": "#C25712",
+        "volumeDb": -6.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "output": "",
+        "autoFor": "ch_5a22eb9f",
+        "inserts": [
+          {
+            "id": "fx_1768a08f",
+            "kind": "whynot",
+            "type": "eq",
+            "bypass": false,
+            "preset": "melody",
+            "params": {
+              "hpOn": 1.0,
+              "hpFreq": 150.0,
+              "hpSlope": 1.0,
+              "lowFreq": 100.0,
+              "lowGain": 0.0,
+              "b1Freq": 300.0,
+              "b1Gain": -2.0,
+              "b1Q": 1.2,
+              "b2Freq": 2500.0,
+              "b2Gain": -1.0,
+              "b2Q": 1.0,
+              "b3Freq": 4000.0,
+              "b3Gain": 0.0,
+              "b3Q": 1.0,
+              "highFreq": 10000.0,
+              "highGain": 1.0,
+              "lpOn": 0.0,
+              "lpFreq": 18000.0,
+              "lpSlope": 0.0,
+              "output": 0.0
+            }
+          },
+          {
+            "id": "fx_cd7c9f54",
+            "kind": "whynot",
+            "type": "stereo",
+            "bypass": false,
+            "preset": "melody-wide",
+            "params": {
+              "width": 130.0,
+              "monoBass": 150.0,
+              "pan": 0.0,
+              "gain": 0.0,
+              "invertLeft": 0.0,
+              "invertRight": 0.0,
+              "mono": 0.0
+            }
+          }
+        ],
+        "sends": [
+          {
+            "to": "mx_c1ed3115",
+            "db": -12.0
+          },
+          {
+            "to": "mx_a1d1f75f",
+            "db": -18.0
+          }
+        ]
+      },
+      {
+        "id": "mx_c1ed3115",
+        "name": "Reverb",
+        "color": "#6E6E6E",
+        "volumeDb": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "output": "",
+        "role": "reverbBus",
+        "inserts": [
+          {
+            "id": "fx_3f023ac5",
+            "kind": "whynot",
+            "type": "reverb",
+            "bypass": false,
+            "preset": "plate-vocal",
+            "params": {
+              "mode": 1.0,
+              "size": 55.0,
+              "decay": 1.8,
+              "predelay": 30.0,
+              "damping": 9000.0,
+              "lowCut": 300.0,
+              "width": 100.0,
+              "mix": 100.0
+            }
+          },
+          {
+            "id": "fx_3200bf5f",
+            "kind": "whynot",
+            "type": "eq",
+            "bypass": false,
+            "preset": "reverb-return",
+            "params": {
+              "hpOn": 1.0,
+              "hpFreq": 300.0,
+              "hpSlope": 1.0,
+              "lowFreq": 100.0,
+              "lowGain": 0.0,
+              "b1Freq": 500.0,
+              "b1Gain": -2.0,
+              "b1Q": 1.0,
+              "b2Freq": 1000.0,
+              "b2Gain": 0.0,
+              "b2Q": 1.0,
+              "b3Freq": 4000.0,
+              "b3Gain": 0.0,
+              "b3Q": 1.0,
+              "highFreq": 8000.0,
+              "highGain": 0.0,
+              "lpOn": 1.0,
+              "lpFreq": 10000.0,
+              "lpSlope": 0.0,
+              "output": 0.0
+            }
+          }
+        ],
+        "sends": []
+      },
+      {
+        "id": "mx_a1d1f75f",
+        "name": "Delay",
+        "color": "#6E6E6E",
+        "volumeDb": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "output": "",
+        "role": "delayBus",
+        "inserts": [
+          {
+            "id": "fx_a9668f94",
+            "kind": "whynot",
+            "type": "delay",
+            "bypass": false,
+            "preset": "quarter-vocal",
+            "params": {
+              "sync": 1.0,
+              "division": 8.0,
+              "time": 250.0,
+              "feedback": 30.0,
+              "mode": 1.0,
+              "hpf": 300.0,
+              "lpf": 5000.0,
+              "ducking": 60.0,
+              "width": 100.0,
+              "mix": 100.0
+            }
+          },
+          {
+            "id": "fx_c411ca36",
+            "kind": "whynot",
+            "type": "eq",
+            "bypass": false,
+            "preset": "delay-return",
+            "params": {
+              "hpOn": 1.0,
+              "hpFreq": 250.0,
+              "hpSlope": 1.0,
+              "lowFreq": 100.0,
+              "lowGain": 0.0,
+              "b1Freq": 250.0,
+              "b1Gain": 0.0,
+              "b1Q": 1.0,
+              "b2Freq": 1000.0,
+              "b2Gain": 0.0,
+              "b2Q": 1.0,
+              "b3Freq": 4000.0,
+              "b3Gain": 0.0,
+              "b3Q": 1.0,
+              "highFreq": 8000.0,
+              "highGain": 0.0,
+              "lpOn": 1.0,
+              "lpFreq": 6000.0,
+              "lpSlope": 0.0,
+              "output": 0.0
+            }
+          }
+        ],
+        "sends": []
+      },
+      {
+        "id": "mx_master",
+        "name": "Master",
+        "color": "#FFFFFF",
+        "volumeDb": 0.0,
+        "pan": 0.0,
+        "mute": false,
+        "solo": false,
+        "output": "device",
+        "inserts": [
+          {
+            "id": "fx_e78124c3",
+            "kind": "whynot",
+            "type": "eq",
+            "bypass": false,
+            "preset": "master-clean",
+            "params": {
+              "hpOn": 1.0,
+              "hpFreq": 20.0,
+              "hpSlope": 0.0,
+              "lowFreq": 100.0,
+              "lowGain": 0.0,
+              "b1Freq": 250.0,
+              "b1Gain": 0.0,
+              "b1Q": 1.0,
+              "b2Freq": 1000.0,
+              "b2Gain": 0.0,
+              "b2Q": 1.0,
+              "b3Freq": 4000.0,
+              "b3Gain": 0.0,
+              "b3Q": 1.0,
+              "highFreq": 12000.0,
+              "highGain": 1.0,
+              "lpOn": 0.0,
+              "lpFreq": 18000.0,
+              "lpSlope": 0.0,
+              "output": 0.0
+            }
+          },
+          {
+            "id": "fx_ac32f17b",
+            "kind": "whynot",
+            "type": "comp",
+            "bypass": false,
+            "preset": "master-glue",
+            "params": {
+              "threshold": -10.0,
+              "ratio": 2.0,
+              "attack": 30.0,
+              "release": 200.0,
+              "knee": 8.0,
+              "makeup": 1.0,
+              "mix": 100.0,
+              "detector": 1.0,
+              "scHpf": 100.0
+            }
+          },
+          {
+            "id": "fx_6933b474",
+            "kind": "whynot",
+            "type": "sat",
+            "bypass": false,
+            "preset": "master-tape",
+            "params": {
+              "mode": 0.0,
+              "drive": 2.0,
+              "tone": 0.0,
+              "protect": 0.0,
+              "mix": 100.0,
+              "autoGain": 1.0,
+              "output": 0.0
+            }
+          },
+          {
+            "id": "fx_05379806",
+            "kind": "whynot",
+            "type": "stereo",
+            "bypass": false,
+            "preset": "master-mono-low",
+            "params": {
+              "width": 100.0,
+              "monoBass": 100.0,
+              "pan": 0.0,
+              "gain": 0.0,
+              "invertLeft": 0.0,
+              "invertRight": 0.0,
+              "mono": 0.0
+            }
+          },
+          {
+            "id": "fx_989ea970",
+            "kind": "whynot",
+            "type": "limiter",
+            "bypass": false,
+            "preset": "master-trap",
+            "params": {
+              "gain": 4.0,
+              "ceiling": -1.0,
+              "release": 50.0,
+              "clip": 50.0,
+              "target": -7.0
+            }
+          }
+        ],
+        "sends": []
+      }
+    ]
+  }
+}

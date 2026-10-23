@@ -1,0 +1,59 @@
+WHYNOT LAB: pacote portátil
+===========================
+
+Este pacote serve para duas coisas. A versão do código e do app está em versao.txt.
+
+
+1. SÓ USAR O APP
+----------------
+
+Abra app\WHYNOT LAB.exe. Não precisa instalar nada: ele roda em qualquer Windows 10 ou 11 de 64 bits.
+
+- Na primeira vez, o Windows pode mostrar "O Windows protegeu o computador". O app não é assinado.
+  Clique em "Mais informações" e depois em "Executar assim mesmo".
+- Os seus atalhos estão em app\config\atalhos.json. Para usá-los, copie esse arquivo para
+  %APPDATA%\WHYNOT LAB\ (o preparar-pc faz isso sozinho).
+- Os plugins VST3 (Surge XT etc.) precisam ser instalados de novo neste PC. Depois, aperte F8 e clique em Escanear.
+
+
+2. CONTINUAR PROGRAMANDO
+------------------------
+
+Dê dois cliques em preparar-pc.cmd. O script:
+- confere a cópia do pacote;
+- instala pelo winget o que faltar: Git, VS 2022 Build Tools com o C++, CMake e Ninja.
+  O winget pode pedir para você aceitar os termos: responda S;
+- clona o código em C:\dev\whynot-lab;
+- baixa o Tracktion e o JUCE do GitHub (uns 180 MB);
+- coloca o LAME e o ASIO;
+- copia as notas do Claude Code;
+- compila, roda o autoteste e o ctest.
+
+Pacote completo (versao.txt diz "Completo"): o Tracktion e o JUCE, o CMake, o Ninja e os plugins
+de teste já vêm aqui dentro. O script copia tudo do pacote e só o Git e o VS Build Tools vêm da internet.
+Ele também traz a pasta coordenacao (quadro, relatórios e revisões) e extras\ (o projeto do vídeo).
+
+Dados pessoais: nas notas do Claude, na coordenação e nas extras, os e-mails e os links do Drive foram
+trocados por marcadores. O histórico do git ainda leva o e-mail de autor de cada commit: guarde este
+pacote num lugar privado (pendrive seu, ou pasta do Drive com acesso "Restrito").
+
+O tempo é quase todo de espera: o VS Build Tools leva de 10 a 30 minutos, e o primeiro build uns 10 a 20.
+Se algo falhar, corrija o que a mensagem diz e rode de novo: o que já está pronto é pulado.
+
+Para só ver o que falta, sem mudar nada, abra o PowerShell nesta pasta e rode:
+    powershell -ExecutionPolicy Bypass -File .\preparar-pc.ps1 -SoVerificar
+
+Outra pasta para o código:  -Destino D:\dev\whynot-lab
+PC com pouca RAM:            -Jobs 2
+
+
+3. LEVAR O QUE VOCÊ FEZ DE VOLTA
+--------------------------------
+
+Commite e, nesta pasta do pacote, rode:
+    powershell -ExecutionPolicy Bypass -File .\trocar-codigo.ps1 -Projeto C:\dev\whynot-lab -Exportar E:\whynot-casa.bundle
+
+No outro PC, com o trocar-codigo.ps1 do pacote:
+    powershell -ExecutionPolicy Bypass -File .\trocar-codigo.ps1 -Projeto <pasta do código> -Importar E:\whynot-casa.bundle
+
+O guia completo, com os problemas comuns, está em GUIA.md, nesta pasta.

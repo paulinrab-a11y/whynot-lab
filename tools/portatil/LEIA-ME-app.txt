@@ -1,0 +1,38 @@
+WHYNOT LAB: o app
+=================
+
+A versão está em versao.txt.
+
+
+COMO ABRIR
+----------
+
+1. Extraia o zip inteiro antes de abrir: botão direito no arquivo .zip, "Extrair tudo...".
+   Não abra o app de dentro do zip: o Windows tira só o exe para uma pasta temporária, e o piano
+   e os arquivos ao lado dele ficam para trás.
+2. Abra app\WHYNOT LAB.exe. Não precisa instalar nada: roda em qualquer Windows 10 ou 11 de 64 bits.
+3. Na primeira vez, o Windows pode mostrar "O Windows protegeu o computador", porque o app não é
+   assinado. Clique em "Mais informações" e depois em "Executar assim mesmo".
+
+Os seus projetos ficam em Músicas\WHYNOT LAB. As configurações ficam em %APPDATA%\WHYNOT LAB.
+
+
+PLUGINS E PIANO
+---------------
+
+- Os plugins VST3 que você já usa (Surge XT, Vital etc.) precisam estar instalados neste PC.
+  Depois, aperte F8 e clique em Escanear.
+- O WHYNOT Piano usa a biblioteca em app\Bibliotecas. Se ela não veio neste pacote, o piano fica
+  em silêncio e o canal avisa.
+
+
+SE ALGO NÃO FUNCIONAR
+---------------------
+
+- Exportar: a janela mostra a barra de progresso e o botão Parar. Se aparecer um aviso dizendo que
+  não deu para gravar, ele explica o porquê (arquivo aberto em outro programa, pasta sem permissão,
+  caminho comprido demais). Feche o arquivo no player ou escolha outra pasta, como a Área de Trabalho.
+- O Windows Defender com o "Acesso controlado a pastas" ligado bloqueia apps novos nas pastas Música,
+  Documentos e Área de Trabalho. Libere a WHYNOT LAB lá ou exporte para outra pasta.
+- Projeto que veio de outro PC: mande a pasta inteira do projeto (com a pasta samples dentro), não só
+  o arquivo .wnl.

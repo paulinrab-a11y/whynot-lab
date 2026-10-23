@@ -1,0 +1,27 @@
+{
+  "name": "whynot-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Servidor MCP da WHYNOT LAB (Fase 4): deixa uma IA usar os comandos do app pela ponte local.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "whynot-mcp": "dist/src/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test --test-concurrency=1 \"dist/test/*.test.js\"",
+    "start": "node dist/src/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.3.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.3.1",
+    "@types/node": "24.19.2",
+    "typescript": "6.0.3"
+  }
+}

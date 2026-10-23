@@ -1,0 +1,4 @@
+# Os scripts saem com CRLF em qualquer git: o cmd.exe e o Windows PowerShell esperam isso.
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.txt text eol=crlf

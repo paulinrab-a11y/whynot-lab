@@ -1,0 +1,33 @@
+# Build
+build/
+out/
+cmake-build-*/
+CMakeUserPresets.json
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Dependências baixadas
+third_party/_downloads/
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Áudio gerado em testes
+renders/
+*.wav.tmp
+
+# Sistema
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# SDKs baixados à parte (ver docs/como-rodar.md): ficam fora do git
+external/lame-3.100/
+external/asiosdk/

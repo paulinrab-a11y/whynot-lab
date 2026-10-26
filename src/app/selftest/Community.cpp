@@ -16,10 +16,14 @@
 #include "../../engine/SampleAnalysis.h"
 #include "../../model/NoteTools.h"
 #include "../../model/WnlFormat.h"
+#include "../../ui/ControlMenu.h"
 #include "../../ui/MidiLearnMenu.h"
 #include "../../ui/MixerView.h"
 #include "../../ui/PianoRoll.h"
 #include "../../ui/SamplerPanel.h"
+#include "../../ui/synth/SynthEditor.h"
+#include "../../synth/SynthPresets.h"
+#include "../../ui/fx/FxWidgets.h"
 #include "../../ui/Playlist.h"
 #include "../../ui/SampleBrowser.h"
 #include "../../engine/SoundInfo.h"
@@ -1354,6 +1358,119 @@ void runCommunitySelfTest (SelfTestContext& ctx)
         rep.check (! sliced.ok || (afterSlice == 0 && unsliced != nullptr && unsliced->layers.size() == 2),
                    "fatiar o canal tira as camadas (fatiado, cada tecla é uma fatia); o Ctrl+Z devolve"_t
                        + (sliced.ok ? juce::String() : " (o fatiar recusou: " + sliced.error + ")"));
+    }
+
+    //--------------------------------------------------------------------------
+    rep.section ("Pedidos de 26/10: raias sem teto e o botão direito dos controles"_t);
+    {
+        app.run ("project.new");
+        const auto& lanes = model.get().playlistTracks;
+        const bool twelve = lanes.size() == 12;
+        app.run ("playlist.addItem", args ({ { "track", 12 }, { "start", 0 } }));
+        const bool grew = lanes.size() == 13 && lanes.back().name == "Raia 13";
+        const auto added = app.run ("playlist.addTrack", args ({ { "count", 50 } }));
+        const bool fifty = added.ok && lanes.size() == 63;
+        app.run ("playlist.addItem", args ({ { "track", 63 }, { "start", 0 } }));
+        const bool grewAgain = lanes.size() == 64;
+        rep.check (twelve && grew && fifty && grewAgain,
+                   "a playlist cresce: 12 raias no projeto novo, a 13ª aparece quando a 12ª ganha um bloco, +50 pelo comando, e de novo no fim ("_t
+                       + juce::String ((int) lanes.size()) + " raias)");
+
+        const auto inserted = app.run ("playlist.addTrack", args ({ { "at", 1 }, { "name", "Bateria" } }));
+        const bool first = inserted.ok && lanes.front().name == "Bateria";
+        const auto removed = app.run ("playlist.removeTrack", args ({ { "track", 64 } }));   // a que tem o bloco
+        const bool gone = removed.ok && (int) removed.value["itemsRemoved"] == 1;
+        app.run ("edit.undo");
+        rep.check (first && gone && model.get().playlistItems.size() == 2,
+                   "inserir uma raia no topo e apagar uma raia com o bloco dela; o Ctrl+Z devolve o bloco"_t);
+
+        const auto many = app.run ("playlist.addTrack", args ({ { "count", 100 } }));
+        rep.check (many.ok && ! app.run ("playlist.addTrack", args ({ { "count", 100 } })).ok == ((int) lanes.size() + 100 > maxPlaylistTracks),
+                   "o teto é só uma proteção do arquivo: "_t + juce::String (maxPlaylistTracks) + " raias (agora "
+                       + juce::String ((int) lanes.size()) + ")");
+
+        // o botão direito: automatizar o volume de uma trilha e um knob de efeito, já no valor de agora
+        const auto track = app.run ("mixer.addTrack", args ({ { "name", "Auto" } })).value["track"].toString();
+        app.run ("mixer.setVolume", args ({ { "track", track }, { "db", -6.0 } }));
+        const auto eq = app.run ("mixer.addInsert", args ({ { "track", track }, { "type", "eq" } })).value["insert"].toString();
+        app.run ("mixer.setInsertParam", args ({ { "track", track }, { "insert", eq }, { "param", "highGain" }, { "value", 9.0 } }));
+
+        const AutomationTarget volume { "mixer", track, {}, {}, "volume" }, high { "insert", track, {}, eq, "highGain" };
+        const auto volumeLane = controlmenu::automate (app, volume);
+        const auto highLane = controlmenu::automate (app, high);
+        const auto* vl = model.get().findLane (volumeLane);
+        const auto* hl = model.get().findLane (highLane);
+        const bool seeded = vl != nullptr && hl != nullptr && vl->points.size() == 1 && hl->points.size() == 1
+                            && std::abs (hl->points[0].v - 0.75f) < 0.001f
+                            && std::abs (vl->points[0].v - controlmenu::currentPosition (model.get(), volume)) < 0.001f;
+        const auto again = controlmenu::automate (app, high);
+        rep.check (seeded && again == highLane && model.get().automation.size() == 2,
+                   "Automatizar cria a curva com um ponto no valor de agora (o agudo em +9 dB fica em 0,75 do knob); de novo, a mesma curva"_t);
+
+        std::vector<std::function<void()>> actions;
+        juce::PopupMenu menu;
+        controlmenu::addAutomation (menu, app, high, actions);
+        bool offersRemove = false;
+
+        for (juce::PopupMenu::MenuItemIterator it (menu); it.next();)
+            offersRemove |= it.getItem().text.startsWith ("Apagar a automação"_t);
+
+        if (! actions.empty())
+            actions.front()();
+
+        rep.check (offersRemove && model.get().automation.size() == 1, "com a curva criada, o menu oferece apagar a automação, e apaga"_t);
+
+        // voltar ao padrão num knob qualquer (o ParamControl do sampler, do synth e dos efeitos)
+        const auto& info = dsp::findEffect ("eq")->params[(size_t) dsp::findEffect ("eq")->indexOf ("highGain")];
+        ParamControl control (info);
+        float sent = -999.0f;
+        int gestures = 0;
+        control.onChange = [&sent] (float v) { sent = v; };
+        control.onGestureStart = [&gestures] { ++gestures; };
+        control.onGestureEnd = [&gestures] { ++gestures; };
+        control.setValue (9.0f);
+        control.resetToDefault();
+        rep.check (sent == info.def && control.getValue() == info.def && gestures == 2 && control.resetLabel().contains ("Voltar ao padrão"_t),
+                   "Voltar ao padrão leva o knob ao valor de fábrica num gesto só: \""_t + control.resetLabel() + "\"");
+    }
+
+    //--------------------------------------------------------------------------
+    rep.section ("Pedidos de 26/10: o WHYNOT Synth 3 OSC"_t);
+    {
+        app.run ("project.new");
+        juce::StringArray ids;
+
+        for (auto& preset : synth::allPresets())
+            if (juce::String (preset.id).startsWith ("3osc"))
+                ids.add (juce::String (preset.id));
+
+        rep.check (ids.size() == 6, "os presets 3 OSC: "_t + ids.joinIntoString (", "));
+
+        // o sub: um seno no Lá 2 (110 Hz), renderizado sozinho
+        const auto added = app.run ("channel.addSynth", args ({ { "preset", "3osc-sub" } }));
+        const auto synthCh = added.value["channel"].toString();
+        app.run ("mixer.setSolo", args ({ { "track", added.value["mixerTrack"].toString() }, { "on", true } }));
+        addNotes (app, synthCh, juce::Array<juce::var> { noteVar (0, 2, 45, false) });
+        const auto f = ctx.work.getChildFile ("3osc-sub.wav");
+        app.run ("project.exportWav", args ({ { "path", f.getFullPathName() }, { "loops", 1 }, { "what", "pattern" } }));
+        const auto audio = readWav (f);
+        const double hz = measureHz (audio, 0.2, 0.8);
+        rep.check (added.ok && std::abs (hz - 110.0) < 1.0 && peakDb (audio) > -30.0f,
+                   "o 3 OSC Sub toca o Lá 2 em "_t + juce::String (hz, 2) + " Hz (110), pico " + juce::String (peakDb (audio), 1) + " dB");
+
+        // o editor abre na página 3 OSC para um timbre da família
+        if (auto* plugin = app.getProjector().synthFor (synthCh))
+        {
+            SynthEditor editor (app, *plugin);
+            host.addAndMakeVisible (editor);
+            rep.check (editor.getPage() == SynthEditor::simplePage, "o editor abre na página 3 OSC para um timbre 3 OSC"_t);
+            rep.check (savePngOnPanel (editor, ctx.work.getChildFile ("synth-3osc.png")), "captura da página 3 OSC"_t);
+            host.removeChildComponent (&editor);
+        }
+        else
+        {
+            rep.check (false, "o synth do canal não abriu"_t);
+        }
     }
 
     host.setLookAndFeel (nullptr);

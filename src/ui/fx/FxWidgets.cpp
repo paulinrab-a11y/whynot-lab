@@ -115,7 +115,7 @@ ParamControl::ParamControl (const dsp::ParamInfo& p) : info (p)
             knob.onDragStart = [this] { if (onGestureStart) onGestureStart(); };
             knob.onDragEnd = [this] { if (onGestureEnd) onGestureEnd(); };
             knob.onValueChange = [this] { changed ((float) knob.getValue()); };
-            knob.onMenu = [this] { if (onMenu) onMenu(); };
+            knob.onMenu = [this] { showMenu(); };
             knob.setWantsKeyboardFocus (false);
             addAndMakeVisible (knob);
             break;
@@ -162,8 +162,45 @@ void ParamControl::setValue (float v)
 
 void ParamControl::mouseDown (const juce::MouseEvent& e)
 {
-    if (e.mods.isPopupMenu() && onMenu)   // na legenda e no valor (o knob tem o próprio)
+    if (e.mods.isPopupMenu())   // na legenda e no valor (o knob tem o próprio)
+        showMenu();
+}
+
+void ParamControl::showMenu()
+{
+    if (onMenu)
+    {
         onMenu();
+        return;
+    }
+
+    juce::PopupMenu menu;
+    menu.addSectionHeader (fxui::caps (fxui::utf8 (info.name)));
+    menu.addItem (1, resetLabel(), value != info.def);
+    juce::Component::SafePointer<ParamControl> safe (this);
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this), [safe] (int chosen)
+    {
+        if (safe != nullptr && chosen == 1)
+            safe->resetToDefault();
+    });
+}
+
+juce::String ParamControl::resetLabel() const
+{
+    return "Voltar ao padrão ("_t + fxui::formatValue (info, info.def) + ")";
+}
+
+void ParamControl::resetToDefault()
+{
+    if (onGestureStart)
+        onGestureStart();
+
+    setValue (info.def);
+    value = info.def + 1.0f;   // força o aviso, mesmo numa lista ou num botão
+    changed (info.def);
+
+    if (onGestureEnd)
+        onGestureEnd();
 }
 
 void ParamControl::setAccent (bool on)

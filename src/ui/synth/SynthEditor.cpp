@@ -79,7 +79,8 @@ SynthEditor::SynthEditor (AppController& a, WhynotSynthPlugin& p)
     pages.setItems ({ { "Camadas", Icon::none, "Osciladores: até 4 camadas e o sub"_t },
                       { "Filtro e envelopes", Icon::none, "Filtro e os três envelopes"_t },
                       { "Modulação"_t, Icon::none, "LFOs e a matriz de modulação"_t },
-                      { "Efeitos e voz", Icon::none, "Saturação, EQ, estéreo, delay, reverb, polifonia e glide"_t } });
+                      { "Efeitos e voz", Icon::none, "Saturação, EQ, estéreo, delay, reverb, polifonia e glide"_t },
+                      { "3 OSC", Icon::none, "Os três primeiros osciladores lado a lado, com o volume, o filtro e o glide: o jeito simples"_t } });
     pages.onChange = [this] (int i) { showPage (i, layer); };
     addAndMakeVisible (pages);
 
@@ -95,7 +96,10 @@ SynthEditor::SynthEditor (AppController& a, WhynotSynthPlugin& p)
     setSize (editorWidth, editorHeight);
     app.getModel().addListener (this);
     refresh();
-    showPage (0, 0);
+
+    // um timbre da família "3 OSC" abre na página dele
+    const auto* ch = channel();
+    showPage (ch != nullptr && ch->synthPreset.startsWith ("3osc") ? simplePage : 0, 0);
 }
 
 SynthEditor::~SynthEditor()
@@ -370,6 +374,26 @@ std::vector<SynthEditor::Row> SynthEditor::rowsFor (int pageIndex, int layerInde
 {
     std::vector<Row> rows;
 
+    // "3 OSC" (26/10): os três primeiros osciladores, um por linha, e o essencial em volta (volume, filtro, glide). São os
+    // mesmos parâmetros das outras páginas: mexer aqui ou lá dá no mesmo.
+    if (pageIndex == simplePage)
+    {
+        for (int o = 0; o < 3; ++o)
+        {
+            auto L = [o] (int p) { return P::layer (o, p); };
+            rows.push_back ({ { "OSC " + juce::String (o + 1), { { L (lOn), "LIGA" }, { L (lWave), "ONDA" }, { L (lOct), "OITAVA" },
+                                                                  { L (lSemi), "SEMITOM" }, { L (lFine), "FINO" } } },
+                              { "MISTURA", { { L (lLevel), "VOLUME" }, { L (lPan), "PAN" }, { L (lVoices), "VOZES" },
+                                             { L (lDetune), "DESAFINAÇÃO"_t } } } });
+        }
+
+        rows.push_back ({ { "VOLUME NO TEMPO", { { P::env (0, eAttack), "ATAQUE" }, { P::env (0, eDecay), "DECAIMENTO" },
+                                                 { P::env (0, eSustain), "SUSTENTAÇÃO"_t }, { P::env (0, eRelease), "SOLTURA" } } },
+                          { "FILTRO", { { P::fltOn, "LIGA" }, { P::fltCutoff, "CORTE" }, { P::fltReso, "RESSONÂNCIA"_t } } },
+                          { "VOZ", { { P::mono, "MONO" }, { P::glide, "GLIDE" } } } });
+        return rows;
+    }
+
     if (pageIndex == 0)
     {
         if (layerIndex >= numLayers)
@@ -462,7 +486,7 @@ std::vector<SynthEditor::Row> SynthEditor::rowsFor (int pageIndex, int layerInde
 
 void SynthEditor::showPage (int newPage, int newLayer)
 {
-    page = juce::jlimit (0, 3, newPage);
+    page = juce::jlimit (0, simplePage, newPage);
     layer = juce::jlimit (0, numLayers, newLayer);
     pages.setSelected (page);
     layers.setSelected (layer);

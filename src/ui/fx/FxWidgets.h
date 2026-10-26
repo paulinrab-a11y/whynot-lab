@@ -81,8 +81,15 @@ public:
     std::function<void (float)> onChange;
     std::function<void()> onGestureStart, onGestureEnd;
 
-    /** Botão direito no knob ou na legenda: o menu do parâmetro (ligar ao macro). */
+    /** Botão direito no knob ou na legenda: o menu do parâmetro (ligar ao macro, controlador, automação). Sem ele, o
+        botão direito oferece "Voltar ao padrão" (26/10, como no FL). */
     std::function<void()> onMenu;
+
+    /** Volta ao valor padrão do parâmetro, como um gesto (um passo de desfazer). */
+    void resetToDefault();
+
+    /** "Voltar ao padrão (valor)" para o menu do botão direito. */
+    juce::String resetLabel() const;
 
     static constexpr int cellWidth = 80, cellHeight = 84;
 
@@ -92,6 +99,7 @@ public:
 
 private:
     void changed (float);
+    void showMenu();
 
     const dsp::ParamInfo& info;
     juce::String caption;

@@ -1329,6 +1329,57 @@ void registerCompositionCommands (CommandRegistry& r)
                  return CommandResult::success (object ({ { "track", id }, { "position", to + 1 } }));
              } });
 
+    // Raias sem o teto de 12 (26/10): inserir e apagar. A playlist também cresce sozinha (o normalise deixa sempre uma
+    // raia vazia no fim).
+    r.add ({ "playlist.addTrack", "Inserir raia"_t,
+             schema ({ { "at", "integer", false, "Posição da raia nova: 1 = a primeira; ausente = no fim"_t },
+                       { "name", "string", false, "Nome; ausente = \"Raia N\""_t },
+                       { "count", "integer", false, "Quantas raias (padrão 1, até 100 de uma vez)"_t } }), true,
+             [] (CommandContext& c, const juce::var& a)
+             {
+                 auto& p = c.model.data();
+                 const int count = juce::jlimit (1, 100, (int) params::number (a, "count", 1));
+
+                 if ((int) p.playlistTracks.size() + count > maxPlaylistTracks)
+                     return CommandResult::fail ("A playlist já tem "_t + juce::String ((int) p.playlistTracks.size()) + " raias (o máximo é "_t
+                                                 + juce::String (maxPlaylistTracks) + ").");
+
+                 int at = params::has (a, "at") ? juce::jlimit (0, (int) p.playlistTracks.size(), (int) params::number (a, "at", 1) - 1)
+                                                : (int) p.playlistTracks.size();
+                 juce::Array<juce::var> ids;
+
+                 for (int k = 0; k < count; ++k)
+                 {
+                     PlaylistTrack t;
+
+                     do
+                         t.id = makeId ("pl");
+                     while (p.findPlaylistTrack (t.id) != nullptr);
+
+                     const auto name = params::string (a, "name").trim().substring (0, 40);
+                     t.name = name.isNotEmpty() ? name : "Raia " + juce::String ((int) p.playlistTracks.size() + 1);
+                     p.playlistTracks.insert (p.playlistTracks.begin() + at++, t);
+                     ids.add (t.id);
+                 }
+
+                 return CommandResult::success (object ({ { "tracks", ids }, { "total", (int) p.playlistTracks.size() } }));
+             } });
+
+    r.add ({ "playlist.removeTrack", "Apagar raia"_t,
+             schema ({ { "track", "string", true, "Raia: id ou número (1 = a primeira). Os blocos dela saem junto (Ctrl+Z volta)"_t } }), true,
+             [] (CommandContext& c, const juce::var& a)
+             {
+                 auto& p = c.model.data();
+                 const auto id = resolvePlaylistTrack (p, a["track"]);
+
+                 if (p.findPlaylistTrack (id) == nullptr)
+                     return CommandResult::fail ("Raia não encontrada."_t);
+
+                 const auto removed = std::erase_if (p.playlistItems, [&id] (const PlaylistItem& i) { return i.track == id; });
+                 std::erase_if (p.playlistTracks, [&id] (const PlaylistTrack& t) { return t.id == id; });
+                 return CommandResult::success (object ({ { "track", id }, { "itemsRemoved", (int) removed } }));
+             } });
+
     //==========================================================================
     // Marcadores na régua (bloco 1, 22/10): intro, verso, refrão. Clicar pula a agulha; o trecho de um
     // marcador vai até o seguinte (vira loop e trecho de exportação na playlist).

@@ -435,7 +435,7 @@ void runFavoritesSelfTest (SelfTestContext& ctx)
         const auto rackMenu = rack.createAddMenu (rackActions);
         const auto rackTexts = menuTexts (rackMenu);
         const juce::StringArray expectedRack { "#Favoritos", "WHYNOT Teste Synth (VST3)", name808 + " (WHYNOT Synth)", nameKeys + " (WHYNOT Synth)", "-",
-                                               "Sample ou loop (arquivo de áudio)..."_t, "WHYNOT Synth (melodias, baixos e 808)",
+                                               "Sample ou loop (arquivo de áudio)..."_t, "WHYNOT Synth (melodias, baixos e 808)", "WHYNOT Synth 3 OSC (três osciladores, o jeito simples)"_t,
                                                "WHYNOT Piano (piano de cauda gravado)",                // onda 3 (integração de teste)
                                                "Fatiar um beat ou loop (arquivo de áudio)..."_t,       // Fatiar e 808 (integração de teste)
                                                "Instrumentos VST3" };

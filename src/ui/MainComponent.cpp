@@ -111,7 +111,7 @@ MainComponent::MainComponent (AppController& a)
     app.onBeatKey = [this] (const juce::File&) { beatKeyAnalysed(); };
 
     // MIDI learn (bloco 4d): "mexa um knob...", "CC 21 ligado a...", no pé
-    app.onMidiLearnNotice = [this] (const juce::String& text, bool isError) { showStatus (text, isError); };
+    app.onNotice = [this] (const juce::String& text, bool isError) { showStatus (text, isError); };
 
     // a IA (Fase 4): o aviso no pé só aparece com a ponte ligada (--control), pelo setAiHooks
     addChildComponent (aiNotice);
@@ -331,7 +331,7 @@ MainComponent::~MainComponent()
     app.onTogglePanel = nullptr;
     app.onShortcutsChanged = nullptr;
     app.onBeatKey = nullptr;
-    app.onMidiLearnNotice = nullptr;
+    app.onNotice = nullptr;
     app.onPluginsChanged = nullptr;
     app.onScanProgress = nullptr;
     PluginWindow::onClosed = nullptr;

@@ -262,5 +262,6 @@ void addPadsAndTextures (std::vector<Preset>&);
 void addSecondWave (std::vector<Preset>&);
 void addGenreWave (std::vector<Preset>&);
 void addFinalWave (std::vector<Preset>&);
+void add3Osc (std::vector<Preset>&);   // os timbres da página "3 OSC" (26/10)
 
 } // namespace whynot::synth::presets

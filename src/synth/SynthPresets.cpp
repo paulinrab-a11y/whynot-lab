@@ -91,6 +91,7 @@ namespace
         presets::addSecondWave (list);
         presets::addGenreWave (list);
         presets::addFinalWave (list);
+        presets::add3Osc (list);
 
         for (auto& p : list)
         {

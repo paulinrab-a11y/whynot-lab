@@ -1,4 +1,5 @@
 #include "MixerView.h"
+#include "ControlMenu.h"
 #include "MidiLearnMenu.h"
 #include "Fluid.h"
 #include "Theme.h"
@@ -53,8 +54,34 @@ MixerStrip::MixerStrip (AppController& a, const juce::String& id) : app (a), tra
     pan.onValueChange = [this] { app.run ("mixer.setPan", args ({ { "track", trackId }, { "pan", pan.getValue() } })); };
 
     // MIDI learn (bloco 4d): o botão direito no fader ou no pan liga um fader ou knob do controlador
-    fader.onMenu = [this] { midilearn::showMenu (app, MidiLink { 0, 0, "mixer", trackId, {}, "volume" }, "Volume", &fader); };
-    pan.onMenu = [this] { midilearn::showMenu (app, MidiLink { 0, 0, "mixer", trackId, {}, "pan" }, "Pan", &pan); };
+    // o botão direito (26/10, como no FL): voltar ao padrão, automatizar e o controlador MIDI
+    auto controlMenu = [this] (const juce::String& param, juce::Component* anchor)
+    {
+        const bool isVolume = param == "volume";
+        auto actions = std::make_shared<std::vector<std::function<void()>>>();
+        auto add = [&actions] (std::function<void()> f) { actions->push_back (std::move (f)); return (int) actions->size(); };
+        const auto* m = app.getModel().get().findMixer (trackId);
+        juce::PopupMenu menu;
+        menu.addSectionHeader (isVolume ? juce::String ("VOLUME") : juce::String ("PAN"));
+        menu.addItem (add ([this, isVolume]
+                           {
+                               app.run (isVolume ? "mixer.setVolume" : "mixer.setPan",
+                                        isVolume ? args ({ { "track", trackId }, { "db", 0.0 } }) : args ({ { "track", trackId }, { "pan", 0.0 } }));
+                           }),
+                      isVolume ? "Voltar ao padrão (0 dB)"_t : "Voltar ao centro"_t,
+                      m != nullptr && (isVolume ? m->volumeDb != 0.0f : m->pan != 0.0f));
+        controlmenu::addAutomation (menu, app, AutomationTarget { "mixer", trackId, {}, {}, param }, *actions);
+        menu.addSeparator();
+        midilearn::addItems (menu, app, MidiLink { 0, 0, "mixer", trackId, {}, param }, *actions);
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (anchor), [actions] (int chosen)
+        {
+            if (chosen > 0 && chosen <= (int) actions->size())
+                (*actions)[(size_t) chosen - 1]();
+        });
+    };
+
+    fader.onMenu = [this, controlMenu] { controlMenu ("volume", &fader); };
+    pan.onMenu = [this, controlMenu] { controlMenu ("pan", &pan); };
 
     // Mudo não é laranja: o laranja mostra o que soa (no rack, o hexágono apaga quando o canal está mudo).
     // O M ligado usa a pílula neutra de "escolhido"; o S ligado continua laranja, porque é o que vai soar.

@@ -32,8 +32,10 @@ public:
     void parentHierarchyChanged() override;
     bool keyPressed (const juce::KeyPress&) override;
 
-    /** Abre numa página (0..3) e camada (0..3; 4 = sub). Para capturas e atalhos. */
+    /** Abre numa página (0..4; 4 = "3 OSC") e camada (0..3; 4 = sub). Para capturas e atalhos. */
     void showPage (int page, int layer = 0);
+    static constexpr int simplePage = 4;   // "3 OSC" (26/10): os três primeiros osciladores lado a lado
+    int getPage() const noexcept   { return page; }
 
 private:
     struct Cell  { int param; juce::String caption; int width = ParamControl::cellWidth; };

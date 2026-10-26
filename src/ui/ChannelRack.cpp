@@ -1011,6 +1011,7 @@ juce::PopupMenu ChannelRack::createAddMenu (std::vector<std::function<void()>>& 
 
     menu.addItem (add ([this] { chooseSamples (-1); }), "Sample ou loop (arquivo de áudio)..."_t);
     menu.addItem (add ([this] { addSynth(); }), "WHYNOT Synth (melodias, baixos e 808)");
+    menu.addItem (add ([this] { addSynth ("3osc-init"); }), "WHYNOT Synth 3 OSC (três osciladores, o jeito simples)"_t);
     menu.addItem (add ([this] { addPiano(); }), "WHYNOT Piano (piano de cauda gravado)");
     menu.addItem (add ([this] { chooseBeatToSlice(); }), "Fatiar um beat ou loop (arquivo de áudio)..."_t);
 
@@ -1127,8 +1128,9 @@ void ChannelRack::addSynth (const juce::String& preset)
     if (onChannelSelected) onChannelSelected (channel);
 
     if (onStatus)
-        onStatus (preset.isEmpty() ? "WHYNOT Synth no channel rack. Escolha um preset na janela; duplo clique no nome reabre."_t
-                                   : "WHYNOT Synth com o favorito no channel rack. Duplo clique no nome reabre a janela."_t,
+        onStatus (preset.isEmpty()            ? "WHYNOT Synth no channel rack. Escolha um preset na janela; duplo clique no nome reabre."_t
+                  : preset.startsWith ("3osc") ? "WHYNOT Synth na página 3 OSC: três osciladores lado a lado. Os presets \"3 OSC\" estão na lista."_t
+                                               : "WHYNOT Synth com o favorito no channel rack. Duplo clique no nome reabre a janela."_t,
                   false);
 
     app.run ("plugin.openEditor", args ({ { "channel", channel } }));

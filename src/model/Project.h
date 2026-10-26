@@ -329,6 +329,10 @@ struct MixerTrack
     bool operator== (const MixerTrack&) const = default;
 };
 
+/** Quantas raias a playlist pode ter. As raias só desenham (não tocam nem gastam o motor), então o teto é só uma
+    proteção do arquivo: o FL vai até 500. A playlist cresce sozinha: sempre sobra uma raia vazia no fim (26/10). */
+constexpr int maxPlaylistTracks = 999;
+
 /** Raia visual da playlist (como no FL, não é ligada a canal nem ao mixer). */
 struct PlaylistTrack
 {

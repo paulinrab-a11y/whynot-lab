@@ -1640,6 +1640,9 @@ void PlaylistGrid::showLaneMenu (int index)
     menu.addItem (12, "Mover para cima"_t, index > 0);
     menu.addItem (13, "Mover para baixo"_t, index + 1 < (int) tracks.size());
     menu.addItem (14, "Renomear... (duplo clique)"_t);
+    menu.addItem (15, "Inserir raia acima"_t);
+    menu.addItem (16, "Inserir raia abaixo"_t);
+    menu.addItem (17, "Apagar raia (com os blocos dela)"_t, tracks.size() > 1);
     menu.addSeparator();
     menu.addSectionHeader ("Gravar nesta raia (escolher a entrada já arma)"_t);
 
@@ -1741,6 +1744,10 @@ void PlaylistGrid::laneMenuChoice (const juce::String& laneId, int index, int ch
         result = app.run ("playlist.moveTrack", args ({ { "track", laneId }, { "to", index + (choice == 12 ? 0 : 2) } }));
     else if (choice == 14)
         return renameTrack (index);
+    else if (choice == 15 || choice == 16)
+        result = app.run ("playlist.addTrack", args ({ { "at", index + (choice == 15 ? 1 : 2) } }));
+    else if (choice == 17)
+        result = app.run ("playlist.removeTrack", args ({ { "track", laneId } }));
     else if (choice == 19)
         result = app.run ("playlist.setTrack", args ({ { "track", laneId }, { "color", "" } }));
     else if (juce::isPositiveAndBelow (choice - 20, (int) std::size (laneColours)))

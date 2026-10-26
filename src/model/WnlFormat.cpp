@@ -416,18 +416,36 @@ void normalise (Project& p)
     p.punchIn = juce::jlimit (0, maxTimelineTicks, p.punchIn);
     p.punchOut = juce::jlimit (p.punchIn + ticksPerStep, maxTimelineTicks + ticksPerStep, p.punchOut);
 
-    // playlist: pelo menos 12 raias, com ids fixos e legíveis
-    for (int i = (int) p.playlistTracks.size(); i < 12; ++i)
+    // playlist: pelo menos 12 raias, com ids fixos e legíveis, e sempre uma vazia depois da última usada (26/10: a
+    // playlist cresce sozinha, sem o teto de 12; até maxPlaylistTracks)
+    if ((int) p.playlistTracks.size() > maxPlaylistTracks)
+        p.playlistTracks.resize ((size_t) maxPlaylistTracks);
+
+    auto addLane = [&p]
     {
+        const int n = (int) p.playlistTracks.size() + 1;
         PlaylistTrack t;
-        t.id = "pl_" + juce::String (i + 1).paddedLeft ('0', 2);
+        t.id = "pl_" + juce::String (n).paddedLeft ('0', 2);
 
         while (p.findPlaylistTrack (t.id) != nullptr)
             t.id += "b";
 
-        t.name = "Raia " + juce::String (i + 1);   // em português, como as raias que a gravação cria
+        t.name = "Raia " + juce::String (n);   // em português, como as raias que a gravação cria
         p.playlistTracks.push_back (t);
-    }
+    };
+
+    while ((int) p.playlistTracks.size() < 12)
+        addLane();
+
+    int lastUsed = -1;
+
+    for (int i = 0; i < (int) p.playlistTracks.size(); ++i)
+        for (auto& item : p.playlistItems)
+            if (item.track == p.playlistTracks[(size_t) i].id)
+                lastUsed = i;
+
+    if (lastUsed == (int) p.playlistTracks.size() - 1 && (int) p.playlistTracks.size() < maxPlaylistTracks)
+        addLane();
 
     // gravar voz: a raia só grava por uma trilha do mixer que existe (o master não)
     for (auto& t : p.playlistTracks)

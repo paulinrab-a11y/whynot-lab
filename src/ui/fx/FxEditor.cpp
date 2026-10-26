@@ -1,5 +1,6 @@
 #include "FxEditor.h"
 #include "../../automation/Macros.h"
+#include "../ControlMenu.h"
 #include "../MidiLearnMenu.h"
 #include "../FavoriteStar.h"
 #include "../MainWindow.h"
@@ -392,6 +393,16 @@ void FxEditor::showParamMenu (int index)
     juce::Component::SafePointer<FxEditor> safe (this);
     juce::PopupMenu menu, macroMenu;
     menu.addSectionHeader (fxui::caps (fxui::utf8 (info.params[(size_t) index].name)));
+
+    // como no FL (26/10): voltar ao padrão e automatizar, antes do macro e do controlador
+    if (auto* control = byIndex[(size_t) index])
+    {
+        juce::Component::SafePointer<ParamControl> safeControl (control);
+        menu.addItem (add ([safeControl] { if (safeControl != nullptr) safeControl->resetToDefault(); }), control->resetLabel());
+    }
+
+    controlmenu::addAutomation (menu, app, AutomationTarget { "insert", trackId, {}, insertId, paramId }, *actions);
+    menu.addSeparator();
 
     for (int i = 0; i < maxMacros; ++i)
     {

@@ -801,7 +801,7 @@ static void testCommandPolicy()
 {
     std::printf ("Tabela de risco dos comandos\n");
 
-    CHECK (ruleCount() == 238, "238 comandos classificados: os 220 do main d27a974 (23/10) e os 18 do bloco 4 (playlist, navegador, macros, MIDI learn, áudio para MIDI e camadas por força) (%zu)", ruleCount());
+    CHECK (ruleCount() == 240, "240 comandos classificados: os 220 do main d27a974 (23/10), os 18 do bloco 4 e as 2 das raias sem teto (26/10) (%zu)", ruleCount());
     CHECK (ruleFor ("record.captureMidi").risk == Risk::free && ruleFor ("record.voice").risk == Risk::blocked
            && ruleFor ("record.setMic").risk == Risk::blocked && ruleFor ("favorites.toggle").risk == Risk::confirm,
            "o Capture MIDI é livre; gravar voz e o microfone ficam com a pessoa; os favoritos confirmam");

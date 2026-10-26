@@ -73,6 +73,7 @@ add_test(NAME ideas COMMAND whynot_ideas_tests)
 # "whynot_synth_tests --levels <arquivo>" mede os presets e regrava src/synth/PresetLevels.inc.
 add_executable(whynot_synth_tests
     synth/test_synth.cpp
+    ../src/synth/Presets3Osc.cpp
     ../src/synth/Presets808Bass.cpp
     ../src/synth/PresetsKeys.cpp
     ../src/synth/PresetsFinal.cpp

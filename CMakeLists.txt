@@ -224,6 +224,7 @@ set(WHYNOT_SOURCES
     src/engine/WhynotSynth.cpp
     src/model/WnlFormat.cpp
     src/plugins/PluginCatalog.cpp
+    src/synth/Presets3Osc.cpp
     src/synth/Presets808Bass.cpp
     src/synth/PresetsFinal.cpp
     src/synth/PresetsGenres.cpp
@@ -242,6 +243,7 @@ set(WHYNOT_SOURCES
     src/ui/AutomationLanes.cpp
     src/ui/BeatKeyNotice.cpp
     src/ui/ChannelRack.cpp
+    src/ui/ControlMenu.cpp
     src/ui/Controls.cpp
     src/ui/DeviceSettings.cpp
     src/ui/ExportDialogs.cpp

@@ -150,8 +150,9 @@ public:
     /** O alvo em palavras: "EQ · Ganho agudo (Rack)", "Volume (Kick)", "Brilho (Rack)". */
     juce::String describeMidiTarget (const MidiLink&) const;
 
-    /** O que o MIDI learn diz na tela (aprendendo, ligado, parado). */
-    std::function<void (const juce::String& text, bool isError)> onMidiLearnNotice;
+    /** Um aviso para o pé da janela: o MIDI learn (aprendendo, ligado, parado), a automação criada pelo botão direito. */
+    std::function<void (const juce::String& text, bool isError)> onNotice;
+    void notice (const juce::String& text, bool isError = false)   { if (onNotice) onNotice (text, isError); }
 
     /** Uma análise de beat terminou (thread de mensagem): a tela mostra o aviso e as dicas do piano roll. */
     std::function<void (const juce::File&)> onBeatKey;
@@ -303,7 +304,7 @@ private:
 
     // MIDI learn (bloco 4d): o alvo armado e o gesto aberto pelos CCs (fechado no Housekeeping)
     void serviceMidiLearn();
-    void midiNotice (const juce::String& text, bool isError = false)   { if (onMidiLearnNotice) onMidiLearnNotice (text, isError); }
+    void midiNotice (const juce::String& text, bool isError = false)   { if (onNotice) onNotice (text, isError); }
     bool midiLearning = false, midiGestureOpen = false, inMidiControl = false;
     MidiLink midiLearnFor;
     double midiLearnUntil = 0.0, midiGestureUntil = 0.0, midiGestureSince = 0.0;

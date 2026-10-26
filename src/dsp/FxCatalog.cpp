@@ -4,10 +4,13 @@
 #include "Console.h"
 #include "Denoise.h"
 #include "Dynamics.h"
+#include "DynamicEq.h"
 #include "Enhance.h"
 #include "EqProcessor.h"
 #include "Gate.h"
+#include "Grit.h"
 #include "Master.h"
+#include "Modulation.h"
 #include "Multiband.h"
 #include "Space.h"
 #include "Tune.h"
@@ -38,6 +41,7 @@ std::span<const FxInfo* const> allEffects()
         &DoublerProcessor::staticInfo(),
         &EqProcessor::staticInfo(),
         &VintageEqProcessor::staticInfo(),
+        &DynamicEqProcessor::staticInfo(),
         &GateProcessor::staticInfo(),
         &CompressorProcessor::staticInfo(),
         &OptoProcessor::staticInfo(),
@@ -45,9 +49,14 @@ std::span<const FxInfo* const> allEffects()
         &MultibandProcessor::staticInfo(),
         &DeEsserProcessor::staticInfo(),
         &TransientProcessor::staticInfo(),
+        &ClipperProcessor::staticInfo(),
         &SaturatorProcessor::staticInfo(),
         &BassEnhancerProcessor::staticInfo(),
         &FilterProcessor::staticInfo(),
+        &LofiProcessor::staticInfo(),
+        &ChorusProcessor::staticInfo(),
+        &FlangerProcessor::staticInfo(),
+        &PhaserProcessor::staticInfo(),
         &ReverbProcessor::staticInfo(),
         &DelayProcessor::staticInfo(),
         &StereoProcessor::staticInfo(),
@@ -93,6 +102,12 @@ std::unique_ptr<Processor> createProcessor (std::string_view type)
     if (type == "vintageEq") return std::make_unique<VintageEqProcessor>();
     if (type == "voicepitch") return std::make_unique<VoicePitchProcessor>();
     if (type == "harmony")   return std::make_unique<HarmonyProcessor>();
+    if (type == "dynEq")     return std::make_unique<DynamicEqProcessor>();
+    if (type == "clipper")   return std::make_unique<ClipperProcessor>();
+    if (type == "lofi")      return std::make_unique<LofiProcessor>();
+    if (type == "chorus")    return std::make_unique<ChorusProcessor>();
+    if (type == "flanger")   return std::make_unique<FlangerProcessor>();
+    if (type == "phaser")    return std::make_unique<PhaserProcessor>();
     return nullptr;
 }
 
@@ -519,6 +534,86 @@ std::span<const Preset> allPresets()
           WHYNOT_VALUES ({ "lowFreq", 1 }, { "lowBoost", 2 }, { "lowAtten", 1.5f }, { "highFreq", 5 }, { "highBoost", 2 }, { "highWidth", 9 }) },
         { "vintageEq", "beat-dark", "Beat escuro (lo-fi)", "Agudo atenuado a partir de 5 kHz.",
           WHYNOT_VALUES ({ "airFreq", 0 }, { "highAtten", 5 }) },
+
+        // EQ dinâmico (26/10) ---------------------------------------------------
+        { "dynEq", "808-mud", "808 sem embolar", "Corta 220 Hz só nas notas que embolam; as outras passam inteiras.",
+          WHYNOT_VALUES ({ "b1Freq", 220 }, { "b1Q", 1.5f }, { "b1Thr", -22 }, { "b1Range", -6 }, { "b2On", 0 }) },
+        { "dynEq", "vocal-harsh", "Voz sem furar", "Segura 3,5 kHz só nas sílabas que furam o ouvido.",
+          WHYNOT_VALUES ({ "b1On", 0 }, { "b2Freq", 3500 }, { "b2Q", 2.5f }, { "b2Thr", -30 }, { "b2Range", -6 }, { "attack", 2 },
+                         { "release", 80 }) },
+        { "dynEq", "vocal-body", "Voz: corpo e sibilo", "Menos embolado quando a voz engrossa e menos chiado no S.",
+          WHYNOT_VALUES ({ "b1Freq", 300 }, { "b1Thr", -26 }, { "b1Range", -4 }, { "b2Freq", 6500 }, { "b2Q", 3 }, { "b2Thr", -32 },
+                         { "b2Range", -6 }, { "attack", 1 }, { "release", 60 }) },
+        { "dynEq", "beat-for-vocal", "Beat abre para a voz", "No beat, com o sidechain ligado na voz: 2,5 kHz desce só quando ela canta.",
+          WHYNOT_VALUES ({ "b1Freq", 2500 }, { "b1Q", 1 }, { "b1Thr", -36 }, { "b1Range", -4 }, { "b2On", 0 }, { "attack", 10 },
+                         { "release", 200 }) },
+        { "dynEq", "master-tame", "Master: grave e agudo no lugar", "Segura o grave e o agudo só nos trechos em que eles sobram.",
+          WHYNOT_VALUES ({ "b1Freq", 120 }, { "b1Q", 0.8f }, { "b1Thr", -18 }, { "b1Range", -3 }, { "b2Freq", 4000 }, { "b2Q", 1.5f },
+                         { "b2Thr", -24 }, { "b2Range", -3 }, { "ratio", 2 }, { "attack", 10 }, { "release", 200 }) },
+
+        // Clipper (26/10) -------------------------------------------------------
+        { "clipper", "drums-punch", "Bateria com soco", "Corta só a ponta do kick e da caixa: mais volume, mesmo soco.",
+          WHYNOT_VALUES ({ "gain", 4 }, { "ceiling", -1 }, { "softness", 20 }) },
+        { "clipper", "808-loud", "808 alto", "O 808 sobe sem o limitador bombear o resto.",
+          WHYNOT_VALUES ({ "gain", 6 }, { "ceiling", -2 }, { "softness", 40 }) },
+        { "clipper", "master", "Master antes do limitador", "Tira os picos antes do limitador, para ele trabalhar menos.",
+          WHYNOT_VALUES ({ "gain", 2 }, { "ceiling", -1 }, { "softness", 50 }) },
+        { "clipper", "hard", "Trap agressivo", "Corte reto e bastante entrada: alto e sujo de propósito.",
+          WHYNOT_VALUES ({ "gain", 8 }, { "ceiling", -1 }, { "softness", 0 }) },
+        { "clipper", "warm", "Corte quente", "Corte arredondado: mais perto de uma saturação.",
+          WHYNOT_VALUES ({ "gain", 5 }, { "ceiling", -2 }, { "softness", 100 }) },
+
+        // Lo-fi (26/10) ---------------------------------------------------------
+        { "lofi", "cassette", "Fita cassete", "Fita oscilando, um pouco de chiado e o agudo gasto.",
+          WHYNOT_VALUES ({ "bits", 14 }, { "rate", 32000 }, { "wow", 35 }, { "tone", 7000 }, { "noise", 20 }) },
+        { "lofi", "sampler-90", "Sampler dos anos 90", "12 bits e menos amostras: o grão do boom bap.",
+          WHYNOT_VALUES ({ "bits", 12 }, { "rate", 26000 }, { "wow", 0 }, { "tone", 11000 }, { "noise", 5 }) },
+        { "lofi", "dusty-piano", "Piano empoeirado", "Para sample de piano e Rhodes no lo-fi.",
+          WHYNOT_VALUES ({ "bits", 11 }, { "rate", 20000 }, { "wow", 25 }, { "tone", 5000 }, { "noise", 25 }) },
+        { "lofi", "radio", "Rádio velho", "Pouco brilho, pouca taxa e chiado.",
+          WHYNOT_VALUES ({ "bits", 10 }, { "rate", 11025 }, { "wow", 10 }, { "tone", 3500 }, { "noise", 30 }) },
+        { "lofi", "game", "Videogame", "5 bits e 8 kHz, sem fita nem chiado.",
+          WHYNOT_VALUES ({ "bits", 5 }, { "rate", 8000 }, { "wow", 0 }, { "tone", 12000 }, { "noise", 0 }) },
+        { "lofi", "texture", "Textura por trás", "Só um pouco do som gasto misturado no limpo.",
+          WHYNOT_VALUES ({ "bits", 10 }, { "rate", 16000 }, { "wow", 40 }, { "tone", 6000 }, { "noise", 30 }, { "mix", 35 }) },
+
+        // Chorus (26/10) --------------------------------------------------------
+        { "chorus", "soft", "Suave", "Engrossa sem desafinar.",
+          WHYNOT_VALUES ({ "rate", 0.6f }, { "depth", 35 }, { "delay", 12 }, { "mix", 35 }) },
+        { "chorus", "pad-wide", "Pad largo", "Quatro cópias abertas para pad e acorde.",
+          WHYNOT_VALUES ({ "rate", 0.4f }, { "depth", 60 }, { "delay", 18 }, { "voices", 1 }, { "mix", 50 }) },
+        { "chorus", "clean-guitar", "Guitarra limpa", "O chorus clássico de guitarra limpa.",
+          WHYNOT_VALUES ({ "rate", 0.9f }, { "depth", 50 }, { "delay", 10 }, { "mix", 45 }) },
+        { "chorus", "keys", "Rhodes", "Ondulação mais rápida e menos brilho nas cópias.",
+          WHYNOT_VALUES ({ "rate", 1.2f }, { "depth", 40 }, { "delay", 8 }, { "tone", 8000 }, { "mix", 40 }) },
+        { "chorus", "backing", "Backing vocal", "Abre o backing nos lados, atrás da voz principal.",
+          WHYNOT_VALUES ({ "rate", 0.5f }, { "depth", 30 }, { "delay", 20 }, { "voices", 1 }, { "tone", 9000 }, { "mix", 30 }) },
+        { "chorus", "vibrato", "Vibrato", "Só a cópia, rápida e no centro: o tom treme.",
+          WHYNOT_VALUES ({ "rate", 5 }, { "depth", 40 }, { "delay", 8 }, { "width", 0 }, { "mix", 100 }) },
+
+        // Flanger (26/10) -------------------------------------------------------
+        { "flanger", "jet", "Avião", "Varredura lenta e funda, com realimentação.",
+          WHYNOT_VALUES ({ "rate", 0.12f }, { "depth", 85 }, { "delay", 0.5f }, { "feedback", 70 }) },
+        { "flanger", "hat-swirl", "Hat girando", "O hat roda de um lado para o outro.",
+          WHYNOT_VALUES ({ "rate", 0.5f }, { "depth", 60 }, { "feedback", 40 }, { "stereo", 120 }, { "mix", 40 }) },
+        { "flanger", "metal", "Metálico", "Realimentação alta: som de metal.",
+          WHYNOT_VALUES ({ "rate", 0.25f }, { "depth", 50 }, { "delay", 2 }, { "feedback", 85 }) },
+        { "flanger", "hollow", "Oco", "Realimentação negativa: som de tubo.",
+          WHYNOT_VALUES ({ "rate", 0.3f }, { "depth", 70 }, { "delay", 1.5f }, { "feedback", -70 }) },
+        { "flanger", "subtle", "Leve", "Só um movimento por trás.",
+          WHYNOT_VALUES ({ "rate", 0.2f }, { "depth", 40 }, { "delay", 2 }, { "feedback", 20 }, { "mix", 30 }) },
+
+        // Phaser (26/10) --------------------------------------------------------
+        { "phaser", "classic", "Clássico de 4", "Quatro estágios: o phaser suave dos anos 70.",
+          WHYNOT_VALUES ({ "stages", 0 }, { "rate", 0.5f }, { "depth", 70 }, { "centre", 700 }, { "feedback", 20 }) },
+        { "phaser", "keys", "Rhodes", "Movimento leve para teclado elétrico.",
+          WHYNOT_VALUES ({ "stages", 0 }, { "rate", 0.8f }, { "depth", 55 }, { "centre", 900 }, { "feedback", 10 }, { "mix", 45 }) },
+        { "phaser", "slow-pad", "Pad lento", "Uma volta a cada 12 segundos, para pad e textura.",
+          WHYNOT_VALUES ({ "stages", 2 }, { "rate", 0.08f }, { "depth", 90 }, { "centre", 600 }, { "feedback", 40 }) },
+        { "phaser", "deep", "Fundo (12 estágios)", "Muitos vales e realimentação: intenso.",
+          WHYNOT_VALUES ({ "stages", 3 }, { "rate", 0.3f }, { "depth", 80 }, { "centre", 1000 }, { "feedback", 60 }) },
+        { "phaser", "funk-guitar", "Guitarra funk", "Rápido e no médio, para guitarra e synth.",
+          WHYNOT_VALUES ({ "rate", 2 }, { "depth", 60 }, { "centre", 1200 }, { "feedback", 35 }) },
     };
 
     return presets;

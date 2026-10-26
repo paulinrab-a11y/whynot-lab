@@ -98,6 +98,20 @@ namespace
             return { { "GRAVE", { "lowFreq:FREQ.", "lowBoost:REFORÇO", "lowAtten:ATENUA" } },
                      { "AGUDO", { "highFreq:FREQ.", "highBoost:REFORÇO", "highWidth:LARGURA" } },
                      { "AR E SAÍDA", { "airFreq:CORTE EM", "highAtten:ATENUA", "output" } } };
+        if (type == "dynEq")
+            return { { "BANDA 1", { "b1On:LIGA", "b1Freq:FREQ.", "b1Q:Q", "b1Thr:LIMIAR", "b1Range:FAIXA" } },
+                     { "BANDA 2", { "b2On:LIGA", "b2Freq:FREQ.", "b2Q:Q", "b2Thr:LIMIAR", "b2Range:FAIXA" } },
+                     { "TEMPO", { "ratio", "attack", "release" } }, { "SAÍDA", { "output" } } };
+        if (type == "clipper")
+            return { { "CORTE", { "gain", "ceiling", "softness" } }, { "SAÍDA", { "output" } } };
+        if (type == "lofi")
+            return { { "DIGITAL", { "bits", "rate" } }, { "FITA", { "wow", "noise" } }, { "SAÍDA", { "tone", "mix" } } };
+        if (type == "chorus")
+            return { { "MOVIMENTO", { "rate", "depth", "delay" } }, { "CÓPIAS", { "voices", "width", "tone:BRILHO" } }, { "SAÍDA", { "mix" } } };
+        if (type == "flanger")
+            return { { "MOVIMENTO", { "rate", "depth", "delay" } }, { "COR", { "feedback", "stereo" } }, { "SAÍDA", { "mix" } } };
+        if (type == "phaser")
+            return { { "FILTROS", { "stages", "centre" } }, { "MOVIMENTO", { "rate", "depth", "stereo" } }, { "SAÍDA", { "feedback", "mix" } } };
 
         return {};
     }

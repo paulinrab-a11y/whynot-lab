@@ -30,8 +30,8 @@ void runMixingSelfTest (SelfTestContext& ctx)
         // Entrega 3.3: efeitos nativos e estilos de mixagem, em cima da música de demonstração.
         rep.section ("Mixagem: efeitos nativos");
         const auto listed = app.run ("fx.list");
-        rep.check (listed.ok && listed.value["effects"].size() == 24 && listed.value["styles"].size() == 4,
-                   "fx.list descreve 24 efeitos e 4 estilos ("_t + juce::String (listed.value["effects"].size()) + " / "
+        rep.check (listed.ok && listed.value["effects"].size() == 30 && listed.value["styles"].size() == 4,
+                   "fx.list descreve 30 efeitos e 4 estilos ("_t + juce::String (listed.value["effects"].size()) + " / "
                        + juce::String (listed.value["styles"].size()) + ")");
 
         auto trackOf = [&model] (const juce::String& name)
@@ -430,7 +430,11 @@ void runMixingSelfTest (SelfTestContext& ctx)
             const Probe probes[] = { { "gate", args ({ { "range", 0.0 } }) }, { "fet", args ({ { "threshold", 0.0 }, { "color", 0.0 } }) },
                                      { "console", args ({ { "output", 0.0 } }) }, { "denoise", args ({ { "reduction", 0.0 } }) },
                                      { "voicepitch", args ({ { "semitones", 0.0 } }) }, { "harmony", args ({ { "level", 0.0 } }) },
-                                     { "sat", args ({ { "mix", 0.0 } }) }, { "tune", args ({ { "amount", 0.0 }, { "mix", 0.0 } }) } };
+                                     { "sat", args ({ { "mix", 0.0 } }) }, { "tune", args ({ { "amount", 0.0 }, { "mix", 0.0 } }) },
+                                     // 26/10: o clipper abaixo do teto e o lo-fi sem mistura têm latência; os outros, não
+                                     { "clipper", args ({ { "gain", 0.0 } }) }, { "lofi", args ({ { "mix", 0.0 } }) },
+                                     { "chorus", args ({ { "mix", 0.0 } }) }, { "flanger", args ({ { "mix", 0.0 } }) },
+                                     { "phaser", args ({ { "mix", 0.0 } }) }, { "dynEq", args ({ { "b1On", 0.0 }, { "b2On", 0.0 } }) } };
 
             for (auto& pr : probes)
             {
@@ -459,7 +463,8 @@ void runMixingSelfTest (SelfTestContext& ctx)
 
                 // O sat em mistura 0 passa o seco pelo sobreamostrador dele (filtros de fase não linear, efeito
                 // de antes desta frente): sai alinhado, mas não igual bit a bit (0,5% no Bell).
-                const float tolerance = juce::String (pr.type) == "sat" ? 1.0e-2f : 2.0e-3f;
+                // O clipper também passa pelo sobreamostrador.
+                const float tolerance = juce::String (pr.type) == "sat" || juce::String (pr.type) == "clipper" ? 1.0e-2f : 2.0e-3f;
                 rep.check (added.ok && lag == 0 && diff < tolerance,
                            juce::String (pr.type) + " neutro: o render sai alinhado com o seco (atraso medido "_t + juce::String (lag)
                                + " amostras, diferença máx. " + juce::String (diff, 6) + " depois de 1024 amostras"_t
@@ -473,7 +478,10 @@ void runMixingSelfTest (SelfTestContext& ctx)
         const Case cases[] = { { "gate", "vocal-tight" }, { "opto", "vocal-smooth" }, { "fet", "rap-front" }, { "multiband", "vocal-harsh" },
                                { "leveler", "vocal-rap" }, { "doubler", "double-wide" }, { "bassplus", "808-phone" },
                                { "denoise", "home-light" }, { "console", "vocal-rap" }, { "vintageEq", "vocal-air" },
-                               { "voicepitch", "deep" }, { "harmony", "chord" } };
+                               { "voicepitch", "deep" }, { "harmony", "chord" },
+                               // 26/10 (o lo-fi sem a fita oscilando, para a correlação com o seco medir o alinhamento)
+                               { "dynEq", "vocal-body" }, { "clipper", "drums-punch" }, { "lofi", "sampler-90" },
+                               { "chorus", "soft" }, { "flanger", "subtle" }, { "phaser", "keys" } };
         int shots = 0;
 
         for (auto& cs : cases)

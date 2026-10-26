@@ -6,13 +6,16 @@
 #include "../../src/dsp/Console.h"
 #include "../../src/dsp/Denoise.h"
 #include "../../src/dsp/Dynamics.h"
+#include "../../src/dsp/DynamicEq.h"
 #include "../../src/dsp/Enhance.h"
 #include "../../src/dsp/EqProcessor.h"
 #include "../../src/dsp/FxCatalog.h"
 #include "../../src/dsp/FxHost.h"
 #include "../../src/dsp/Gate.h"
+#include "../../src/dsp/Grit.h"
 #include "../../src/dsp/LoudnessMeter.h"
 #include "../../src/dsp/Master.h"
+#include "../../src/dsp/Modulation.h"
 #include "../../src/dsp/Multiband.h"
 #include "../../src/dsp/Space.h"
 #include "../../src/dsp/Tune.h"
@@ -844,7 +847,7 @@ static void testCatalog()
 {
     std::printf ("Catálogo, presets e estilos\n");
 
-    CHECK (allEffects().size() == 24, "24 efeitos nativos (%d)", (int) allEffects().size());
+    CHECK (allEffects().size() == 30, "30 efeitos nativos (%d)", (int) allEffects().size());
 
     // O menu do mixer abre uma seção por categoria nova: cada categoria vem junta na lista.
     {
@@ -2349,6 +2352,379 @@ static void testHarmony()
     }
 }
 
+//==============================================================================
+// Os efeitos de 26/10: clipper, lo-fi, chorus, flanger, phaser e EQ dinâmico.
+
+static void testEffects2610()
+{
+    std::printf ("Efeitos de 26/10 (clipper, lo-fi, chorus, flanger, phaser, EQ dinâmico)\n");
+
+    // A diferença máxima entre `out` e `in` atrasado `lag` amostras, a partir de `from`.
+    auto worstDiff = [] (const std::vector<float>& out, const std::vector<float>& in, int lag, size_t from)
+    {
+        double worst = 0.0;
+
+        for (size_t i = from; i < out.size(); ++i)
+            worst = std::max (worst, (double) std::abs (out[i] - in[i - (size_t) lag]));
+
+        return worst;
+    };
+
+    // Clipper ------------------------------------------------------------------
+    {
+        auto h = makeHost ("clipper");
+        const auto in = sine (200.0, 0.25, 48000);
+        auto l = in, r = in;
+        run (*h, l, r);
+        const double d = worstDiff (l, in, h->latencySamples(), 4800);
+        CHECK (h->latencySamples() > 0 && d < 2.0e-3, "clipper abaixo do teto: o som sai igual, atrasado as %d amostras informadas (diferença %.1e)",
+               h->latencySamples(), d);
+    }
+    {
+        auto h = makeHost ("clipper");
+        setByName (*h, "gain", 12.0f);
+        setByName (*h, "ceiling", -6.0f);
+        setByName (*h, "softness", 0.0f);
+        auto l = sine (100.0, 1.0, 48000), r = l;
+        run (*h, l, r);
+        const double pk = db (peak (l, 4800));
+        CHECK (pk < -5.5 && pk > -6.6, "clipper: +12 dB contra o teto de -6 dB sai com pico de %.2f dB", pk);
+        CHECK (h->processor().meter (ClipperProcessor::clipping) > 10.0f, "o medidor do clipper mostra %.1f dB cortados",
+               h->processor().meter (ClipperProcessor::clipping));
+    }
+    {
+        // 7 kHz cortado reto: o 5º harmônico (35 kHz) voltaria dobrado em 13 kHz sem a sobreamostragem.
+        auto h = makeHost ("clipper");
+        setByName (*h, "gain", 12.0f);
+        setByName (*h, "softness", 0.0f);
+        auto l = sine (7000.0, 1.0, 48000), r = l;
+        run (*h, l, r);
+        const double fundamental = toneAmplitude (l, 7000.0, 4800, 48000), alias = toneAmplitude (l, 13000.0, 4800, 48000);
+        CHECK (db (alias / fundamental) < -40.0, "clipper sobreamostrado: o dobrado em 13 kHz fica a %.1f dB do 7 kHz", db (alias / fundamental));
+    }
+    CHECK (ClipperProcessor::clip (0.5f, 1.0f, 0.3f) == 0.5f && ClipperProcessor::clip (5.0f, 0.5f, 1.0f) <= 0.5f
+               && ClipperProcessor::clip (-5.0f, 0.5f, 0.0f) == -0.5f,
+           "a curva do clipper: passa igual abaixo da quina e nunca passa do teto");
+
+    // Lo-fi --------------------------------------------------------------------
+    {
+        auto h = makeHost ("lofi");
+        setByName (*h, "mix", 0.0f);
+        const auto in = whiteNoise (48000, 0.1, 31);
+        auto l = in, r = in;
+        run (*h, l, r);
+        const double d = worstDiff (l, in, h->latencySamples(), 24000);
+        CHECK (h->latencySamples() == 288 && d < 1.0e-6, "lo-fi em mistura 0: o seco sai alinhado na latência de %d amostras (diferença %.1e)",
+               h->latencySamples(), d);
+    }
+    auto lofiResidual = [&] (float bits)
+    {
+        auto h = makeHost ("lofi");
+        setByName (*h, "bits", bits);
+        setByName (*h, "rate", 48000.0f);
+        setByName (*h, "wow", 0.0f);
+        setByName (*h, "tone", 20000.0f);
+        setByName (*h, "noise", 0.0f);
+        const auto in = sine (1000.0, 0.5, 48000);
+        auto l = in, r = in;
+        run (*h, l, r);
+        double acc = 0.0;
+        int n = 0;
+
+        for (size_t i = 24000; i < l.size(); ++i, ++n)
+        {
+            const double e = l[i] - in[i - (size_t) h->latencySamples()];
+            acc += e * e;
+        }
+
+        return db (std::sqrt (acc / n));
+    };
+    const double res16 = lofiResidual (16.0f), res6 = lofiResidual (6.0f);
+    CHECK (res16 < -95.0 && res6 > -50.0 && res6 < -35.0, "lo-fi: o erro dos bits é %.1f dB com 16 bits e %.1f dB com 6", res16, res6);
+    {
+        auto h = makeHost ("lofi");
+        setByName (*h, "rate", 8000.0f);
+        setByName (*h, "bits", 16.0f);
+        setByName (*h, "wow", 0.0f);
+        setByName (*h, "tone", 20000.0f);
+        setByName (*h, "noise", 0.0f);
+        auto l = sine (1000.0, 0.5, 48000), r = l;
+        run (*h, l, r);
+        const double image = toneAmplitude (l, 7000.0, 9600, 48000) / toneAmplitude (l, 1000.0, 9600, 48000);
+        CHECK (db (image) > -30.0, "lo-fi a 8 kHz: o serrilhado aparece em 7 kHz, a %.1f dB do tom", db (image));
+    }
+    {
+        auto h = makeHost ("lofi", "cassette");
+        auto l = sine (440.0, 0.5, 48000), r = l;
+        l.resize (48000 * 4, 0.0f);
+        r.resize (48000 * 4, 0.0f);
+        run (*h, l, r);
+        bool silentAtEnd = true;
+
+        for (size_t i = 48000 * 3; i < l.size(); ++i)
+            silentAtEnd &= l[i] == 0.0f && r[i] == 0.0f;
+
+        CHECK (silentAtEnd, "lo-fi: o chiado acompanha o som e some no silêncio (o último segundo sai zerado)");
+    }
+
+    // Chorus -------------------------------------------------------------------
+    {
+        auto h = makeHost ("chorus");
+        setByName (*h, "mix", 0.0f);
+        const auto in = whiteNoise (48000, 0.1, 32);
+        auto l = in, r = in;
+        run (*h, l, r);
+        CHECK (worstDiff (l, in, 0, 24000) == 0.0, "chorus em mistura 0: o som passa igual, sem latência");
+    }
+    auto correlation = [] (const std::vector<float>& a, const std::vector<float>& b, size_t from)
+    {
+        double ab = 0.0, aa = 0.0, bb = 0.0;
+
+        for (size_t i = from; i < a.size(); ++i)
+        {
+            ab += (double) a[i] * b[i];
+            aa += (double) a[i] * a[i];
+            bb += (double) b[i] * b[i];
+        }
+
+        return ab / std::sqrt (aa * bb + 1.0e-30);
+    };
+    {
+        auto h = makeHost ("chorus", "pad-wide");
+        auto l = whiteNoise (48000 * 2, 0.1, 33), r = l;
+        run (*h, l, r);
+        const double c = correlation (l, r, 24000);
+        CHECK (c < 0.9 && peak (l) < 1.5, "chorus abre o estéreo de um som mono: correlação %.2f, pico %.2f", c, peak (l));
+    }
+
+    // Flanger ------------------------------------------------------------------
+    {
+        // Sem varredura nem realimentação, 1 ms de atraso a 50%: vale em 500 Hz, cheio em 1 kHz.
+        auto comb = [&] (double freq)
+        {
+            auto h = makeHost ("flanger");
+            setByName (*h, "depth", 0.0f);
+            setByName (*h, "delay", 1.0f);
+            setByName (*h, "feedback", 0.0f);
+            setByName (*h, "mix", 50.0f);
+            auto l = sine (freq, 0.5, 48000), r = l;
+            run (*h, l, r);
+            return db (toneAmplitude (l, freq, 9600, 48000) / 0.5);
+        };
+        const double notch = comb (500.0), full = comb (1000.0);
+        CHECK (notch < -30.0 && std::abs (full) < 0.5, "flanger de 1 ms: %.1f dB em 500 Hz (vale) e %.2f dB em 1 kHz", notch, full);
+    }
+    {
+        auto h = makeHost ("flanger");
+        setByName (*h, "feedback", 95.0f);
+        auto l = whiteNoise (48000 * 2, 0.1, 34), r = l;
+        run (*h, l, r);
+        CHECK (peak (l) < 10.0, "flanger com 95%% de realimentação não dispara (pico %.2f)", peak (l));
+    }
+    {
+        auto h = makeHost ("flanger");
+        setByName (*h, "mix", 0.0f);
+        const auto in = whiteNoise (48000, 0.1, 35);
+        auto l = in, r = in;
+        run (*h, l, r);
+        CHECK (worstDiff (l, in, 0, 24000) == 0.0, "flanger em mistura 0: o som passa igual, sem latência");
+    }
+
+    // Phaser -------------------------------------------------------------------
+    {
+        // 4 estágios parados em 1 kHz: a fase dá -180° em 414 Hz (cada estágio -45°) e a soma cancela.
+        auto phaser = [&] (double freq)
+        {
+            auto h = makeHost ("phaser");
+            setByName (*h, "stages", 0.0f);
+            setByName (*h, "depth", 0.0f);
+            setByName (*h, "centre", 1000.0f);
+            setByName (*h, "feedback", 0.0f);
+            setByName (*h, "mix", 50.0f);
+            auto l = sine (freq, 0.5, 48000), r = l;
+            run (*h, l, r);
+            return db (toneAmplitude (l, freq, 9600, 48000) / 0.5);
+        };
+        const double notch = phaser (414.2), full = phaser (1000.0);
+        CHECK (notch < -25.0 && std::abs (full) < 0.5, "phaser de 4 estágios em 1 kHz: %.1f dB em 414 Hz (vale) e %.2f dB em 1 kHz", notch, full);
+    }
+    {
+        auto h = makeHost ("phaser", "deep");
+        setByName (*h, "feedback", 90.0f);
+        auto l = whiteNoise (48000 * 2, 0.1, 36), r = l;
+        run (*h, l, r);
+        CHECK (peak (l) < 10.0, "phaser de 12 estágios com 90%% de realimentação não dispara (pico %.2f)", peak (l));
+    }
+    {
+        auto h = makeHost ("phaser");
+        setByName (*h, "mix", 0.0f);
+        const auto in = whiteNoise (48000, 0.1, 37);
+        auto l = in, r = in;
+        run (*h, l, r);
+        CHECK (worstDiff (l, in, 0, 24000) == 0.0, "phaser em mistura 0: o som passa igual, sem latência");
+    }
+
+    // EQ dinâmico --------------------------------------------------------------
+    auto dynEq = [&] (double freq, double amplitude, const std::vector<float>* side = nullptr, double sideAmplitude = 0.0)
+    {
+        auto h = makeHost ("dynEq");
+        setByName (*h, "b1Freq", 220.0f);
+        setByName (*h, "b1Thr", -24.0f);
+        setByName (*h, "b1Range", -6.0f);
+        setByName (*h, "ratio", 10.0f);
+        setByName (*h, "b2On", 0.0f);
+        const auto in = sine (freq, amplitude, 48000);
+        auto l = in, r = in;
+        std::vector<float> sl, sr;
+
+        if (side != nullptr)
+        {
+            sl = *side;
+            for (auto& v : sl)
+                v *= (float) sideAmplitude;
+            sr = sl;
+        }
+
+        run (*h, l, r, side != nullptr ? &sl : nullptr, side != nullptr ? &sr : nullptr);
+        struct Result { double changeDb; double diff; float meter; };
+        return Result { db (toneAmplitude (l, freq, 24000, 48000) / amplitude), worstDiff (l, in, 0, 0),
+                        h->processor().meter (DynamicEqProcessor::band1Gain) };
+    };
+    {
+        const auto loud = dynEq (220.0, 0.5), quiet = dynEq (220.0, 0.01), other = dynEq (2000.0, 0.5);
+        CHECK (loud.changeDb < -5.5 && loud.changeDb > -6.5 && loud.meter < -5.5f,
+               "EQ dinâmico: 220 Hz a -6 dBFS acima do limiar desce %.2f dB (a faixa é -6; o medidor diz %.1f)", loud.changeDb, loud.meter);
+        CHECK (quiet.diff == 0.0, "abaixo do limiar o som passa idêntico (diferença %.1e)", quiet.diff);
+        CHECK (std::abs (other.changeDb) < 0.05, "2 kHz alto não dispara a banda de 220 Hz (%.3f dB)", other.changeDb);
+
+        const auto voice = sine (220.0, 1.0, 48000);
+        const auto keyed = dynEq (220.0, 0.01, &voice, 0.5);
+        CHECK (keyed.changeDb < -5.5, "com sidechain, o disparo vem da outra trilha: o 220 Hz baixo desce %.2f dB", keyed.changeDb);
+    }
+    // Os achados da revisão de 26/10 -----------------------------------------
+    {
+        // O teto vale depois da volta da sobreamostragem, também num agudo cortado reto.
+        auto h = makeHost ("clipper");
+        setByName (*h, "gain", 12.0f);
+        setByName (*h, "softness", 0.0f);
+        auto l = sine (12000.0, 1.0, 48000), r = l;
+        run (*h, l, r);
+        CHECK (db (peak (l, 4800)) < 2.5, "clipper: 12 kHz com +12 dB contra o teto de 0 dB passa %.2f dB do teto (o texto promete até 2 dB)",
+               db (peak (l, 4800)));
+    }
+    {
+        // O chorus não sobe o volume: grave em fase, largura 0 e só as cópias.
+        auto level = [&] (float width, float voices)
+        {
+            auto h = makeHost ("chorus");
+            setByName (*h, "width", width);
+            setByName (*h, "voices", voices);
+            setByName (*h, "mix", 100.0f);
+            setByName (*h, "tone", 20000.0f);
+            auto l = sine (60.0, 0.5, 48000 * 2), r = l;
+            run (*h, l, r);
+            return db (rms (l, 48000) / rms (sine (60.0, 0.5, 48000 * 2), 48000));
+        };
+        const double narrow = level (0.0f, 1.0f), wide = level (100.0f, 0.0f);
+        CHECK (narrow < 0.5 && narrow > -4.0 && std::abs (wide) < 0.5,
+               "chorus no grave não sobe o volume: %.2f dB (largura 0, 4 cópias, fora de fase entre si) e %.2f dB (largura 100)", narrow, wide);
+    }
+    {
+        // Realimentação no máximo: o pico da ressonância fica abaixo de +14 dB (sem a compensação, +26 dB).
+        auto h = makeHost ("flanger");
+        setByName (*h, "depth", 0.0f);
+        setByName (*h, "delay", 1.0f);
+        setByName (*h, "feedback", 95.0f);
+        auto l = sine (1000.0, 0.1, 48000 * 2), r = l;
+        run (*h, l, r);
+        const double gain = db (peak (l, 48000) / 0.1);
+        CHECK (gain < 14.0, "flanger com 95%% de realimentação: a ressonância sobe %.1f dB (era +26)", gain);
+    }
+    {
+        // Trocar os estágios do phaser tocando: nenhum salto maior que o do próprio som.
+        auto h = makeHost ("phaser");
+        setByName (*h, "mix", 100.0f);
+        setByName (*h, "feedback", 0.0f);
+        auto l = sine (300.0, 0.5, 48000), r = l;
+        double worstJump = 0.0;
+
+        for (size_t start = 0; start < l.size(); start += block)
+        {
+            if (start == 24064)
+                h->setParam (h->info().indexOf ("stages"), 3.0f);
+
+            h->process (l.data() + start, r.data() + start, (int) std::min<size_t> (block, l.size() - start), nullptr, nullptr);
+        }
+
+        for (size_t i = 24000; i < 26000; ++i)
+            worstJump = std::max (worstJump, (double) std::abs (l[i] - l[i - 1]));
+
+        const double sineStep = 0.5 * 2.0 * pi * 300.0 / rate;
+        CHECK (worstJump < 1.2 * sineStep, "phaser: de 6 para 12 estágios tocando, o maior passo entre amostras é %.4f (o do seno, %.4f)",
+               worstJump, sineStep);
+
+        float v[PhaserProcessor::count];
+        for (int i = 0; i < PhaserProcessor::count; ++i)
+            v[i] = PhaserProcessor::staticInfo().params[(size_t) i].def;
+        v[PhaserProcessor::centre] = 150.0f;
+        v[PhaserProcessor::depth] = 100.0f;
+        v[PhaserProcessor::stages] = 3.0f;
+        v[PhaserProcessor::feedback] = 90.0f;
+        auto p = createProcessor ("phaser");
+        const double tail = p->tailSecondsFor (v);
+        CHECK (tail > 1.0 && tail < 10.0, "phaser grave, 12 estágios e 90%%: a cauda informada é %.2f s", tail);
+    }
+    {
+        // EQ dinâmico: depois de cortar, volta a deixar o som idêntico; e desligar a banda tocando não salta.
+        auto h = makeHost ("dynEq");
+        setByName (*h, "b1Freq", 220.0f);
+        setByName (*h, "b1Thr", -24.0f);
+        setByName (*h, "b1Range", -12.0f);
+        setByName (*h, "b2On", 0.0f);
+        auto l = sine (220.0, 0.5, 48000), r = l;
+        const auto quiet = sine (220.0, 0.005, 48000, 0.0);
+        l.insert (l.end(), quiet.begin(), quiet.end());
+        r = l;
+        const auto in = l;
+        run (*h, l, r);
+        double diff = 0.0;
+
+        for (size_t i = 48000 + 24000; i < l.size(); ++i)
+            diff = std::max (diff, (double) std::abs (l[i] - in[i]));
+
+        CHECK (diff == 0.0, "EQ dinâmico: depois de cortar 12 dB, o trecho baixo volta a sair idêntico (diferença %.1e)", diff);
+
+        auto h2 = makeHost ("dynEq");
+        setByName (*h2, "b1Freq", 220.0f);
+        setByName (*h2, "b1Range", -24.0f);
+        setByName (*h2, "ratio", 10.0f);
+        setByName (*h2, "b2On", 0.0f);
+        auto a = sine (220.0, 0.5, 48000), b = a;
+        double worstJump = 0.0;
+
+        for (size_t start = 0; start < a.size(); start += block)
+        {
+            if (start == 24064)
+                h2->setParam (h2->info().indexOf ("b1On"), 0.0f);
+
+            h2->process (a.data() + start, b.data() + start, (int) std::min<size_t> (block, a.size() - start), nullptr, nullptr);
+        }
+
+        for (size_t i = 24000; i < 26000; ++i)
+            worstJump = std::max (worstJump, (double) std::abs (a[i] - a[i - 1]));
+
+        const double sineStep = 0.5 * 2.0 * pi * 220.0 / rate;
+        CHECK (worstJump < 1.5 * sineStep, "EQ dinâmico: desligar a banda cortando 24 dB tocando dá passo máximo %.4f (o do seno, %.4f)",
+               worstJump, sineStep);
+    }
+
+    CHECK (DynamicEqProcessor::gainChange (-6.0f, -24.0f, -6.0f, 3.0f) == -6.0f
+               && std::abs (DynamicEqProcessor::gainChange (-21.0f, -24.0f, -6.0f, 3.0f) + 2.0f) < 1.0e-5f
+               && std::abs (DynamicEqProcessor::gainChange (-21.0f, -24.0f, 6.0f, 3.0f) - 2.0f) < 1.0e-5f
+               && DynamicEqProcessor::gainChange (-30.0f, -24.0f, -6.0f, 3.0f) == 0.0f,
+           "a conta do EQ dinâmico: 3 dB acima em 3:1 = 2 dB, com o sinal e o teto da faixa");
+}
+
 static void testRobustness()
 {
     std::printf ("Robustez de todos os efeitos (silêncio, sinal enorme, impulso)\n");
@@ -2461,6 +2837,7 @@ int main()
     testTuneHumanize();
     testVoicePitch();
     testHarmony();
+    testEffects2610();
     testRobustness();
 
     std::printf ("\n%s (%d falha%s)\n", failures == 0 ? "TUDO OK" : "HOUVE FALHAS", failures, failures == 1 ? "" : "s");

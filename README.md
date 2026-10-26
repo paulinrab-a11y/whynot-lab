@@ -46,8 +46,8 @@ O alvo `whynot_lab` basta para abrir o app. O autoteste (`--self-test`) também 
 
 ## Mixagem
 
-24 efeitos nativos (entre eles afinação de voz, EQ, compressor com sidechain, de-esser, transiente, saturador, filtro, reverb,
-delay, estéreo, limitador e medidor de loudness), 162 presets e estilos de mixagem prontos para **trap, funk, rap e pop**: um clique no
+30 efeitos nativos (entre eles afinação de voz, EQ e EQ dinâmico, compressor com sidechain, de-esser, transiente, clipper,
+saturador, lo-fi, filtro, chorus, flanger, phaser, reverb, delay, estéreo, limitador e medidor de loudness), 194 presets e estilos de mixagem prontos para **trap, funk, rap e pop**: um clique no
 mixer monta a cadeia de cada trilha pelo papel dela, os buses de reverb e delay e o master no alvo de loudness do gênero.
 Guia em [`docs/mixagem.md`](docs/mixagem.md).
 

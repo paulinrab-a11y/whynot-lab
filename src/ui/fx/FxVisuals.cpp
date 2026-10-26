@@ -1074,7 +1074,7 @@ namespace
             }
 
             if (off)
-                now = { 0.0f, now[1], 0.0f, now[3] };
+                now = { 0.0f, plugin.getFxType() == "dynEq" ? 0.0f : now[1], 0.0f, now[3] };
 
             bool changed = false;
 
@@ -1173,6 +1173,61 @@ namespace
                 g.drawFittedText ("As vozes novas vão para as notas da escala; consoantes e respiração ficam só na voz original."_t,
                                   r.reduced (16.0f, 2.0f).toNearestInt(), juce::Justification::topLeft, 2);
             }
+            else if (fxType == "clipper")
+            {
+                paintLevelBar (g, r, "CORTE AGORA"_t, meters[0], 18.0f, false, dbText (meters[0] > 0.05f ? -meters[0] : 0.0f),
+                               meters[0] > 0.05f ? "O pico passou do teto ("_t + dbText (value ("ceiling")) + ") e foi cortado na hora, sem bombear."_t
+                                                 : "Nada passando do teto ("_t + dbText (value ("ceiling")) + "): o som passa igual."_t);
+            }
+            else if (fxType == "dynEq")
+            {
+                const auto half = r.getWidth() / 2.0f;
+                const auto& params = plugin.getInfo().params;
+
+                for (int b = 0; b < 2; ++b)
+                {
+                    auto area = b == 0 ? r.withWidth (half) : r.withTrimmedLeft (half);
+                    const std::string prefix = b == 0 ? "b1" : "b2";
+                    const bool on = value ((prefix + "On").c_str()) >= 0.5f;
+                    const float range = std::abs (value ((prefix + "Range").c_str()));
+                    paintLevelBar (g, area, "BANDA "_t + juce::String (b + 1) + " AGORA", std::abs (meters[(size_t) b]),
+                                   juce::jmax (1.0f, range), false, on ? dbText (meters[(size_t) b], true) : juce::String ("desligada"_t),
+                                   on ? "Em "_t + fxui::formatValue (params[(size_t) indexOf ((prefix + "Freq").c_str())], value ((prefix + "Freq").c_str()))
+                                            + ", acima de " + dbText (value ((prefix + "Thr").c_str())) + "."
+                                      : juce::String());
+                }
+            }
+            else if (fxType == "lofi")
+            {
+                const float kHz = value ("rate") / 1000.0f;
+                paintNote (g, r, "AGORA"_t,
+                           juce::String (juce::roundToInt (value ("bits"))) + " bits a " + juce::String (kHz, kHz < 10.0f ? 1 : 0).replaceCharacter ('.', ',')
+                               + " kHz" + (value ("wow") > 0.5f ? ", fita oscilando"_t : juce::String())
+                               + (value ("noise") > 0.5f ? " e chiado que segue o som"_t : juce::String()) + ". Atrás do limpo, abaixe a mistura."_t);
+            }
+            else if (fxType == "chorus")
+            {
+                paintNote (g, r, "AGORA"_t,
+                           juce::String (value ("voices") >= 0.5f ? 4 : 2) + " cópias a " + juce::String (juce::roundToInt (value ("delay")))
+                               + " ms, ondulando " + juce::String (value ("rate"), 2).replaceCharacter ('.', ',')
+                               + " vezes por segundo. Largura 0% é seguro para o mono."_t);
+            }
+            else if (fxType == "flanger")
+            {
+                const float lo = value ("delay"), hi = lo + 7.0f * value ("depth") * 0.01f;
+                paintNote (g, r, "AGORA"_t,
+                           "O atraso vai de "_t + juce::String (lo, 1).replaceCharacter ('.', ',') + " a " + juce::String (hi, 1).replaceCharacter ('.', ',')
+                               + " ms: o primeiro vale passeia entre " + juce::String (juce::roundToInt (500.0f / hi)) + " e "
+                               + juce::String (juce::roundToInt (500.0f / juce::jmax (0.1f, lo))) + " Hz.");
+            }
+            else if (fxType == "phaser")
+            {
+                const float c = value ("centre"), oct = 2.0f * value ("depth") * 0.01f;
+                paintNote (g, r, "AGORA"_t,
+                           "O centro dos vales passeia entre "_t + juce::String (juce::roundToInt (c * std::exp2 (-oct))) + " Hz e "
+                               + juce::String (juce::roundToInt (juce::jmin (20000.0f, c * std::exp2 (oct)))) + " Hz, uma volta a cada "
+                               + juce::String (1.0f / value ("rate"), 1).replaceCharacter ('.', ',') + " s.");
+            }
             else if (fxType == "doubler")
             {
                 auto text = r.reduced (14.0f, 0.0f).removeFromTop (r.getHeight() - 40.0f);
@@ -1184,6 +1239,18 @@ namespace
         }
 
     private:
+        /** Uma legenda e uma frase: a leitura dos efeitos de modulação e do lo-fi. */
+        void paintNote (juce::Graphics& g, juce::Rectangle<float> r, const juce::String& caption, const juce::String& text)
+        {
+            auto head = r.removeFromTop (18.0f).reduced (16.0f, 0.0f);
+            g.setFont (captionFont());
+            g.setColour (colour::textFaint);
+            g.drawText (caption, head, juce::Justification::centredLeft);
+            g.setFont (font (type::body));
+            g.setColour (colour::textDim);
+            g.drawFittedText (text, r.reduced (16.0f, 2.0f).toNearestInt(), juce::Justification::topLeft, 3);
+        }
+
         std::array<float, 4> meters {};
         CorrelationMeter correlation;
     };
@@ -1334,6 +1401,15 @@ namespace
 }
 
 //==============================================================================
+namespace
+{
+    /** Os efeitos de 26/10: um quadro de 90 px, com o medidor ou a leitura do que o efeito faz agora. */
+    bool isEffect2610 (const juce::String& type)
+    {
+        return type == "dynEq" || type == "clipper" || type == "lofi" || type == "chorus" || type == "flanger" || type == "phaser";
+    }
+}
+
 int FxVisual::heightFor (const juce::String& type)
 {
     if (type == "eq")                               return 230;
@@ -1345,7 +1421,7 @@ int FxVisual::heightFor (const juce::String& type)
     if (type == "opto" || type == "fet")                                return 150;
     if (type == "multiband" || type == "console" || type == "vintageEq") return 150;
     if (type == "gate" || type == "leveler" || type == "denoise" || type == "bassplus" || type == "doubler"
-        || type == "voicepitch" || type == "harmony")                   return 90;
+        || type == "voicepitch" || type == "harmony" || isEffect2610 (type))                   return 90;
     return 0;
 }
 
@@ -1359,7 +1435,7 @@ std::unique_ptr<FxVisual> FxVisual::create (WhynotFxPlugin& p)
     if (type == "multiband")                     return std::make_unique<MultibandVisual> (p);
     if (type == "console" || type == "vintageEq") return std::make_unique<StripVisual> (p);
     if (type == "gate" || type == "leveler" || type == "denoise" || type == "bassplus" || type == "doubler"
-        || type == "voicepitch" || type == "harmony")
+        || type == "voicepitch" || type == "harmony" || isEffect2610 (type))
         return std::make_unique<VoiceToolVisual> (p);
     if (type == "sat")                           return std::make_unique<SatVisual> (p);
     if (type == "limiter" || type == "meter")    return std::make_unique<LoudnessVisual> (p);

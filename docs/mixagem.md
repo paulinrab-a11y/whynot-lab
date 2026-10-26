@@ -25,10 +25,11 @@ pensados a partir de práticas de mixagem conhecidas; o ouvido decide o resto.
 
 ![Mixer com o estilo trap: resumo da cadeia em cada faixa e o painel de efeitos do 808](screenshots/3.3-mixer-trap.png)
 
-## Os 24 efeitos
+## Os 30 efeitos
 
-No menu do slot eles vêm por categoria: Voz, Equalização, Dinâmica, Cor, Espaço, Imagem e Master. Os doze marcados
+No menu do slot eles vêm por categoria: Voz, Equalização, Dinâmica, Cor, Modulação, Espaço, Imagem e Master. Os doze marcados
 com "(novo)" entraram em 21/10 e estão explicados em [Voz gravada em casa e beat pronto](#voz-gravada-em-casa-e-beat-pronto-efeitos-de-2110).
+Os seis marcados com "(26/10)" vieram do pedido de 26/10 e estão em [Clipper, lo-fi, modulação e EQ dinâmico](#clipper-lo-fi-modulação-e-eq-dinâmico-efeitos-de-2610).
 
 | Efeito | Para quê | Destaques |
 |---|---|---|
@@ -41,6 +42,7 @@ com "(novo)" entraram em 21/10 e estão explicados em [Voz gravada em casa e bea
 | **Dobrador** (novo) | Voz mais grossa e larga, ad-lib aberto | 2 ou 4 cópias, atraso, desafinação, largura, corte grave, modo coro |
 | **Equalizador** | Tirar o que embola, realçar o que precisa aparecer | Passa-altas 12/24/48 dB/oit, prateleiras, 3 sinos, passa-baixas, curva arrastável e analisador de espectro |
 | **EQ vintage** (novo) | Peso sem embolar, ar no topo | Reforço e atenuação no mesmo grave, agudo com largura, corte de ar |
+| **EQ dinâmico** (26/10) | Tirar o embolado ou o agudo que fura só quando eles aparecem | 2 bandas de sino com limiar, faixa (corta ou realça), razão, ataque e soltura; **disparo de outra trilha** |
 | **Gate** (novo) | Calar o ruído e o vazamento entre as frases | Gate ou expansor, histerese, segurar, antecipação de 1,5 ms, **disparo de outra trilha** |
 | **Compressor** | Segurar picos, dar corpo, colar | Joelho suave, pico ou RMS, mistura paralela, filtro do detector, **sidechain de outra trilha** |
 | **Comp óptico** (novo) | Compressão suave e musical | Redução e ganho; soltura em dois estágios que depende do programa |
@@ -48,9 +50,14 @@ com "(novo)" entraram em 21/10 e estão explicados em [Voz gravada em casa e bea
 | **Multibanda** (novo) | Segurar só uma faixa de frequência | 4 bandas Linkwitz-Riley (soma plana), **disparo por banda**: a voz abre espaço no beat |
 | **De-esser** | Tirar o chiado do "s" | Só agudos ou banda toda, "ouvir sibilância" |
 | **Transiente** | Mais punch ou mais macio, sem limiar | Ataque e sustentação independentes |
+| **Clipper** (26/10) | Kick e 808 mais altos sem bombear | Corta o pico na hora, teto, suavidade da quina, 4x sobreamostrado |
 | **Saturador** | Harmônicos, calor, peso | Fita, Válvula, Suave, Duro, Fuzz; 4x sobreamostrado; **proteger graves** (sub do 808 limpo); compensar volume |
 | **Grave+** (novo) | O 808 aparecer no celular | 2º e 3º harmônicos só do grave, cor, sub original |
 | **Filtro** | Telefone, lo-fi, intro abafada | Passa-baixas/altas/banda/rejeita, 12/24 dB, ressonância, drive |
+| **Lo-fi** (26/10) | Som gasto de fita e de sampler velho | Bits, taxa (serrilhado), fita oscilando, brilho, chiado que segue o som, mistura |
+| **Chorus** (26/10) | Pad, guitarra e backing mais gordos e largos | 2 ou 4 cópias, velocidade, profundidade, atraso, largura, brilho das cópias |
+| **Flanger** (26/10) | O "avião passando" em hat, pad e transição | Atraso de 0,1 a 10 ms, varredura, realimentação positiva ou negativa, estéreo |
+| **Phaser** (26/10) | Movimento suave em Rhodes, synth e guitarra | 4, 6, 8 ou 12 estágios, centro, profundidade, realimentação, estéreo |
 | **Reverb** | Espaço | Sala, Placa, Salão (rede de atraso com 8 linhas e modulação) |
 | **Delay** | Eco no tempo | Sincronizado ao BPM (1/32 a 1 compasso, com tercinas e pontuadas) ou tempo livre de 1 a 2000 ms, pingue-pongue, filtros, abaixa sob a voz |
 | **Estéreo** | Imagem | Largura 0-200%, grave mono abaixo de uma frequência, balanço, inverter fase, conferir em mono |
@@ -72,10 +79,36 @@ Detalhes técnicos que importam no uso:
 
 - **Sem estalo:** mexer em qualquer parâmetro tocando, ligar/desligar, trocar tipo, curva ou inclinação faz
   transição suave (testado em `tests/dsp`).
-- **Latência compensada:** saturador, Comp FET e Console (38 amostras), gate (1,5 ms), limitador (~3 ms), afinação (15 ms),
+- **Latência compensada:** saturador, Comp FET, Console e clipper (38 amostras), lo-fi (6 ms), gate (1,5 ms), limitador (~3 ms), afinação (15 ms),
   limpa-voz (21 ms a 48 kHz), tom da voz e harmonia (50 ms) informam a latência e o motor alinha o resto (conferido no autoteste: o ataque não sai do lugar).
-- **Disparo de outra trilha (sidechain):** no compressor, nos comps óptico e FET, no gate e na multibanda.
+- **Disparo de outra trilha (sidechain):** no compressor, nos comps óptico e FET, no gate, na multibanda e no EQ dinâmico.
 - **Render igual ao que se ouve:** os valores entram sem rampa no começo do export.
+
+## Clipper, lo-fi, modulação e EQ dinâmico (efeitos de 26/10)
+
+Os que mais faltavam, segundo as comunidades (pesquisa de 22/10, item 18). Cada um tem a medida no `tests/dsp`
+(seção "Efeitos de 26/10") e o render no autoteste:
+
+- **Clipper:** corta o que passa do teto, sem ataque nem soltura, então não bombeia como o limitador. Abaixo do teto o
+  som sai igual (só atrasado as 38 amostras do sobreamostrador). Medido: +12 dB contra o teto de -6 dB saem com pico de
+  -5,9 dB, e o dobrado de um 7 kHz cortado reto fica a -59 dB (sem sobreamostrar, ficaria perto de -14 dB). A volta da
+  sobreamostragem deixa o pico de um agudo cortado reto passar até ~2 dB do teto; garantir o teto ali traria o
+  serrilhado de volta (-26 dB), então o teto exato fica com o limitador. A suavidade arredonda a quina a partir de 40%
+  abaixo do teto. No master: clipper e depois o limitador.
+- **Lo-fi:** na ordem de uma fita ou de um sampler velho: a fita oscilando (wow de 0,55 Hz e flutter de 6,3 Hz), a taxa
+  (segura a amostra, sem filtro: o serrilhado é o som), os bits, o brilho (em 20 kHz, sem filtro) e um chiado que segue o
+  volume e some no silêncio. O seco passa pelo mesmo atraso de 6 ms, então a mistura não desalinha.
+- **Chorus, flanger e phaser:** os três sem latência, com fases fixas (o render sai sempre igual). O flanger tem o atraso
+  exato pedido (1 ms dá o vale em 500 Hz, medido a -78 dB) e a realimentação para em 95%; o phaser são passa-tudos de
+  1ª ordem (4 estágios em 1 kHz cavam o vale em 414 Hz) e a realimentação para em 90%. Nenhum dispara com o máximo, e
+  a cópia é abaixada por raiz(1 - |realimentação|): no máximo, a ressonância sobe ~9 dB, não 26. O chorus soma 0 dB com
+  as cópias em fase, então ligá-lo não sobe o volume. Trocar os estágios do phaser tocando é um crossfade.
+- **EQ dinâmico:** cada banda escuta a própria faixa (um passa-banda no mesmo centro e no mesmo Q do sino) e só mexe
+  acima do limiar, na razão, até a faixa (negativa corta, positiva realça), com uma rampa de ~3 ms no ganho (mexer
+  ou desligar a banda tocando não estala). Abaixo do limiar o som sai idêntico. Com o
+  sidechain, a banda escuta outra trilha: no preset "Beat abre para a voz", 2,5 kHz do beat desce só quando a voz canta.
+
+O dobrador continua com o modo coro, pensado para a voz; o chorus é o efeito geral, para instrumento.
 
 ### Afinação de voz
 
@@ -263,9 +296,9 @@ O MP3 cria picos entre as amostras ao ser decodificado. Por isso o export de MP3
 
 ## Presets
 
-São 162 ao todo: EQ 23, Compressor 13, Saturador 12, Afinação 8, Reverb 7, Transiente 6, Delay 6, Estéreo 6,
-Gate 6, Multibanda 6, Console 6, EQ vintage 6, Tom da voz 6, Harmonia 6, Limitador 5, Medidor 5, Comp óptico 5, Comp FET 5, Dobrador 5,
-Grave+ 5, Filtro 4, Nivelador 4, Limpa-voz 4 e De-esser 3. O nome do preset aparece no topo da janela do efeito; um `*` depois
+São 194 ao todo: EQ 23, Compressor 13, Saturador 12, Afinação 8, Reverb 7, Transiente 6, Delay 6, Estéreo 6,
+Gate 6, Multibanda 6, Console 6, EQ vintage 6, Tom da voz 6, Harmonia 6, Lo-fi 6, Chorus 6, Limitador 5, Medidor 5, Comp óptico 5,
+Comp FET 5, Dobrador 5, Grave+ 5, EQ dinâmico 5, Clipper 5, Flanger 5, Phaser 5, Filtro 4, Nivelador 4, Limpa-voz 4 e De-esser 3. O nome do preset aparece no topo da janela do efeito; um `*` depois
 dele avisa que algum parâmetro foi mudado. Os nomes e descrições saem no `fx.list`.
 
 ## Os estilos

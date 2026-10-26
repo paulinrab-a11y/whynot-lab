@@ -175,13 +175,16 @@ set(WHYNOT_SOURCES
     src/dsp/Console.cpp
     src/dsp/Denoise.cpp
     src/dsp/Dynamics.cpp
+    src/dsp/DynamicEq.cpp
     src/dsp/Enhance.cpp
     src/dsp/EqProcessor.cpp
     src/dsp/FxCatalog.cpp
     src/dsp/FxHost.cpp
     src/dsp/Gate.cpp
+    src/dsp/Grit.cpp
     src/dsp/LoudnessMeter.cpp
     src/dsp/Master.cpp
+    src/dsp/Modulation.cpp
     src/dsp/Multiband.cpp
     src/dsp/PitchDetect.cpp
     src/dsp/Space.cpp

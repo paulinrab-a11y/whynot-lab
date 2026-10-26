@@ -188,6 +188,33 @@ O artista monta a voz uma vez e usa em toda música.
 - Ao carregar uma cadeia, os efeitos ganham ids novos, o disparo (sidechain) fica vazio (a trilha que disparava era
   de outro projeto) e a afinação pega o tom do projeto.
 
+## Rack com 8 macros (bloco 4c, 23/10)
+
+Cada trilha tem 8 **macros**: um knob que move vários parâmetros dos efeitos dela de uma vez ("Brilho" sobe o agudo do
+EQ e o drive da saturação juntos).
+
+- **Onde:** no painel de efeitos, o título **MACROS**, entre os efeitos e os envios, abre e fecha os 8 knobs. Ele abre
+  sozinho numa trilha que já tem macros ligados. Um macro sem nada ligado fica apagado.
+- **Ligar:** botão direito num knob da janela do efeito → **Ligar ao macro** → o número. Ou botão direito no macro →
+  **Ligar um parâmetro** → o efeito → o parâmetro. O que já está ligado aparece marcado, e clicar de novo desliga.
+- **A faixa:** o parâmetro anda do valor em que estava (com o macro em 0) até o máximo dele; se já estava no máximo,
+  ele desce até o mínimo. A conta é na posição do knob, a mesma da automação: numa frequência, o meio do macro cai no
+  meio do knob. Pela IA dá para escolher a faixa (`min` e `max` na unidade do parâmetro), e o máximo menor que o
+  mínimo inverte: o macro sobe e o parâmetro desce.
+- **Mexer:** arrastar o macro é um passo de desfazer só; duplo clique volta a 0. O botão direito no macro também
+  renomeia, volta a 0, mostra o que ele move agora (clicar desliga) e desliga tudo.
+- O macro escreve o valor nos parâmetros: o efeito toca como sempre, e o projeto abre igual numa versão sem macros.
+  Mexer no parâmetro sozinho vale até o macro andar de novo. Tirar um efeito tira os links dele.
+- Só efeitos nativos; um VST3 fica de fora. Até 16 parâmetros por macro.
+- **Minha cadeia leva o rack:** salvar a cadeia guarda os macros; carregar troca o rack da trilha (se a cadeia tiver um).
+  Somando ("append"), cada macro da cadeia vai para o mesmo número, se lá não houver nada ligado, ou para o primeiro
+  livre.
+- **Comandos:** `mixer.macros`, `mixer.setMacro` (`value` de 0 a 1, `name`), `mixer.mapMacro` (`insert`, `param`,
+  `min`, `max`) e `mixer.unmapMacro`. No `.wnl`, a trilha ganha `macros` (opcional, não sobe o esquema).
+- **Controlador MIDI** (bloco 4d): botão direito no macro → **Aprender do controlador MIDI**, e um knob de verdade
+  move o macro. Também no fader, no pan e em qualquer knob da janela do efeito (ver `docs/como-rodar.md`, 7e).
+- Ficou para depois: automatizar o macro.
+
 ## Solo, pan, envios e master (revisão de 22/10)
 
 - **Solo com sidechain:** com o 808 em solo, o kick que dispara o compressor dele some da saída, mas continua

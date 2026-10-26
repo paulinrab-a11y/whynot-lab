@@ -36,3 +36,12 @@ SE ALGO NÃO FUNCIONAR
   Documentos e Área de Trabalho. Libere a WHYNOT LAB lá ou exporte para outra pasta.
 - Projeto que veio de outro PC: mande a pasta inteira do projeto (com a pasta samples dentro), não só
   o arquivo .wnl.
+
+
+CÓDIGO ABERTO
+-------------
+
+A WHYNOT LAB é software livre, sob a GNU AGPL-3.0 ou posterior (o texto está em LICENCA.txt).
+O código-fonte está em https://github.com/paulinrab-a11y/whynot-lab; o commit desta versão está em versao.txt.
+O que vem de terceiros e sob qual licença está em AVISOS-DE-TERCEIROS.txt.
+O nome WHYNOT e a logo não fazem parte da licença do código.

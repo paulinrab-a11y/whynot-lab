@@ -1,10 +1,13 @@
 #include "AppController.h"
+#include "../automation/Macros.h"
+#include "../dsp/FxCatalog.h"
 #include "../dsp/Master.h"
 #include "../engine/Exporter.h"
 #include "../engine/KitGenerator.h"
 #include "../engine/Mp3Encoder.h"
 #include "../engine/PianoLibrary.h"
 #include "../engine/PluginHost.h"
+#include "../engine/SoundInfo.h"
 #include "../engine/WhynotFx.h"
 #include "../engine/WhynotPiano.h"
 #include "../engine/WhynotSampler.h"
@@ -135,6 +138,7 @@ struct AppController::Housekeeping : juce::Timer
             owner.recording->service (owner.liveChannelId);   // relógio da placa x linha do tempo; notas do controlador
 
         owner.serviceTransport();   // a contagem passou do começo do loop: o loop liga
+        owner.serviceMidiLearn();   // o gesto do controlador fecha 400 ms depois do último CC; o aprender para em 20 s
         owner.syncMonitoring();     // a monitoração pelo app: a placa pode ter mudado
 
         // desempenho (3.5): a carga da thread de áudio e as falhas de buffer que a placa e o JUCE contam
@@ -395,9 +399,15 @@ AppController::AppController (bool isHeadless, const juce::File& requestedDataFo
         rememberLiveNote (key, velocity, on, juce::Time::getMillisecondCounterHiRes() - juce::jmax (0.0, ageMs));
     };
 
+    // MIDI learn (bloco 4d): os knobs e faders do controlador
+    recording->onLiveControl = [this] (int channel, int cc, int value) { handleMidiControl (channel, cc, value); };
+
     // tom do beat: uma thread de trabalho só para isso, também sem janela (o audio.detectKey da IA)
     beatKeys = std::make_unique<BeatKeyAnalyzer>();
     beatKeys->onAnalysed = [this] (const juce::File& f) { if (onBeatKey) onBeatKey (f); };
+
+    // o BPM e o tom dos sons do navegador (bloco 4b): uma thread de leitura e o cache na pasta de dados
+    soundInfos = std::make_unique<SoundInfoCache> (dataFolder.getChildFile ("sons-analise.json"));
 
     registerCoreCommands (registry);
     registerCompositionCommands (registry);
@@ -415,6 +425,13 @@ AppController::AppController (bool isHeadless, const juce::File& requestedDataFo
     registerBeatCommands (registry);
     registerLibraryCommands (registry);
     registerFavoritesCommands (registry);
+    registerBrowserCommands (registry);
+    registerMidiLearnCommands (registry);
+
+    // o gesto dos knobs do controlador (bloco 4d) fecha antes de qualquer outro comando, gesto ou desfazer
+    registry.beforeAnything = [this] { if (! inMidiControl) finishMidiControlGesture(); };
+    registerAudioMidiCommands (registry);
+    registerLayerCommands (registry);
 
     // Prévia do navegador de sons: depende do player daqui, então o comando mora aqui.
     registry.add ({ "browser.preview", "Ouvir prévia"_t,
@@ -463,6 +480,7 @@ AppController::AppController (bool isHeadless, const juce::File& requestedDataFo
 AppController::~AppController()
 {
     beatKeys = nullptr;       // cancela a análise de tom em andamento e espera a thread sair
+    soundInfos = nullptr;     // a leitura dos sons do navegador para, e o cache vai para o disco
     projectLibrary = nullptr;   // cancela a prévia renderizando e tira o deck da placa, antes do motor
     exportRunner = nullptr;   // cancela e espera o render em andamento, antes de o motor sair
     deferredSync = nullptr;
@@ -480,6 +498,34 @@ AppController::~AppController()
     edit->getTransport().stop (false, true);
     projector = nullptr;
     edit = nullptr;
+}
+
+juce::Array<juce::File> AppController::soundFolders() const
+{
+    // as mesmas do navegador de sons: o kit, a Biblioteca e as pastas extras (a configuração que o SampleBrowser grava)
+    juce::Array<juce::File> folders;
+
+    if (const auto kit = getKitFolder(); kit.isDirectory())
+        folders.add (kit);
+
+    folders.add (getDefaultProjectsFolder().getChildFile ("Biblioteca"));
+
+    juce::PropertiesFile::Options options;
+    options.applicationName = "Navegador";
+    options.filenameSuffix = ".settings";
+    options.folderName = "WHYNOT LAB";
+    options.osxLibrarySubFolder = "Application Support";
+
+    if (const auto file = options.getDefaultFile(); file.existsAsFile())
+    {
+        juce::PropertiesFile settings (file, options);
+
+        for (auto& path : juce::StringArray::fromLines (settings.getValue ("extraFolders")))
+            if (const juce::File folder (path); path.isNotEmpty() && folder.isDirectory())
+                folders.addIfNotAlreadyThere (folder);
+    }
+
+    return folders;
 }
 
 juce::File AppController::getKitFolder() const
@@ -831,6 +877,7 @@ double AppController::positionInSteps() const
 //==============================================================================
 juce::Result AppController::newProject()
 {
+    cancelMidiLearn();
     needleTicks = 0;
     timeSelection = {};
     stop();
@@ -877,6 +924,29 @@ namespace
     {
         int found = 0;
 
+        // as camadas por força (bloco 4f): pelo nome, na pasta samples/ e na pasta do projeto
+        for (auto& c : p.channels)
+        {
+            for (auto& l : c.layers)
+            {
+                const auto current = juce::File::isAbsolutePath (l.samplePath) ? juce::File (l.samplePath) : projectFolder.getChildFile (l.samplePath);
+                const auto name = l.samplePath.fromLastOccurrenceOf ("/", false, false).fromLastOccurrenceOf ("\\", false, false);
+
+                if (current.existsAsFile() || name.isEmpty())
+                    continue;
+
+                for (auto& f : { projectFolder.getChildFile ("samples").getChildFile (name), projectFolder.getChildFile (name), kitFolder.getChildFile (name) })
+                {
+                    if (f.existsAsFile())
+                    {
+                        l.samplePath = (f.isAChildOf (projectFolder) ? f.getRelativePathFrom (projectFolder) : f.getFullPathName()).replaceCharacter ('\\', '/');
+                        ++found;
+                        break;
+                    }
+                }
+            }
+        }
+
         for (auto& c : p.channels)
         {
             if (c.samplePath.isEmpty())
@@ -920,6 +990,7 @@ namespace
 juce::Result AppController::openProject (const juce::File& file)
 {
     stopAudition();
+    cancelMidiLearn();   // o alvo era do projeto de antes
 
     Project loaded;
     const auto result = wnl::load (file, loaded);
@@ -2100,8 +2171,14 @@ juce::File AppController::autosaveNow()
     auto copy = model.get();
 
     for (auto& c : copy.channels)
+    {
         if (c.samplePath.isNotEmpty() && ! juce::File::isAbsolutePath (c.samplePath))
             c.samplePath = model.resolveSample (c.samplePath).getFullPathName().replaceCharacter ('\\', '/');
+
+        for (auto& l : c.layers)   // as camadas por força (bloco 4f)
+            if (l.samplePath.isNotEmpty() && ! juce::File::isAbsolutePath (l.samplePath))
+                l.samplePath = model.resolveSample (l.samplePath).getFullPathName().replaceCharacter ('\\', '/');
+    }
 
     auto saved = target;
 
@@ -2136,6 +2213,7 @@ juce::File AppController::autosaveNow()
 
 juce::Result AppController::recoverProject (const Session::Recovery& r)
 {
+    cancelMidiLearn();
     Project loaded;
     const auto result = wnl::load (r.autosave, loaded);
 
@@ -2473,6 +2551,173 @@ bool AppController::previewFile (const juce::File& file)
         return false;
 
     return preview.play (file, engine.getAudioFileFormatManager().readFormatManager);
+}
+
+//==============================================================================
+// MIDI learn (bloco 4d, 23/10)
+
+void AppController::learnMidi (const MidiLink& target)
+{
+    finishMidiControlGesture();
+    midiLearnFor = target;
+    midiLearning = true;
+    midiLearnUntil = juce::Time::getMillisecondCounterHiRes() + 20000.0;
+    midiNotice ("Mexa um knob ou fader do controlador para ligar a "_t + describeMidiTarget (target) + " (20 s).");
+}
+
+void AppController::cancelMidiLearn()
+{
+    if (midiLearning)
+    {
+        midiLearning = false;
+        midiNotice ("O aprender do controlador parou."_t);
+    }
+}
+
+void AppController::serviceMidiLearn()
+{
+    const double now = juce::Time::getMillisecondCounterHiRes();
+
+    if (midiGestureOpen && (now > midiGestureUntil || now - midiGestureSince > 2000.0))
+        finishMidiControlGesture();   // 400 ms parado, ou 2 s girando sem parar (um fader que oscila não segura o desfazer)
+
+    if (midiLearning && now > midiLearnUntil)
+    {
+        midiLearning = false;
+        midiNotice ("Nenhum knob do controlador mexeu em 20 s: o aprender parou. Confira a entrada em F10 (Áudio e MIDI)."_t);
+    }
+}
+
+void AppController::finishMidiControlGesture()
+{
+    if (midiGestureOpen)
+    {
+        midiGestureOpen = false;
+        registry.endGesture();
+    }
+}
+
+juce::String AppController::describeMidiTarget (const MidiLink& t) const
+{
+    const auto& p = model.get();
+    const auto* m = p.findMixer (t.track);
+    const auto where = m != nullptr ? " (" + (m->isMaster() ? juce::String ("Master") : m->name) + ")" : juce::String();
+
+    if (t.kind == "mixer")
+        return (t.param == "pan" ? juce::String ("Pan") : juce::String ("Volume")) + where;
+
+    if (t.kind == "macro")
+    {
+        const int index = t.param.getIntValue() - 1;
+        static const Macro none;
+        const auto& mac = m != nullptr && juce::isPositiveAndBelow (index, (int) m->macros.size()) ? m->macros[(size_t) index] : none;
+        return macros::displayName (mac, juce::jmax (0, index)) + where;
+    }
+
+    if (const auto* ins = m != nullptr ? m->findInsert (t.insert) : nullptr)
+        if (const auto* info = dsp::findEffect (ins->type.toStdString()))
+            if (const int i = info->indexOf (t.param.toRawUTF8()); i >= 0)
+                return juce::String::fromUTF8 (info->shortName) + " · "_t + juce::String::fromUTF8 (info->params[(size_t) i].name) + where;
+
+    return t.param + where;
+}
+
+void AppController::handleMidiControl (int channel, int cc, int value)
+{
+    value = juce::jlimit (0, 127, value);
+
+    if (midiLearning)
+    {
+        const auto target = midiLearnFor;
+        midiLearning = false;
+
+        auto* a = new juce::DynamicObject();
+        a->setProperty ("channel", channel);
+        a->setProperty ("cc", cc);
+        a->setProperty ("kind", target.kind);
+        a->setProperty ("track", target.track);
+
+        if (target.insert.isNotEmpty())
+            a->setProperty ("insert", target.insert);
+
+        a->setProperty ("param", target.param);
+        const auto result = run ("midi.map", juce::var (a));
+        midiNotice (result.ok ? "CC "_t + juce::String (cc) + " (canal " + juce::String (channel) + ") ligado a " + describeMidiTarget (target) + "."
+                              : result.error,
+                    ! result.ok);
+        return;
+    }
+
+    const MidiLink* found = nullptr;
+
+    for (auto& l : model.get().midiMap)
+        if (l.cc == cc && (l.channel == 0 || l.channel == channel))
+        {
+            found = &l;
+            break;
+        }
+
+    if (found == nullptr)
+        return;
+
+    const auto target = *found;   // cópia: o comando muda o projeto
+    const float v = (float) value / 127.0f;
+
+    const double now = juce::Time::getMillisecondCounterHiRes();
+    const juce::ScopedValueSetter<bool> mine (inMidiControl, true);   // o beforeAnything não fecha o próprio gesto
+
+    if (midiGestureOpen && now - midiGestureSince > 2000.0)
+        finishMidiControlGesture();   // girando sem parar: um passo a cada 2 s
+
+    if (! midiGestureOpen)
+    {
+        registry.beginGesture ("Controlador MIDI"_t);   // a rajada inteira vira um passo de desfazer
+        midiGestureOpen = true;
+        midiGestureSince = now;
+    }
+
+    midiGestureUntil = now + 400.0;
+
+    auto* a = new juce::DynamicObject();
+    a->setProperty ("track", target.track);
+    juce::String command;
+
+    if (target.kind == "macro")
+    {
+        command = "mixer.setMacro";
+        a->setProperty ("macro", target.param.getIntValue());
+        a->setProperty ("value", v);
+    }
+    else if (target.kind == "mixer" && target.param == "volume")
+    {
+        command = "mixer.setVolume";
+        juce::NormalisableRange<double> fader (-100.0, 6.0);   // a mesma curva do fader do mixer: o físico e o da tela juntos
+        fader.setSkewForCentre (-12.0);
+        a->setProperty ("db", std::round (fader.convertFrom0to1 (v) * 100.0) / 100.0);
+    }
+    else if (target.kind == "mixer")
+    {
+        command = "mixer.setPan";
+        a->setProperty ("pan", juce::jlimit (-1.0, 1.0, (value - 64) / 63.0));   // 64 é o centro dos controladores
+    }
+    else if (target.kind == "insert")
+    {
+        const auto* m = model.get().findMixer (target.track);
+        const auto* ins = m != nullptr ? m->findInsert (target.insert) : nullptr;
+        const auto* info = ins != nullptr ? dsp::findEffect (ins->type.toStdString()) : nullptr;
+        const int i = info != nullptr ? info->indexOf (target.param.toRawUTF8()) : -1;
+
+        if (i < 0)
+            return;
+
+        command = "mixer.setInsertParam";
+        a->setProperty ("insert", target.insert);
+        a->setProperty ("param", target.param);
+        a->setProperty ("value", automation::rangeOf (info->params[(size_t) i]).fromNormalised (v));
+    }
+
+    if (command.isNotEmpty())
+        run (command, juce::var (a));
 }
 
 } // namespace whynot

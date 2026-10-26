@@ -4,6 +4,7 @@
 
 #include "Controls.h"
 #include "LevelMeter.h"
+#include "fx/FxWidgets.h"
 #include "fx/InsertPanel.h"
 #include "../model/Project.h"
 
@@ -61,8 +62,8 @@ private:
     double lastInputTick = -1.0;   // ms: a queda do medidor da entrada conta o tempo, não os quadros
 
     LevelMeter meter { true };
-    juce::Slider fader { juce::Slider::LinearVertical, juce::Slider::NoTextBox };
-    juce::Slider pan { juce::Slider::RotaryHorizontalVerticalDrag, juce::Slider::NoTextBox };
+    MenuSlider fader { juce::Slider::LinearVertical, juce::Slider::NoTextBox };   // botão direito: o controlador MIDI
+    MenuSlider pan { juce::Slider::RotaryHorizontalVerticalDrag, juce::Slider::NoTextBox };
     juce::TextButton muteButton { "M" }, soloButton { "S" };
     IconButton armButton { "Armar", Icon::record, {}, IconButton::Style::filled };   // o terceiro da linha: M S ●
 };

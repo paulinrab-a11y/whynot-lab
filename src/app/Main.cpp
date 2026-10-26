@@ -115,9 +115,9 @@ public:
             options.onQuitRequested = [this] { quit(); };
 
             // a captura para a IA sem janela (fatia 4.6): a tela montada fora da área de trabalho, só para a foto
-            options.capture = [this] (const juce::String& view, int maxWidth, const juce::File& png, juce::String& why)
+            options.capture = [this] (const juce::String& view, juce::String& channel, int maxWidth, const juce::File& png, juce::String& why)
             {
-                return MainComponent::captureOffscreen (*controller, view, maxWidth, png, why);
+                return MainComponent::captureOffscreen (*controller, view, channel, maxWidth, png, why);
             };
 
             if (controlFileText.isNotEmpty())
@@ -199,8 +199,8 @@ public:
                     mainWindow->getContent().cancelAiQuestion();
             };
 
-            // a captura para a IA (fatia 4.6): a tela que você vê (com `view`, você vê a troca de tela)
-            options.capture = [this] (const juce::String& view, int maxWidth, const juce::File& png, juce::String& why)
+            // a captura para a IA (fatia 4.6): a tela que você vê (com `view` e `channel`, você vê a troca de tela e de canal)
+            options.capture = [this] (const juce::String& view, juce::String& channel, int maxWidth, const juce::File& png, juce::String& why)
             {
                 if (mainWindow == nullptr)
                 {
@@ -208,7 +208,7 @@ public:
                     return juce::Rectangle<int>();
                 }
 
-                return mainWindow->getContent().capturePng (view, maxWidth, png, why);
+                return mainWindow->getContent().capturePng (view, channel, maxWidth, png, why);
             };
 
             controlServer = std::make_unique<control::ControlServer> (*controller, options);

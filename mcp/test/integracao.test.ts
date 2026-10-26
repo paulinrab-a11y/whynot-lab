@@ -118,6 +118,17 @@ test('cliente 2026-07-28: discover, tools, comandos, resumo, lote e os recusados
     assert.equal(Buffer.from(image.data, 'base64').subarray(1, 4).toString('latin1'), 'PNG', 'é um PNG');
     assert.match((shot.content as any[])[1].text, /Tela "playlist": 800x500 px/);
 
+    // o piano roll de um canal que a IA escolhe (teste 6.5 da Fase 4: antes, só o canal que estava escolhido)
+    const channels = JSON.parse(textOf(await client.callTool({ name: 'get_project', arguments: { view: 'completo', sections: ['channels'] } }))).channels as any[];
+    const bass = channels.find((c) => c.name === '808');
+    const roll = await client.callTool({ name: 'screenshot', arguments: { channel: bass.id, width: 800 } });
+    assert.ok(!roll.isError, textOf(roll));
+    assert.match((roll.content as any[])[1].text, new RegExp(`^Tela "pianoRoll", canal "808" \\(${bass.id}\\): 800x500 px`));
+
+    const noChannel = await client.callTool({ name: 'screenshot', arguments: { view: 'pianoRoll', channel: 'ch_inventado' } });
+    assert.ok(noChannel.isError);
+    assert.match(textOf(noChannel), /Canal desconhecido: ch_inventado\. Os canais com piano roll: .*808/);
+
     const blocked = await client.callTool({ name: 'command_run', arguments: { id: 'audio.setDevice', params: { type: 'ASIO' } } });
     assert.ok(blocked.isError);
     assert.match(textOf(blocked), /só para você, pela tela/);
@@ -161,6 +172,19 @@ test('cliente antigo (2025-11-25, com initialize) também lista e usa as tools',
 
     const summary = await client.callTool({ name: 'get_project', arguments: {} });
     assert.match(textOf(summary), /^Projeto "[^"]+" · 140 BPM/);
+
+    // 4 compassos a 140 BPM em 2 voltas: exatamente 8 compassos, sem o 9º "fantasma" de 1 amostra (teste 6.5 da Fase 4)
+    const length = await client.callTool({ name: 'command_run', arguments: { id: 'pattern.setLength', params: { steps: 64 } } });
+    assert.ok(!length.isError, textOf(length));
+    const preview = await client.callTool({ name: 'render_preview', arguments: { what: 'pattern', loops: 2 } });
+    assert.ok(!preview.isError, textOf(preview));
+    const m = preview.structuredContent as any;
+    assert.equal(m.bpm, 140);
+    assert.equal(m.barsRmsDb.length, 8, `compassos: ${m.barsRmsDb.join(', ')}`);
+    assert.equal(m.lastBarPartial, false);
+    assert.deepEqual(m.mutedBars, m.barsRmsDb.map((v: number, i: number) => (v <= -60 ? i + 1 : 0)).filter(Boolean), 'os mudos vão no JSON');
+    assert.ok(Array.isArray(m.warnings));
+    console.log(`    prévia de 2 voltas de 4 compassos a 140 BPM: ${m.barsRmsDb.length} compassos (${m.barsRmsDb.join(' · ')}), mudos: ${m.mutedBars.join(', ') || 'nenhum'}`);
 
     const appPid = JSON.parse(readFileSync(controlFile, 'utf8')).pid as number;
     const serverPid = transport.pid!;

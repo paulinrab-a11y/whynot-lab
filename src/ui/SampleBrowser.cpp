@@ -1,5 +1,6 @@
 #include "SampleBrowser.h"
 #include "Theme.h"
+#include "fx/FxWidgets.h"
 #include "../app/AppController.h"
 
 namespace whynot
@@ -80,6 +81,15 @@ SampleBrowser::SampleBrowser (AppController& a) : app (a)
     addButton.setTooltip ("Adicionar outra pasta de sons à lista"_t);
     addButton.onClick = [this] { chooseFolderToAdd(); };
 
+    filterButton.setTooltip ("Filtrar pelo tom e pelo BPM do projeto, ou só loops ou só one-shots"_t);
+    filterButton.setNeutralWhenOn (true);
+    filterButton.onClick = [this] { showFilterMenu(); };
+    updateFilterButton();
+
+    // a leitura dos sons (BPM e tom) termina em segundo plano: a lista acende as etiquetas (ou refaz o filtro)
+    if (auto* cache = app.soundInfo())
+        cache->onAnalysed = [safe = juce::Component::SafePointer<SampleBrowser> (this)] { if (safe != nullptr) safe->soundsAnalysed(); };
+
     favouritesButton.setTooltip ("Só os favoritos: as pastas de kit e os sons marcados com a estrela do fim da linha"_t);
     favouritesButton.setClickingTogglesState (true);
     favouritesButton.onClick = [this] { setFavouritesOnly (favouritesButton.getToggleState()); };
@@ -106,6 +116,7 @@ SampleBrowser::SampleBrowser (AppController& a) : app (a)
     list.setMultipleSelectionEnabled (false);
 
     addAndMakeVisible (favouritesButton);
+    addAndMakeVisible (filterButton);
     addAndMakeVisible (openButton);
     addAndMakeVisible (addButton);
     addAndMakeVisible (search);
@@ -120,6 +131,9 @@ SampleBrowser::~SampleBrowser()
 {
     Favorites::get().removeListener (this);
     stopTimer();
+
+    if (auto* cache = app.soundInfo())
+        cache->onAnalysed = nullptr;
 
     if (indexer != nullptr)
         indexer->stopThread (3000);
@@ -137,6 +151,9 @@ void SampleBrowser::loadSettings()
 {
     extraFolders = juce::StringArray::fromLines (settings->getValue ("extraFolders"));
     extraFolders.removeEmptyStrings();
+    keyFilter = (soundinfo::KeyFilter) juce::jlimit (0, 2, settings->getIntValue ("keyFilter", 0));
+    bpmFilter = (soundinfo::BpmFilter) juce::jlimit (0, 1, settings->getIntValue ("bpmFilter", 0));
+    kindFilter = (soundinfo::KindFilter) juce::jlimit (0, 2, settings->getIntValue ("kindFilter", 0));
 
     if (settings->containsKey ("expanded"))
     {
@@ -160,6 +177,9 @@ void SampleBrowser::saveSettings()
 
     settings->setValue ("extraFolders", extraFolders.joinIntoString ("\n"));
     settings->setValue ("expanded", open.joinIntoString ("\n"));
+    settings->setValue ("keyFilter", (int) keyFilter);
+    settings->setValue ("bpmFilter", (int) bpmFilter);
+    settings->setValue ("kindFilter", (int) kindFilter);
     settings->saveIfNeeded();
 }
 
@@ -184,9 +204,70 @@ bool SampleBrowser::isSearching() const
 
 void SampleBrowser::rebuildRows()
 {
-    rows.clear();
+    // a linha escolhida segue o arquivo: a lista do filtro cresce enquanto a leitura corre
+    const int selectedRow = list.getSelectedRow();
+    const auto selectedFile = juce::isPositiveAndBelow (selectedRow, (int) rows.size()) ? rows[(size_t) selectedRow].file : juce::File();
 
-    if (isSearching())
+    rows.clear();
+    filterPending = filterMatched = 0;
+
+    if (isFiltering() && ! isFavouritesOnly())
+    {
+        // o filtro do tom e do BPM: todas as pastas (e as palavras da busca, se houver); o que ainda não foi lido entra
+        // na fila, na ordem do índice, e aparece quando a leitura disser que combina
+        const auto words = juce::StringArray::fromTokens (search.getText().trim(), true);
+        auto* cache = app.soundInfo();
+        const auto status = cache != nullptr ? cache->statusOf (index) : std::vector<SoundInfoCache::Status>();   // uma trava só
+        std::vector<juce::File> wanted;
+
+        for (int i = 0; i < index.size() && cache != nullptr; ++i)
+        {
+            const auto& f = index.getReference (i);
+            const auto& st = status[(size_t) i];
+            bool matches = true;
+
+            if (! words.isEmpty())
+            {
+                const auto name = f.getFileNameWithoutExtension();
+
+                for (auto& w : words)
+                    if (! name.containsIgnoreCase (w)) { matches = false; break; }
+            }
+
+            if (! matches)
+                continue;
+
+            const bool read = st.info.has_value() && st.info->analysed;
+
+            if (! read || ! st.settled)
+            {
+                if ((int) wanted.size() < SoundInfoCache::maxQueue)
+                    wanted.push_back (f);
+
+                if (! read)
+                {
+                    ++filterPending;
+                    continue;
+                }
+            }
+
+            if (filterPasses (*st.info) && ++filterMatched <= maxResults)
+                rows.push_back ({ Kind::file, f, f.getFileNameWithoutExtension(), f.getParentDirectory().getFileName(), 0 });
+        }
+
+        if (cache != nullptr)
+            cache->requestMany (wanted);   // o resto entra quando a fila esvaziar (o aviso refaz a lista)
+
+        juce::String caption = filterMatched == 0 ? (indexing || filterPending > 0 ? "Lendo os sons..."_t : "Nada combina com o filtro"_t)
+                                                  : juce::String (filterMatched) + (filterMatched == 1 ? " som combina" : " sons combinam");
+        caption << ": " << filterCaption();
+
+        if (filterPending > 0)
+            caption << " (lendo mais " << juce::String (filterPending) << ")";
+
+        rows.insert (rows.begin(), Node { Kind::caption, {}, caption });
+    }
+    else if (isSearching())
     {
         const auto words = juce::StringArray::fromTokens (search.getText().trim(), true);
         int found = 0;
@@ -239,6 +320,18 @@ void SampleBrowser::rebuildRows()
     }
 
     list.updateContent();
+
+    if (selectedFile != juce::File())
+    {
+        const juce::ScopedValueSetter<bool> quiet (restoringSelection, true);   // sem tocar a prévia de novo
+        const int now = rowOf (selectedFile);
+
+        if (now >= 0 && now != selectedRow)
+            list.selectRow (now, true);
+        else if (now < 0)
+            list.deselectAllRows();
+    }
+
     list.repaint();
 }
 
@@ -413,10 +506,174 @@ void SampleBrowser::indexReady (juce::Array<juce::File> files)
     index = std::move (files);
     indexing = false;
 
-    if (isSearching())
+    if (isSearching() || isFiltering())   // com o filtro salvo ligado, a lista vem do índice
         rebuildRows();
 
     repaint();
+}
+
+//==============================================================================
+// O filtro por tom e BPM (bloco 4b, 23/10)
+bool SampleBrowser::isFiltering() const noexcept
+{
+    return keyFilter != soundinfo::KeyFilter::any || bpmFilter != soundinfo::BpmFilter::any || kindFilter != soundinfo::KindFilter::any;
+}
+
+bool SampleBrowser::filterPasses (const SoundInfo& info) const
+{
+    const auto& p = app.getModel().get();
+    return soundinfo::keyFits (info, p.keyRoot, Project::scaleDegrees (p.scale), keyFilter) && soundinfo::bpmFits (info.bpm, p.bpm, bpmFilter)
+        && soundinfo::kindFits (info, kindFilter);   // com a escala do projeto (dórico, frígio...); na cromática, todo tom
+}
+
+namespace
+{
+    juce::String keyLabel (int root, bool major)
+    {
+        SoundInfo k;
+        k.keyRoot = ((root % 12) + 12) % 12;
+        k.keyMajor = major;
+        return k.keyText();
+    }
+}
+
+juce::String SampleBrowser::filterCaption() const
+{
+    const auto& p = app.getModel().get();
+    juce::StringArray parts;
+
+    if (keyFilter != soundinfo::KeyFilter::any)
+        parts.add ((keyFilter == soundinfo::KeyFilter::project ? "no tom "_t : "combina com "_t) + soundinfo::projectKeyText (p.keyRoot, p.scale));
+
+    if (bpmFilter != soundinfo::BpmFilter::any)
+        parts.add ("perto de "_t + juce::String (juce::roundToInt (p.bpm)) + " BPM");
+
+    if (kindFilter != soundinfo::KindFilter::any)
+        parts.add (kindFilter == soundinfo::KindFilter::loops ? "só loops"_t : "só one-shots"_t);
+
+    return parts.joinIntoString (", ");
+}
+
+void SampleBrowser::updateFilterButton()
+{
+    filterButton.setToggleState (isFiltering(), juce::dontSendNotification);
+    filterButton.setTooltip (isFiltering() ? "Filtro: "_t + filterCaption() + ". Clique para mudar ou tirar."_t
+                                           : juce::String ("Filtrar pelo tom e pelo BPM do projeto, ou só loops ou só one-shots"_t));
+}
+
+void SampleBrowser::setIndexForTest (juce::Array<juce::File> files)
+{
+    if (indexer != nullptr)
+        indexer->stopThread (3000);   // o índice das pastas de verdade não chega por cima
+
+    indexReady (std::move (files));
+    rebuildRows();
+}
+
+void SampleBrowser::setFilters (soundinfo::KeyFilter key, soundinfo::BpmFilter bpm, soundinfo::KindFilter kind)
+{
+    keyFilter = key;
+    bpmFilter = bpm;
+    kindFilter = kind;
+    saveSettings();
+    updateFilterButton();
+
+    if (isFiltering() && index.isEmpty() && ! indexing)
+        startIndexing();   // o filtro procura em todas as pastas
+
+    rebuildRows();
+    repaint();
+}
+
+void SampleBrowser::soundsAnalysed()
+{
+    // com o filtro, os sons que acabaram de ser lidos podem entrar na lista (no máximo a cada 250 ms, para a lista
+    // não pular enquanto a leitura corre); sem ele, só as etiquetas acendem
+    if (isFiltering() && ! isFavouritesOnly())
+    {
+        if (! rebuildQueued)
+        {
+            rebuildQueued = true;
+            juce::Timer::callAfterDelay (index.size() > 5000 ? 1000 : 250, [safe = juce::Component::SafePointer<SampleBrowser> (this)]
+            {
+                if (safe == nullptr)
+                    return;
+
+                safe->rebuildQueued = false;
+                safe->rebuildRows();
+                safe->repaint (safe->getLocalBounds().removeFromBottom (footerHeight));
+            });
+        }
+
+        return;
+    }
+
+    list.repaint();
+    repaint (getLocalBounds().removeFromBottom (footerHeight));
+}
+
+void SampleBrowser::showFilterMenu()
+{
+    const auto& p = app.getModel().get();
+    const bool chromatic = p.scale == "chromatic";
+    const auto degrees = Project::scaleDegrees (p.scale);
+    const auto projectKey = soundinfo::projectKeyText (p.keyRoot, p.scale);
+    const int bpm = juce::roundToInt (p.bpm);
+
+    // os tons que passam em cada filtro, pela escala do projeto (Ré dórico: Dó maior e Lá menor)
+    auto names = [] (const std::vector<std::pair<int, bool>>& keys, const std::vector<std::pair<int, bool>>& skip)
+    {
+        juce::StringArray out;
+
+        for (auto& k : keys)
+            if (std::find (skip.begin(), skip.end(), k) == skip.end())
+                out.add (keyLabel (k.first, k.second));
+
+        return out.joinIntoString (", ");
+    };
+    const auto same = soundinfo::keysThatFit (p.keyRoot, degrees, soundinfo::KeyFilter::project);
+    const auto neighbours = soundinfo::keysThatFit (p.keyRoot, degrees, soundinfo::KeyFilter::compatible);
+
+    juce::PopupMenu menu;
+    menu.addSectionHeader (chromatic ? "Tom (o projeto está na escala cromática: todo tom serve)"_t : "Tom (o do projeto: "_t + projectKey + ")");
+    menu.addItem (1, "Qualquer tom"_t, true, keyFilter == soundinfo::KeyFilter::any);
+    menu.addItem (2, "As mesmas notas do projeto ("_t + names (same, {}) + ")", ! chromatic, keyFilter == soundinfo::KeyFilter::project);
+    menu.addItem (3, "Combina: também os vizinhos ("_t + names (neighbours, same) + ")", ! chromatic, keyFilter == soundinfo::KeyFilter::compatible);
+    menu.addSectionHeader ("Andamento"_t);
+    menu.addItem (10, "Qualquer BPM"_t, true, bpmFilter == soundinfo::BpmFilter::any);
+    menu.addItem (11, "Perto do projeto: "_t + juce::String (bpm) + " BPM (4% para mais ou para menos, ou "_t
+                      + juce::String (juce::roundToInt (p.bpm / 2.0)) + " e " + juce::String (bpm * 2) + ")",
+                  true, bpmFilter == soundinfo::BpmFilter::project);
+    menu.addSectionHeader ("Tipo"_t);
+    menu.addItem (20, "Loops e one-shots"_t, true, kindFilter == soundinfo::KindFilter::any);
+    menu.addItem (21, "Só loops"_t, true, kindFilter == soundinfo::KindFilter::loops);
+    menu.addItem (22, "Só one-shots"_t, true, kindFilter == soundinfo::KindFilter::oneShots);
+    menu.addSeparator();
+    menu.addItem (30, "Tirar os filtros"_t, isFiltering());
+
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&filterButton),
+                        [safe = juce::Component::SafePointer<SampleBrowser> (this)] (int choice)
+    {
+        if (safe == nullptr || choice == 0)
+            return;
+
+        auto key = safe->keyFilter;
+        auto bpm = safe->bpmFilter;
+        auto kind = safe->kindFilter;
+
+        if (choice >= 1 && choice <= 3)    key = (soundinfo::KeyFilter) (choice - 1);
+        if (choice == 10 || choice == 11)  bpm = (soundinfo::BpmFilter) (choice - 10);
+        if (choice >= 20 && choice <= 22)  kind = (soundinfo::KindFilter) (choice - 20);
+
+        if (choice == 30)
+        {
+            key = soundinfo::KeyFilter::any;
+            bpm = soundinfo::BpmFilter::any;
+            kind = soundinfo::KindFilter::any;
+        }
+
+        safe->setFilters (key, bpm, kind);
+    });
 }
 
 //==============================================================================
@@ -563,7 +820,7 @@ void SampleBrowser::showRowMenu (int row)
 
         switch (choice)
         {
-            case 1: safe->preview (row); break;
+            case 1: safe->preview (safe->rowOf (node.file)); break;   // a linha pode ter mudado com o filtro lendo
             case 2: safe->addToRack (node.file); break;
             case 6: safe->sliceToRack (node.file); break;
             case 7: safe->addKitToRack (node.file); break;
@@ -602,7 +859,7 @@ void SampleBrowser::paintListBoxItem (int row, juce::Graphics& g, int width, int
     {
         g.setColour (colour::textFaint);
         g.setFont (captionFont());
-        g.drawText (n.label.toUpperCase(), area.withTrimmedTop (6), juce::Justification::centredLeft);
+        g.drawText (fxui::caps (n.label), area.withTrimmedTop (6), juce::Justification::centredLeft);   // "LÁ MENOR", com o acento
         return;
     }
 
@@ -646,13 +903,30 @@ void SampleBrowser::paintListBoxItem (int row, juce::Graphics& g, int width, int
     icons::draw (g, isFolder ? Icon::folder : Icon::wave, area.removeFromLeft (16).toFloat().withSizeKeepingCentre (16.0f, 16.0f), ink);
     area.removeFromLeft (8);
 
-    if (n.detail.isNotEmpty())
+    // o BPM e o tom (bloco 4b), pelo nome ou pela leitura em segundo plano; sem eles, a extensão ou a pasta
+    auto detail = n.detail;
+
+    if (n.kind == Kind::file)
+    {
+        if (auto* cache = app.soundInfo())
+        {
+            const auto info = cache->get (n.file);
+
+            if (! cache->isSettled (n.file))
+                cache->request (n.file);   // o que está na tela é lido primeiro
+
+            if (const auto tags = info.tags(); tags.isNotEmpty())
+                detail = tags;
+        }
+    }
+
+    if (detail.isNotEmpty())
     {
         const auto detailFont = font (type::small);
-        const int w = juce::jmin (area.getWidth() / 2, juce::roundToInt (juce::GlyphArrangement::getStringWidth (detailFont, n.detail)) + 4);
+        const int w = juce::jmin (area.getWidth() / 2, juce::roundToInt (juce::GlyphArrangement::getStringWidth (detailFont, detail)) + 4);
         g.setColour (colour::textFaint);
         g.setFont (detailFont);
-        g.drawText (n.detail, area.removeFromRight (w), juce::Justification::centredRight, true);
+        g.drawText (detail, area.removeFromRight (w), juce::Justification::centredRight, true);
         area.removeFromRight (8);
     }
 
@@ -696,7 +970,7 @@ void SampleBrowser::selectedRowsChanged (int lastRowSelected)
     if (hover.isPressingIn (lastRowSelected, starColumn (list.getVisibleRowWidth(), list.getRowHeight())))
         return;
 
-    if (! juce::ModifierKeys::currentModifiers.isPopupMenu())
+    if (! juce::ModifierKeys::currentModifiers.isPopupMenu() && ! restoringSelection)
         preview (lastRowSelected);
 }
 
@@ -748,8 +1022,28 @@ juce::String SampleBrowser::getTooltipForRow (int row)
     switch (n.kind)
     {
         case Kind::file:
-            return n.file.getFileName() + "\n" + "Clique ouve. Arraste para o rack ou a playlist; duplo clique cria um canal."_t
+        {
+            // a pasta e o que se sabe do som (o BPM e o tom: de onde vieram)
+            juce::String about;
+
+            if (auto* cache = app.soundInfo())
+            {
+                const auto info = cache->get (n.file);
+
+                if (info.bpm > 0.0)
+                    about << juce::String (info.bpm, 1).replace (".", ",") << " BPM (" << (info.bpmSource == "nome" ? "pelo nome"_t : "pela leitura do áudio"_t) << ")\n";
+
+                if (info.hasKey())
+                    about << (info.isNote ? "Nota "_t : "Tom "_t) << info.keyText() << " (" << (info.keySource == "nome" ? "pelo nome"_t : "pela leitura do áudio"_t) << ")\n";
+
+                if (info.seconds > 0.0)
+                    about << juce::String (info.seconds, 2).replace (".", ",") << " s" << (info.isLoop() ? ", loop" : ", one-shot") << "\n";
+            }
+
+            return n.file.getFileName() + "  (" + n.file.getParentDirectory().getFileName() + ")\n" + about
+                   + "Clique ouve. Arraste para o rack ou a playlist; duplo clique cria um canal."_t
                    + "\n" + "A estrela no fim da linha marca como favorito."_t;
+        }
 
         case Kind::root:
         case Kind::folder:
@@ -795,6 +1089,8 @@ void SampleBrowser::paint (juce::Graphics& g)
     g.setFont (font (type::small, Weight::medium));
     const int favourites = Favorites::get().list (Favorites::Kind::sample).size() + Favorites::get().list (Favorites::Kind::folder).size();
     g.drawText (isFavouritesOnly() ? juce::String (favourites) + (favourites == 1 ? " favorito" : " favoritos")
+                : isFiltering() ? juce::String (filterMatched) + (filterMatched == 1 ? " som combina" : " sons combinam")
+                                      + (filterPending > 0 ? " · lendo mais "_t + juce::String (filterPending) : juce::String())
                 : indexing ? "Lendo as pastas..."_t
                            : juce::String (index.size()) + (index.size() == 1 ? " som nas pastas" : " sons nas pastas"),
                 footer.removeFromTop (18), juce::Justification::centredLeft, true);
@@ -815,6 +1111,8 @@ void SampleBrowser::resized()
     openButton.setBounds (header.removeFromRight (metric::control));
     header.removeFromRight (2);
     favouritesButton.setBounds (header.removeFromRight (metric::control));
+    header.removeFromRight (2);
+    filterButton.setBounds (header.removeFromRight (metric::control));
 
     search.setBounds (searchArea());
     r.removeFromBottom (footerHeight);

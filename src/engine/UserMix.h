@@ -45,8 +45,9 @@ juce::Result deletePreset (const juce::String& type, const juce::String& id);
 
 /** Nomes das cadeias salvas, em ordem alfabética. */
 juce::StringArray chainNames();
-juce::Result saveChain (const juce::String& name, const std::vector<Insert>& inserts);
-juce::Result loadChain (const juce::String& name, std::vector<Insert>& out);
+/** A cadeia leva também o rack (os macros, bloco 4c), ligado aos efeitos pelos ids do arquivo. */
+juce::Result saveChain (const juce::String& name, const std::vector<Insert>& inserts, const std::vector<Macro>& macros = {});
+juce::Result loadChain (const juce::String& name, std::vector<Insert>& out, std::vector<Macro>* macros = nullptr);
 
 /** Tira a cadeia da lista: o arquivo vai para `cadeias/apagadas` (dá para recuperar). */
 juce::Result deleteChain (const juce::String& name);

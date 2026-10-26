@@ -1,8 +1,10 @@
 #include "CommandRegistry.h"
+#include "../automation/Macros.h"
 #include "../dsp/FxCatalog.h"
 #include "../engine/UserMix.h"
 
 #include <optional>
+#include <set>
 
 namespace whynot
 {
@@ -87,16 +89,21 @@ namespace
     }
 
     /** Cadeia salva → inserts deste projeto: ids novos, sem disparo, a afinação no tom do projeto. */
-    std::vector<Insert> adoptChain (const Project& p, std::vector<Insert> chain)
+    std::vector<Insert> adoptChain (const Project& p, std::vector<Insert> chain, std::map<juce::String, juce::String>* renamed = nullptr)
     {
         std::vector<Insert> taken;
 
         for (auto& ins : chain)
         {
+            const auto oldId = ins.id;
+
             // id novo, único no projeto e entre os que acabaram de entrar
             do
                 ins.id = newInsertId (p);
             while (std::any_of (taken.begin(), taken.end(), [&ins] (const Insert& t) { return t.id == ins.id; }));
+
+            if (renamed != nullptr)
+                (*renamed)[oldId] = ins.id;   // os links do rack da cadeia (bloco 4c) seguem o efeito
 
             ins.sidechain = {};
 
@@ -434,6 +441,55 @@ namespace
 
         return object ({ { "effects", effects }, { "styles", styles }, { "roles", roles }, { "maxInserts", maxInserts } });
     }
+
+    //==========================================================================
+    // Macros do rack (bloco 4c)
+
+    /** O macro pedido ("macro" de 1 a 8), criando os de antes dele se faltarem (o normalise tira os vazios do fim). */
+    Macro* macroFor (MixerTrack& m, const juce::var& a, int& index, juce::String& error)
+    {
+        const double n = params::number (a, "macro", 0.0);
+
+        if (! (n >= 1.0 && n <= (double) maxMacros) || n != std::floor (n))
+        {
+            error = "Escolha o macro de 1 a 8."_t;
+            return nullptr;
+        }
+
+        index = (int) n - 1;
+
+        if ((int) m.macros.size() <= index)
+            m.macros.resize ((size_t) index + 1);
+
+        return &m.macros[(size_t) index];
+    }
+
+    /** Um macro para a IA: o nome, a posição e, para cada parâmetro ligado, o efeito, o nome e os valores com o
+        macro em 0, em 1 e agora (na unidade do parâmetro). */
+    juce::var macroToVar (const MixerTrack& m, int index)
+    {
+        static const Macro none;
+        const auto& mac = index < (int) m.macros.size() ? m.macros[(size_t) index] : none;
+        juce::Array<juce::var> links;
+
+        for (auto& link : mac.links)
+        {
+            const auto* param = macros::paramOf (m, link);
+            const auto* ins = m.findInsert (link.insert);
+            const auto* info = ins != nullptr ? dsp::findEffect (ins->type.toStdString()) : nullptr;
+
+            if (param == nullptr || info == nullptr)
+                continue;
+
+            links.add (object ({ { "insert", link.insert }, { "effect", utf8 (info->name) }, { "param", link.param },
+                                 { "paramName", utf8 (param->name) }, { "unit", utf8 (param->unit) },
+                                 { "min", macros::rounded4 (macros::valueAt (*param, link, 0.0f)) },
+                                 { "max", macros::rounded4 (macros::valueAt (*param, link, 1.0f)) },
+                                 { "now", macros::rounded4 (macros::valueAt (*param, link, mac.value)) } }));
+        }
+
+        return object ({ { "macro", index + 1 }, { "name", macros::displayName (mac, index) }, { "value", mac.value }, { "links", links } });
+    }
 }
 
 void registerMixCommands (CommandRegistry& r)
@@ -753,7 +809,7 @@ void registerMixCommands (CommandRegistry& r)
                      return CommandResult::fail ("Esta trilha não tem efeitos para salvar."_t);
 
                  const auto name = params::string (a, "name").trim();
-                 const auto result = usermix::saveChain (name, t.track->inserts);
+                 const auto result = usermix::saveChain (name, t.track->inserts, t.track->macros);
 
                  if (result.failed())
                      return CommandResult::fail (result.getErrorMessage());
@@ -773,13 +829,15 @@ void registerMixCommands (CommandRegistry& r)
                      return CommandResult::fail (t.error);
 
                  std::vector<Insert> chain;
-                 const auto result = usermix::loadChain (params::string (a, "name"), chain);
+                 std::vector<Macro> rack;
+                 const auto result = usermix::loadChain (params::string (a, "name"), chain, &rack);
 
                  if (result.failed())
                      return CommandResult::fail (result.getErrorMessage());
 
                  const bool append = params::string (a, "mode", "replace") == "append";
-                 auto taken = adoptChain (p, std::move (chain));
+                 std::map<juce::String, juce::String> renamed;
+                 auto taken = adoptChain (p, std::move (chain), &renamed);
 
                  if (! append)
                      t.track->inserts.clear();
@@ -790,7 +848,58 @@ void registerMixCommands (CommandRegistry& r)
                  for (int i = 0; i < (int) taken.size() && i < room; ++i)
                      t.track->inserts.push_back (taken[(size_t) i]);
 
-                 return CommandResult::success (object ({ { "inserts", (int) t.track->inserts.size() }, { "skipped", left } }));
+                 // O rack da cadeia (bloco 4c), com os ids novos dos efeitos. Trocando, ele substitui o da trilha (se a
+                 // cadeia tiver um); somando, cada macro da cadeia ocupa o mesmo número, se lá não houver nada ligado,
+                 // ou o primeiro livre. Link para um efeito que não coube sai no normalise.
+                 int macrosIn = 0, macrosLeft = 0;
+                 std::set<juce::String> placed;
+
+                 for (int i = 0; i < (int) taken.size() && i < room; ++i)
+                     placed.insert (taken[(size_t) i].id);
+
+                 // os links seguem o id novo; o de um efeito que não coube (ou de tipo desconhecido) sai já aqui
+                 for (auto& mac : rack)
+                 {
+                     for (auto& link : mac.links)
+                         link.insert = renamed.count (link.insert) > 0 ? renamed[link.insert] : juce::String();
+
+                     std::erase_if (mac.links, [&placed] (const MacroLink& l) { return placed.count (l.insert) == 0; });
+                 }
+
+                 if (! append && std::any_of (rack.begin(), rack.end(), [] (const Macro& m) { return ! m.links.empty(); }))
+                 {
+                     t.track->macros = rack;
+                     macrosIn = (int) std::count_if (rack.begin(), rack.end(), [] (const Macro& m) { return ! m.links.empty(); });
+                 }
+                 else if (append)
+                 {
+                     t.track->macros.resize ((size_t) maxMacros);
+
+                     for (int i = 0; i < (int) rack.size() && i < maxMacros; ++i)
+                     {
+                         if (rack[(size_t) i].links.empty())
+                             continue;
+
+                         // livre = sem nada: sem links, sem nome e em 0 (um macro só com nome é do artista)
+                         int slot = t.track->macros[(size_t) i].isDefault() ? i : -1;
+
+                         for (int k = 0; slot < 0 && k < maxMacros; ++k)
+                             if (t.track->macros[(size_t) k].isDefault())
+                                 slot = k;
+
+                         if (slot < 0)
+                         {
+                             ++macrosLeft;
+                             continue;
+                         }
+
+                         t.track->macros[(size_t) slot] = rack[(size_t) i];
+                         ++macrosIn;
+                     }
+                 }
+
+                 return CommandResult::success (object ({ { "inserts", (int) t.track->inserts.size() }, { "skipped", left },
+                                                          { "macros", macrosIn }, { "macrosSkipped", macrosLeft } }));
              } });
 
     r.add ({ "mixer.deleteChain", "Apagar minha cadeia",
@@ -959,6 +1068,167 @@ void registerMixCommands (CommandRegistry& r)
 
                  std::erase_if (p.mixer, [&id] (const MixerTrack& m) { return m.id == id; });
                  return CommandResult::success();
+             } });
+
+    //==========================================================================
+    // Macros do rack (bloco 4c, 23/10): 8 knobs por trilha, cada um move vários parâmetros dos efeitos nativos dela
+
+    r.add ({ "mixer.macros", "Ver os macros",
+             schema ({ { "track", "string", true, "Id da trilha" } }), false,
+             [] (CommandContext& c, const juce::var& a)
+             {
+                 const auto* m = c.model.get().findMixer (params::string (a, "track"));
+
+                 if (m == nullptr)
+                     return CommandResult::fail ("Trilha de mixer não encontrada."_t);
+
+                 juce::Array<juce::var> list;
+
+                 for (int i = 0; i < maxMacros; ++i)
+                     list.add (macroToVar (*m, i));
+
+                 return CommandResult::success (object ({ { "track", m->id }, { "macros", list } }));
+             } });
+
+    r.add ({ "mixer.setMacro", "Mexer no macro",
+             schema ({ { "track", "string", true, "Id da trilha" }, { "macro", "number", true, "Qual macro, de 1 a 8" },
+                       { "value", "number", false, "Posição de 0 a 1: move os parâmetros ligados"_t },
+                       { "name", "string", false, "Nome do macro (vazio = Macro N)" } }), true,
+             [] (CommandContext& c, const juce::var& a)
+             {
+                 auto t = findTarget (c.model.data(), a, false);
+
+                 if (t.track == nullptr)
+                     return CommandResult::fail (t.error);
+
+                 if (! params::has (a, "value") && ! params::has (a, "name"))
+                     return CommandResult::fail ("Informe value (de 0 a 1) ou name."_t);
+
+                 const double value = params::number (a, "value", 0.0);
+
+                 if (params::has (a, "value") && ! std::isfinite (value))
+                     return CommandResult::fail ("value vai de 0 a 1."_t);
+
+                 int index = 0;
+                 juce::String error;
+                 auto* mac = macroFor (*t.track, a, index, error);
+
+                 if (mac == nullptr)
+                     return CommandResult::fail (error);
+
+                 if (params::has (a, "name"))
+                     mac->name = params::string (a, "name").trim().substring (0, 24);
+
+                 int changed = 0;
+
+                 if (params::has (a, "value"))
+                 {
+                     mac->value = macros::rounded4 ((float) juce::jlimit (0.0, 1.0, value));
+                     changed = macros::apply (*t.track, index);
+                 }
+
+                 auto out = macroToVar (*t.track, index);
+                 out.getDynamicObject()->setProperty ("changed", changed);
+                 return CommandResult::success (out);
+             } });
+
+    r.add ({ "mixer.mapMacro", "Ligar ao macro",
+             schema ({ { "track", "string", true, "Id da trilha" }, { "macro", "number", true, "Qual macro, de 1 a 8" },
+                       { "insert", "string", true, "Id do efeito nativo, na mesma trilha" },
+                       { "param", "string", true, "Id do parâmetro (ver fx.list)"_t },
+                       { "min", "number", false, "Valor do parâmetro com o macro em 0 (padrão: o de agora)"_t },
+                       { "max", "number", false, "Valor com o macro em 1 (padrão: o máximo do parâmetro; se ele já está no máximo, o mínimo)"_t } }), true,
+             [] (CommandContext& c, const juce::var& a)
+             {
+                 auto t = findTarget (c.model.data(), a);
+
+                 if (t.insert == nullptr)
+                     return CommandResult::fail (t.error);
+
+                 if (t.insert->kind != "whynot" || t.info == nullptr)
+                     return CommandResult::fail ("O macro move só os efeitos nativos da WHYNOT; um VST3 fica de fora."_t);
+
+                 const auto paramId = params::string (a, "param");
+                 const int pi = t.info->indexOf (paramId.toRawUTF8());
+
+                 if (pi < 0 || t.info->params[(size_t) pi].hidden)
+                     return CommandResult::fail ("Parâmetro desconhecido em "_t + utf8 (t.info->name) + ": " + paramId);
+
+                 const auto& param = t.info->params[(size_t) pi];
+                 int index = 0;
+                 juce::String error;
+                 auto* mac = macroFor (*t.track, a, index, error);
+
+                 if (mac == nullptr)
+                     return CommandResult::fail (error);
+
+                 const auto range = automation::rangeOf (param);
+                 const auto it = t.insert->params.find (paramId);
+                 const float now = macros::rounded4 (range.toNormalised (it != t.insert->params.end() ? it->second : param.def));
+                 auto found = std::find_if (mac->links.begin(), mac->links.end(),
+                                            [&] (const MacroLink& l) { return l.insert == t.insert->id && l.param == paramId; });
+                 const bool isNew = found == mac->links.end();
+                 MacroLink link = isNew ? MacroLink { t.insert->id, paramId, now, now < 0.9999f ? 1.0f : 0.0f } : *found;
+
+                 if (isNew && (int) mac->links.size() >= maxMacroLinks)
+                     return CommandResult::fail ("Este macro já move "_t + juce::String (maxMacroLinks) + " parâmetros."_t);
+
+                 for (auto [key, end] : { std::pair<const char*, float*> { "min", &link.min }, { "max", &link.max } })
+                 {
+                     if (! params::has (a, key))
+                         continue;
+
+                     float v = 0.0f;
+
+                     if (! parseValue (param, a[key], v))
+                         return CommandResult::fail ("Valor inválido para "_t + key + ": " + a[key].toString());
+
+                     *end = macros::rounded4 (range.toNormalised (param.clamp (v)));
+                 }
+
+                 if (isNew)
+                     mac->links.push_back (link);
+                 else
+                     *found = link;
+
+                 // Com o macro em 0 e a faixa padrão (que começa nele), o parâmetro fica onde está. Com o macro em outro
+                 // ponto, ou com a faixa dada, o parâmetro vai para o lugar do macro, como num rack de hardware.
+                 const bool rangeGiven = params::has (a, "min") || params::has (a, "max");
+
+                 if (mac->value > 0.0f || ! isNew || rangeGiven)
+                     macros::apply (*t.track, index);
+
+                 return CommandResult::success (macroToVar (*t.track, index));
+             } });
+
+    r.add ({ "mixer.unmapMacro", "Desligar do macro",
+             schema ({ { "track", "string", true, "Id da trilha" }, { "macro", "number", true, "Qual macro, de 1 a 8" },
+                       { "insert", "string", false, "Só deste efeito (ausente = todos)"_t },
+                       { "param", "string", false, "Só este parâmetro (com insert)"_t } }), true,
+             [] (CommandContext& c, const juce::var& a)
+             {
+                 auto t = findTarget (c.model.data(), a, false);
+
+                 if (t.track == nullptr)
+                     return CommandResult::fail (t.error);
+
+                 int index = 0;
+                 juce::String error;
+                 auto* mac = macroFor (*t.track, a, index, error);
+
+                 if (mac == nullptr)
+                     return CommandResult::fail (error);
+
+                 const auto insert = params::string (a, "insert"), param = params::string (a, "param");
+                 const auto removed = std::erase_if (mac->links, [&] (const MacroLink& l)
+                 {
+                     return (insert.isEmpty() || l.insert == insert) && (param.isEmpty() || l.param == param);
+                 });
+
+                 if (removed == 0)
+                     return CommandResult::fail ("Nada ligado a este macro com esse efeito ou parâmetro."_t);
+
+                 return CommandResult::success (object ({ { "macro", index + 1 }, { "removed", (int) removed } }));
              } });
 
     //==========================================================================

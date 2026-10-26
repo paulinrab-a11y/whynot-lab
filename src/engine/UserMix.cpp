@@ -197,7 +197,7 @@ juce::StringArray chainNames()
     return names;
 }
 
-juce::Result saveChain (const juce::String& name, const std::vector<Insert>& inserts)
+juce::Result saveChain (const juce::String& name, const std::vector<Insert>& inserts, const std::vector<Macro>& macros)
 {
     if (name.trim().isEmpty() || juce::File::createLegalFileName (name.trim()).isEmpty())
         return juce::Result::fail ("Dê um nome à cadeia."_t);
@@ -215,6 +215,7 @@ juce::Result saveChain (const juce::String& name, const std::vector<Insert>& ins
         return juce::Result::fail ("Não consegui montar a cadeia."_t);
 
     master->inserts = inserts;
+    master->macros = macros;
 
     for (auto& ins : master->inserts)
         ins.sidechain = {};   // quem dispara é uma trilha de outro projeto
@@ -222,7 +223,7 @@ juce::Result saveChain (const juce::String& name, const std::vector<Insert>& ins
     return writeAtomically (chainFile (name), wnl::toJson (p));
 }
 
-juce::Result loadChain (const juce::String& name, std::vector<Insert>& out)
+juce::Result loadChain (const juce::String& name, std::vector<Insert>& out, std::vector<Macro>* macros)
 {
     const auto file = chainFile (name);
 
@@ -241,6 +242,10 @@ juce::Result loadChain (const juce::String& name, std::vector<Insert>& out)
         return juce::Result::fail ("O arquivo da cadeia não tem efeitos: "_t + file.getFullPathName());
 
     out = master->inserts;
+
+    if (macros != nullptr)
+        *macros = master->macros;
+
     return juce::Result::ok();
 }
 

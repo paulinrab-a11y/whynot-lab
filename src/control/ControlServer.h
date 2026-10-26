@@ -60,8 +60,10 @@ public:
 
         /** ui.screenshot (fatia 4.6): mostra a tela pedida (vazio = a atual), grava o PNG com até `maxWidth` de
             largura e devolve o tamanho; vazio = não deu (o motivo em `error`). Com janela, a tela que você vê;
-            sem janela, uma tela montada fora da área de trabalho. nullptr = sem captura. */
-        std::function<juce::Rectangle<int> (const juce::String& view, int maxWidth, const juce::File& png, juce::String& error)> capture;
+            sem janela, uma tela montada fora da área de trabalho. nullptr = sem captura.
+            `channel` entra com o canal pedido para o piano roll (vazio = o escolhido) e volta com o que a tela mostra. */
+        std::function<juce::Rectangle<int> (const juce::String& view, juce::String& channel, int maxWidth,
+                                            const juce::File& png, juce::String& error)> capture;
     };
 
     ControlServer (AppController&, Options);

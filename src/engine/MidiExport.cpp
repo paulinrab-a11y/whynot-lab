@@ -28,7 +28,7 @@ juce::Result writeMidiFile (const Project& p, bool song, int loops, const juce::
         if (song)
         {
             for (auto& item : p.playlistItems)
-                if (item.kind == "pattern" && ! item.muted)
+                if (item.kind == "pattern" && p.itemSounds (item))
                     if (auto* pat = p.findPattern (item.ref))
                         blocks.push_back ({ item.start, Projector::notesFor (p, *pat, c, item.length, item.patternOffset) });
         }

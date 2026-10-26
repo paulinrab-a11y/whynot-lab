@@ -260,6 +260,9 @@ function Incluir([string] $noPacote, [string] $origem, [string] $descricao, [str
 
 if ($SoApp) {
     Incluir 'LEIA-ME.txt' (Join-Path $PSScriptRoot 'LEIA-ME-app.txt') 'como usar o app'
+    # o pacote dos produtores é público: a licença do código (AGPL-3.0) e as dos terceiros vão junto
+    Incluir 'LICENCA.txt' (Join-Path (Split-Path (Split-Path $PSScriptRoot)) 'LICENSE') 'a licença do código (AGPL-3.0)'
+    Incluir 'AVISOS-DE-TERCEIROS.txt' (Join-Path $PSScriptRoot 'AVISOS-DE-TERCEIROS.txt') 'as licenças dos terceiros'
     if (Test-Path -LiteralPath $Exe) { Incluir 'app\WHYNOT LAB.exe' $Exe 'o app, roda sem instalar' 'arquivo' }
 }
 else {
@@ -461,7 +464,8 @@ $exeNoPacote = Join-Path $Destino 'app\WHYNOT LAB.exe'
 $assunto = Git-Exigir $principal @('log', '-1', '--format=%h (%cd)', '--date=format:%d/%m/%Y %H:%M', $Ramo) 'não deu para ler o commit'
 $versao = @(
     'WHYNOT LAB: pacote portátil',
-    "Montado em $(Get-Date -Format 'dd/MM/yyyy HH:mm') a partir de $principal",
+    # no -SoApp (público), sem a pasta de quem montou: ela leva o usuário do Windows
+    ("Montado em $(Get-Date -Format 'dd/MM/yyyy HH:mm')" + $(if ($SoApp) { '' } else { " a partir de $principal" })),
     "Código: $Ramo em $assunto"
 )
 if (Test-Path -LiteralPath $exeNoPacote) { $versao += "App: WHYNOT LAB.exe, $(Tamanho-Mb $exeNoPacote) MB, sha256 $((Get-FileHash -LiteralPath $exeNoPacote -Algorithm SHA256).Hash)" }

@@ -27,8 +27,15 @@ struct AudioMeasures
     double barSeconds = 0.0;
     std::vector<float> barsRmsDb;  // um por compasso, até maxBars
     bool barsCut = false;          // o arquivo tem mais compassos que maxBars
+    std::vector<float> beatsRmsDb; // um por tempo, até maxBeats: um clap a mais muda o tempo dele, não só o compasso
+    bool beatsCut = false;         // o arquivo tem mais tempos que maxBeats
+    bool lastBarPartial = false;   // o último compasso não chega ao fim (padrão quebrado, fim da música)
 
     static constexpr int maxBars = 256;
+    static constexpr int maxBeats = 256;   // 64 compassos em 4/4: uma prévia de padrão cabe inteira
+
+    /** Uma sobra (ou falta) no fim menor que isto, em compassos, é arredondamento do render, não um compasso. */
+    static constexpr double barTolerance = 0.01;
 };
 
 /** Lê o arquivo em blocos (não carrega tudo na memória) e mede. bpm e beatsPerBar dão o tamanho do compasso. */

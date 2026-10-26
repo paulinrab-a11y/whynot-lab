@@ -14,6 +14,7 @@
 #include "../../model/WnlFormat.h"
 #include "../../ui/AiBridgeUi.h"
 #include "../../ui/MainComponent.h"
+#include "../../ui/TransportBar.h"
 #include "../../ui/Theme.h"
 
 #include <map>
@@ -390,6 +391,20 @@ void runControlSelfTest (SelfTestContext& ctx)
                 onlyTransport = onlyTransport && c["id"].toString().startsWith ("transport.");
 
         rep.check (onlyTransport, "command.list { domain: transport } traz só o transporte"_t);
+
+        // o que é livre mas às vezes confirma vem com o quando (teste 6.5 da Fase 4)
+        const auto some = ai.call ("command.list", args ({ { "ids", juce::Array<juce::var> { "project.save", "project.new", "transport.setBpm", "channel.addPlugin" } } }));
+        std::map<juce::String, juce::var> byId;
+
+        if (auto* found = some["result"]["commands"].getArray())
+            for (auto& c : *found)
+                byId[c["id"].toString()] = c;
+
+        rep.check (byId["project.save"]["confirmsWhen"].toString().contains ("por cima")
+                     && byId["project.new"]["confirmsWhen"].toString().contains ("não salvas"_t)
+                     && ! byId["transport.setBpm"].hasProperty ("confirmsWhen") && ! byId["channel.addPlugin"].hasProperty ("confirmsWhen"),
+                   "command.list: o livre que às vezes confirma traz o confirmsWhen (project.save: \""_t
+                       + byId["project.save"]["confirmsWhen"].toString() + "\"); o que sempre confirma e o que nunca confirma, não"_t);
     }
 
     //==========================================================================
@@ -582,24 +597,53 @@ void runControlSelfTest (SelfTestContext& ctx)
     //==========================================================================
     // Ouvir (fatia 4.6): a prévia na pasta da IA, com as medidas
     {
-        // o kick do projeto novo e o canal do kit que a IA pôs lá em cima: o padrão tem som de certeza
-        for (const auto& channel : { model.get().channels.front().id, model.get().channels.back().id })
-            app.run ("steps.setGrid", args ({ { "channel", channel }, { "grid", "x...x...x...x..." } }));
-        const auto preview = ai.call ("render.preview", args ({ { "what", "pattern" }, { "loops", 2 } }), 60000)["result"];
-        const juce::File wav (preview["path"].toString());
-        const auto* bars = preview["barsRmsDb"].getArray();
-        const double barSeconds = 60.0 / model.get().bpm * model.get().timeSigNum;
+        // 4 compassos a 140 BPM, com o kick do projeto novo e o canal do kit que a IA pôs lá em cima em todos:
+        // o padrão tem som de certeza. 2 voltas são 8 compassos exatos, sem o 9º "fantasma" de 1 amostra que o
+        // arredondamento do render criava (teste 6.5 da Fase 4)
+        app.run ("transport.setBpm", args ({ { "bpm", 140 } }));
+        app.run ("pattern.setLength", args ({ { "steps", 64 } }));
 
-        rep.check ((bool) preview["ok"] && wav.existsAsFile() && wav.isAChildOf (options.scratchFolder) && preview["what"].toString() == "pattern"
-                     && (double) preview["seconds"] >= 2.0 * barSeconds - 0.05 && bars != nullptr && bars->size() >= 2
-                     && std::abs ((double) preview["barSeconds"] - barSeconds) < 0.01 && (int) preview["channels"] == 2,
-                   "render.preview: o padrão em 2 voltas, renderizado na pasta da IA, com um RMS por compasso ("_t
-                       + preview["seconds"].toString() + " s, " + juce::String (bars != nullptr ? bars->size() : 0) + " compassos)");
-        rep.check ((double) preview["peakDb"] > -40.0 && (double) preview["rmsDb"] < (double) preview["peakDb"]
-                     && (double) preview["lufs"] > -60.0 && (int) preview["clipped"] == 0,
-                   "as medidas do beat: pico "_t + preview["peakDb"].toString() + " dBFS, RMS " + preview["rmsDb"].toString()
-                       + " dBFS, " + preview["lufs"].toString() + " LUFS, nada cortou");
+        for (const auto& channel : { model.get().channels.front().id, model.get().channels.back().id })
+            app.run ("steps.setGrid", args ({ { "channel", channel }, { "grid", juce::String::repeatedString ("x...", 16) } }));
+        const auto measured = ai.call ("render.preview", args ({ { "what", "pattern" }, { "loops", 2 } }), 60000)["result"];
+        const juce::File wav (measured["path"].toString());
+        const auto* bars = measured["barsRmsDb"].getArray();
+        const double barSeconds = 60.0 / model.get().bpm * model.get().timeSigNum;
+        bool everyBarLoud = bars != nullptr;
+
+        if (bars != nullptr)
+            for (auto& db : *bars)
+                everyBarLoud = everyBarLoud && (double) db > -60.0;
+
+        rep.check ((bool) measured["ok"] && wav.existsAsFile() && wav.isAChildOf (options.scratchFolder) && measured["what"].toString() == "pattern"
+                     && (double) measured["seconds"] >= 8.0 * barSeconds - 0.05 && bars != nullptr && bars->size() == 8 && everyBarLoud
+                     && ! (bool) measured["lastBarPartial"] && std::abs ((double) measured["barSeconds"] - barSeconds) < 0.01 && (int) measured["channels"] == 2,
+                   "render.preview: 4 compassos a 140 BPM em 2 voltas, renderizados na pasta da IA, dão 8 compassos com som, sem o fantasma ("_t
+                       + measured["seconds"].toString() + " s, " + juce::String (bars != nullptr ? bars->size() : 0) + " compassos)");
+        rep.check ((double) measured["peakDb"] > -40.0 && (double) measured["rmsDb"] < (double) measured["peakDb"]
+                     && (double) measured["lufs"] > -60.0 && (int) measured["clipped"] == 0,
+                   "as medidas do beat: pico "_t + measured["peakDb"].toString() + " dBFS, RMS " + measured["rmsDb"].toString()
+                       + " dBFS, " + measured["lufs"].toString() + " LUFS, nada cortou");
         rep.check (isFailure (ai.call ("render.preview", args ({ { "what", "nada" } }))["result"]), "render.preview com what errado: recusado"_t);
+        rep.check (measured["beatsRmsDb"].getArray() != nullptr && bars != nullptr
+                     && measured["beatsRmsDb"].getArray()->size() == bars->size() * model.get().timeSigNum,
+                   "render.preview traz também o RMS de cada tempo ("_t + juce::String (measured["beatsRmsDb"].getArray() != nullptr ? measured["beatsRmsDb"].getArray()->size() : 0)
+                       + " tempos)");
+    }
+
+    // a barra de cima acompanha o nome do padrão: o pattern.rename da IA não aparecia lá (teste 6.5 da Fase 4)
+    {
+        TransportBar bar (app);
+        bar.refresh (model.get());
+        ai.run ("pattern.rename", args ({ { "pattern", model.get().currentPattern }, { "name", "Renomeado pela IA" } }));
+        bar.refresh (model.get());
+        juce::String shown;
+
+        for (auto* child : bar.getChildren())
+            if (auto* box = dynamic_cast<juce::ComboBox*> (child); box != nullptr && box->getTooltip().contains ("toca em PAT"))
+                shown = box->getText();
+
+        rep.check (shown == "Renomeado pela IA", "pattern.rename pela IA: a barra de cima mostra o nome novo (\""_t + shown + "\")");
     }
 
     //==========================================================================
@@ -812,9 +856,9 @@ namespace
         options.requestBurst = 1000.0;
         options.confirmSeconds = 2;
         options.askUser = [&] (const control::Confirmation& c, std::function<void (bool)> a) { question = c; answer = std::move (a); ++asked; };
-        options.capture = [&app] (const juce::String& view, int maxWidth, const juce::File& png, juce::String& why)
+        options.capture = [&app] (const juce::String& view, juce::String& channel, int maxWidth, const juce::File& png, juce::String& why)
         {
-            return MainComponent::captureOffscreen (app, view, maxWidth, png, why);   // o mesmo do --headless
+            return MainComponent::captureOffscreen (app, view, channel, maxWidth, png, why);   // o mesmo do --headless
         };
         options.onAskCancelled = [&] { ++cancelledAsks; };
 
@@ -872,6 +916,45 @@ namespace
 
             rep.check (isFailure (ai.call ("ui.screenshot", args ({ { "view", "inventada" } }), 30000)["result"]),
                        "ui.screenshot com uma tela que não existe: recusado"_t);
+
+            // o canal do piano roll (teste 6.5 da Fase 4: a IA só via o canal escolhido): o primeiro e o último
+            // canal com piano roll, e o canal sem view mostra o piano roll
+            juce::StringArray rollChannels;
+
+            for (auto& c : app.getModel().get().channels)
+                if (! c.isAudio())
+                    rollChannels.add (c.id);
+
+            const auto first = rollChannels[0], last = rollChannels[rollChannels.size() - 1];
+            const auto* lastChannel = app.getModel().get().findChannel (last);
+            const auto shotFirst = ai.call ("ui.screenshot", args ({ { "view", "pianoRoll" }, { "channel", first }, { "width", 900 } }), 30000)["result"];
+            const auto shotLast = ai.call ("ui.screenshot", args ({ { "view", "pianoRoll" }, { "channel", last }, { "width", 900 } }), 30000)["result"];
+            const auto shotNoView = ai.call ("ui.screenshot", args ({ { "channel", last }, { "width", 900 } }), 30000)["result"];
+            const auto imageFirst = juce::ImageFileFormat::loadFrom (juce::File (shotFirst["path"].toString()));
+            const auto imageLast = juce::ImageFileFormat::loadFrom (juce::File (shotLast["path"].toString()));
+            bool differ = imageFirst.isValid() && imageLast.isValid() && imageFirst.getBounds() == imageLast.getBounds();
+
+            if (differ)
+            {
+                differ = false;
+
+                for (int y = 0; y < imageFirst.getHeight() && ! differ; ++y)
+                    for (int x = 0; x < imageFirst.getWidth() && ! differ; ++x)
+                        differ = imageFirst.getPixelAt (x, y) != imageLast.getPixelAt (x, y);
+            }
+
+            rep.check (rollChannels.size() >= 2 && first != last && lastChannel != nullptr
+                         && (bool) shotFirst["ok"] && shotFirst["channel"].toString() == first
+                         && (bool) shotLast["ok"] && shotLast["channel"].toString() == last && shotLast["channelName"].toString() == lastChannel->name
+                         && (bool) shotNoView["ok"] && shotNoView["channel"].toString() == last && differ,
+                       "ui.screenshot { channel }: o piano roll mostra o canal pedido ("_t + shotFirst["channelName"].toString() + " e "
+                           + shotLast["channelName"].toString() + ", capturas diferentes; sem view, o piano roll do canal)");
+            juce::File (shotLast["path"].toString()).copyFileTo (folder.getParentDirectory().getChildFile ("ia-tela-pianoroll-canal.png"));
+
+            const auto unknown = ai.call ("ui.screenshot", args ({ { "view", "pianoRoll" }, { "channel", "ch_inventado" } }), 30000)["result"];
+            rep.check (isFailure (unknown) && unknown["error"].toString().contains ("Canal desconhecido: ch_inventado"_t)
+                         && unknown["error"].toString().contains ("(" + first + ")"),
+                       "ui.screenshot com um canal que não existe: recusado, com os canais que têm piano roll"_t);
         }
 
         const auto exportArgs = args ({ { "path", existing.getFullPathName() }, { "loops", 1 } });
@@ -986,7 +1069,7 @@ namespace
             const auto file = folder.getChildFile (name);
             file.deleteFile();
             constexpr double rate = 48000.0;
-            const int length = (int) (seconds * rate);
+            const int length = (int) std::lround (seconds * rate);
             juce::AudioBuffer<float> buffer (2, length);
 
             for (int ch = 0; ch < 2; ++ch)
@@ -1006,6 +1089,8 @@ namespace
         const auto twoPi = juce::MathConstants<double>::twoPi;
         const auto sine = write ("seno-1khz.wav", 4.0, [twoPi] (int, int i) { return (float) (0.5 * std::sin (twoPi * 1000.0 * i / 48000.0)); });
         const auto m = control::measureAudio (sine, 120.0, 4);   // compasso de 2 s
+        rep.check (m.beatsRmsDb.size() == 8 && std::abs (m.beatsRmsDb[5] + 9.03f) < 0.1f && ! m.beatsCut,
+                   "o mesmo seno tempo a tempo: 8 tempos de 0,5 s, cada um a "_t + juce::String (m.beatsRmsDb.empty() ? -100.0f : m.beatsRmsDb[5], 2) + " dBFS");
         rep.check (m.ok && std::abs (m.peakDb + 6.02f) < 0.1f && std::abs (m.rmsDb + 9.03f) < 0.1f && m.clipped == 0
                      && m.silenceStart < 0.01 && m.silenceEnd < 0.01 && m.barsRmsDb.size() == 2 && std::abs (m.barsRmsDb[1] + 9.03f) < 0.1f,
                    "medidas de um seno de 1 kHz a 0,5: pico "_t + juce::String (m.peakDb, 2) + " dBFS (-6,02), RMS " + juce::String (m.rmsDb, 2)
@@ -1014,6 +1099,27 @@ namespace
                    "LUFS do mesmo seno: "_t + juce::String (m.lufs, 2) + " (BS.1770: -6,0 nos dois canais), true peak "
                        + juce::String (m.truePeakDb, 2) + " dBTP");
 
+        // 8 compassos a 140 BPM são 658.285,7 quadros a 48 kHz, e o render sai com 658.286 (teste 6.5 da Fase 4):
+        // o quadro a mais não vira um 9º compasso mudo, um a menos também dá 8, e meio compasso a mais é parcial
+        auto barsOf = [&write, twoPi] (const juce::String& name, double frames)
+        {
+            return control::measureAudio (write (name, frames / 48000.0, [twoPi] (int, int i) { return (float) (0.5 * std::sin (twoPi * 1000.0 * i / 48000.0)); }),
+                                          140.0, 4);
+        };
+        auto allLoud = [] (const control::AudioMeasures& a)
+        {
+            return std::all_of (a.barsRmsDb.begin(), a.barsRmsDb.end(), [] (float db) { return db > -10.0f; });
+        };
+        const auto over = barsOf ("oito-compassos-mais-1.wav", 658286.0);
+        const auto under = barsOf ("oito-compassos-menos-1.wav", 658285.0);
+        const auto half = barsOf ("oito-compassos-e-meio.wav", std::round (8.5 * 4.0 * 60.0 / 140.0 * 48000.0));
+        rep.check (over.ok && over.barsRmsDb.size() == 8 && ! over.lastBarPartial && allLoud (over)
+                     && under.ok && under.barsRmsDb.size() == 8 && ! under.lastBarPartial && allLoud (under)
+                     && half.ok && half.barsRmsDb.size() == 9 && half.lastBarPartial && allLoud (half),
+                   "compassos a 140 BPM: 658.286 quadros dão "_t + juce::String ((int) over.barsRmsDb.size()) + " (8, sem o 9º de 1 amostra), 658.285 dão "_t
+                       + juce::String ((int) under.barsRmsDb.size()) + " e 8,5 compassos dão "_t + juce::String ((int) half.barsRmsDb.size())
+                       + (half.lastBarPartial ? ", com o último parcial"_t : ", sem marcar o último como parcial"_t));
+
         // meio segundo de silêncio, um seno a todo volume (corta) e um segundo de silêncio no fim
         const auto clipped = write ("corta.wav", 3.0, [twoPi] (int, int i)
         {
@@ -1021,6 +1127,9 @@ namespace
             return t < 0.5 || t >= 2.0 ? 0.0f : (float) juce::jlimit (-1.0, 1.0, 1.4 * std::sin (twoPi * 220.0 * t));
         });
         const auto c = control::measureAudio (clipped, 120.0, 4);
+        rep.check (c.beatsRmsDb.size() == 8 && c.beatsRmsDb[0] < -90.0f && c.beatsRmsDb[1] > -10.0f && c.beatsRmsDb[3] > -10.0f
+                     && c.beatsRmsDb[4] < -90.0f && c.beatsRmsDb[7] < -90.0f,
+                   "tempo a tempo, o som que entra no 2º tempo e sai no 5º: o 1º e o 5º tempo mudos, do 2º ao 4º com som"_t);
         rep.check (c.ok && c.clipped > 1000 && std::abs (c.silenceStart - 0.5) < 0.01 && std::abs (c.silenceEnd - 1.0) < 0.01 && c.peakDb > -0.1f,
                    "um som que corta, com silêncio: "_t + juce::String (c.clipped) + " amostras em 0 dBFS, "
                        + juce::String (c.silenceStart, 2) + " s mudo no começo e " + juce::String (c.silenceEnd, 2) + " s no fim");

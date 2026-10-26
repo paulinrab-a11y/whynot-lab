@@ -115,6 +115,7 @@ ParamControl::ParamControl (const dsp::ParamInfo& p) : info (p)
             knob.onDragStart = [this] { if (onGestureStart) onGestureStart(); };
             knob.onDragEnd = [this] { if (onGestureEnd) onGestureEnd(); };
             knob.onValueChange = [this] { changed ((float) knob.getValue()); };
+            knob.onMenu = [this] { if (onMenu) onMenu(); };
             knob.setWantsKeyboardFocus (false);
             addAndMakeVisible (knob);
             break;
@@ -157,6 +158,12 @@ void ParamControl::setValue (float v)
     }
 
     repaint();
+}
+
+void ParamControl::mouseDown (const juce::MouseEvent& e)
+{
+    if (e.mods.isPopupMenu() && onMenu)   // na legenda e no valor (o knob tem o próprio)
+        onMenu();
 }
 
 void ParamControl::setAccent (bool on)

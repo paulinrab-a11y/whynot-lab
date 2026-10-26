@@ -489,7 +489,7 @@ void Projector::syncChannels (const Project& p, const juce::File& projectFolder)
 
             if (songMode)
                 for (auto& item : p.playlistItems)
-                    if (item.kind == "audio" && item.ref == c.id && ! item.muted)
+                    if (item.kind == "audio" && item.ref == c.id && p.itemSounds (item))   // o bloco e a raia (bloco 4)
                     {
                         const auto edges = takes::edges (p, item);   // comping: o crossfade no corte entre takes
                         audio.push_back ({ item.start, item.length, item.offsetSeconds, resolved, item.stretch, item.tape, edges.in, edges.out,
@@ -500,12 +500,35 @@ void Projector::syncChannels (const Project& p, const juce::File& projectFolder)
         }
         else if (b.sampler != nullptr)
         {
-            if (resolved != b.resolvedSample)
+            // as camadas por força (bloco 4f): os caminhos e as forças dizem se mudou
+            juce::String layersKey;
+
+            for (auto& l : c.layers)
+                layersKey << (juce::File::isAbsolutePath (l.samplePath) ? juce::File (l.samplePath) : projectFolder.getChildFile (l.samplePath)).getFullPathName()
+                          << "@" << l.minVelocity << ";";
+
+            if (resolved != b.resolvedSample || layersKey != b.resolvedLayers)
             {
                 juce::String error;
                 auto data = c.samplePath.isEmpty() ? nullptr : cache.get (file, error);
-                b.sampler->setSample (data);
+                std::vector<WhynotSamplerPlugin::Layer> layers;
+                juce::StringArray missing;
+
+                for (auto& l : c.layers)
+                {
+                    juce::String layerError;
+                    const auto layerFile = juce::File::isAbsolutePath (l.samplePath) ? juce::File (l.samplePath) : projectFolder.getChildFile (l.samplePath);
+
+                    if (auto layerData = cache.get (layerFile, layerError))
+                        layers.push_back ({ std::move (layerData), (float) l.minVelocity / 127.0f });
+                    else
+                        missing.add (layerFile.getFileName());
+                }
+
+                b.sampler->setSample (data, std::move (layers));
                 b.resolvedSample = resolved;
+                b.resolvedLayers = layersKey;
+                b.missingLayers = missing.joinIntoString (", ");
 
                 if (data == nullptr)
                     problems.set (c.id, error.isEmpty() ? juce::String ("Canal sem sample.") : error);
@@ -514,6 +537,10 @@ void Projector::syncChannels (const Project& p, const juce::File& projectFolder)
             {
                 problems.set (c.id, "Sample não encontrado: "_t + resolved);
             }
+
+            // a camada que não abriu (bloco 4f): o aviso fica enquanto ela faltar, sem tapar o do sample do canal
+            if (b.missingLayers.isNotEmpty() && problems[c.id].isEmpty())
+                problems.set (c.id, "Camada por força não abriu: "_t + b.missingLayers + " (as notas fortes tocam o sample do canal)");
 
             b.sampler->setChannel (c.rootKey, c.oneShot, c.cutItself, c.mono, c.glideMs);
 
@@ -584,7 +611,7 @@ std::vector<Projector::MidiSpec> Projector::midiFor (const Project& p, const Cha
 
         for (auto& item : p.playlistItems)
         {
-            if (item.kind != "pattern" || item.muted)
+            if (item.kind != "pattern" || ! p.itemSounds (item))   // o mudo do bloco e o da raia, com o solo (bloco 4)
                 continue;
 
             if (auto* pat = p.findPattern (item.ref))

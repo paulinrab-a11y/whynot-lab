@@ -72,8 +72,19 @@ public:
     void deinitialise() override;
     void applyToBuffer (const te::PluginRenderContext&) override;
 
+    /** Uma camada por força (bloco 4f): o sample e a força mínima, de 0 a 1 (a força MIDI / 127). */
+    struct Layer
+    {
+        std::shared_ptr<const audio::SampleData> data;
+        float minVelocity = 1.0f;
+    };
+
+    static constexpr int maxLayers = 3;
+
     // Thread de mensagem
-    void setSample (std::shared_ptr<const audio::SampleData>);
+    /** O sample do canal e as camadas por força (em ordem de força; as que passam de maxLayers ficam de fora). A troca
+        é uma só: as vozes saem do conjunto velho antes. */
+    void setSample (std::shared_ptr<const audio::SampleData>, std::vector<Layer> layers = {});
     void setChannel (int rootKey, bool oneShot, bool cutItself, bool mono, float glideMs);
     void setShape (const SamplerShape&);
 
@@ -83,7 +94,24 @@ public:
     bool hasSample() const noexcept   { return sampleLoaded; }
 
 private:
-    struct SampleRef { std::shared_ptr<const audio::SampleData> data; };
+    struct SampleRef
+    {
+        std::shared_ptr<const audio::SampleData> data;
+        std::array<Layer, maxLayers> layers {};
+        int numLayers = 0;
+
+        /** O sample da força: a camada mais forte que a nota alcança, ou o do canal. */
+        const audio::SampleData& forVelocity (float velocity) const noexcept
+        {
+            const audio::SampleData* chosen = data.get();
+
+            for (int i = 0; i < numLayers; ++i)
+                if (velocity + 1.0e-4f >= layers[(size_t) i].minVelocity && layers[(size_t) i].data != nullptr)
+                    chosen = layers[(size_t) i].data.get();
+
+            return *chosen;
+        }
+    };
 
     static constexpr int maxSlices = 128;
 
@@ -96,8 +124,8 @@ private:
     void tryPublishPending();
 
     audio::VoiceParams voiceParams() const noexcept;
-    void noteOn (int key, float velocity, const audio::SampleData&) noexcept;
-    void noteOff (int key, const audio::SampleData&) noexcept;
+    void noteOn (int key, float velocity, const SampleRef&) noexcept;
+    void noteOff (int key, const SampleRef&) noexcept;
     int allocateVoice() noexcept;
     void pushHeld (int key, float velocity) noexcept;
     void removeHeld (int key) noexcept;
@@ -108,6 +136,7 @@ private:
     // Só a thread de áudio
     std::array<audio::SampleVoice, numVoices> voices;
     std::array<int, numVoices> voiceKey {};
+    std::array<const audio::SampleData*, numVoices> voiceData {};   // a camada que cada voz lê (nulo = a do canal)
     std::array<juce::uint32, numVoices> voiceStart {};
     juce::uint32 voiceCounter = 0;
     double audioSampleRate = 48000.0;

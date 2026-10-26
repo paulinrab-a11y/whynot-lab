@@ -1,4 +1,5 @@
 #include "MixerView.h"
+#include "MidiLearnMenu.h"
 #include "Fluid.h"
 #include "Theme.h"
 #include "../record/RecordEngine.h"
@@ -50,6 +51,10 @@ MixerStrip::MixerStrip (AppController& a, const juce::String& id) : app (a), tra
     pan.onDragStart = [this] { app.getCommands().beginGesture ("Pan"); };
     pan.onDragEnd = [this] { app.getCommands().endGesture(); };
     pan.onValueChange = [this] { app.run ("mixer.setPan", args ({ { "track", trackId }, { "pan", pan.getValue() } })); };
+
+    // MIDI learn (bloco 4d): o botão direito no fader ou no pan liga um fader ou knob do controlador
+    fader.onMenu = [this] { midilearn::showMenu (app, MidiLink { 0, 0, "mixer", trackId, {}, "volume" }, "Volume", &fader); };
+    pan.onMenu = [this] { midilearn::showMenu (app, MidiLink { 0, 0, "mixer", trackId, {}, "pan" }, "Pan", &pan); };
 
     // Mudo não é laranja: o laranja mostra o que soa (no rack, o hexágono apaga quando o canal está mudo).
     // O M ligado usa a pílula neutra de "escolhido"; o S ligado continua laranja, porque é o que vai soar.
@@ -418,6 +423,7 @@ MixerView::MixerView (AppController& a) : app (a), insertPanel (a)
     panelViewport.setScrollBarsShown (true, false);
     addAndMakeVisible (panelViewport);
     insertPanel.onStatus = [this] (const juce::String& msg, bool err) { if (onStatus) onStatus (msg, err); };
+    insertPanel.onLayoutChanged = [this] { resized(); };   // os macros abriram ou fecharam (bloco 4c)
 
     styleButton.setShowsMenuArrow (true);
     styleButton.onClick = [this] { showStyleMenu(); };

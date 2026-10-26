@@ -86,6 +86,8 @@ Em cima ficam as abas **Playlist (F5)**, **Channel rack (F6)** e **Piano roll (F
 
 ## 5b. Ajustes do sampler (afinação, envelope, queda de tom)
 
+**Camadas por força** (bloco 4f, como os pads de uma bateria eletrônica): no painel do sampler, a linha de baixo, **+ Camada**, põe outro sample que toca quando a nota é mais forte (o kick suave e o kick forte). São até 3 camadas: a primeira começa na força 100, e um clique na camada escolhe a força mínima, troca o arquivo ou tira. Abaixo da primeira camada toca o sample do canal. As camadas usam a nota de raiz, a afinação, o envelope, o início e o laço do canal: servem para o mesmo som em outra força (o kick suave e o forte), não para outro instrumento. Cada canal do rack já é um pad: tem a trilha de mixer, os efeitos, o grupo de corte e o swing dele. Fatiar o canal tira as camadas (fatiado, cada tecla é uma fatia). Salvar com os samples copia as camadas para `samples/`. Pela IA: `channel.layers`, `channel.addLayer`, `channel.setLayer` e `channel.removeLayer`.
+
 Duplo clique no nome de um canal do sampler (ou botão direito, "Ajustes do sampler") abre um cartão sobre o channel rack. Clique fora para fechar. Cada arrasto de knob é um passo de desfazer, e tudo vai para o `.wnl`.
 
 | Controle | O que faz |
@@ -156,6 +158,14 @@ Para a IA: `channel.setSampler {channel, rootKey?, rootCents?, tune?, attackMs?,
    - **Com os efeitos da trilha**: o áudio já sai com os efeitos, o volume e o pan da trilha do mixer; ele vai para uma trilha nova e limpa, que segue para o mesmo lugar e manda os mesmos envios (o reverb do bus continua ao vivo). Sobra um compasso no fim para o reverb e o delay acabarem.
    - **Seco**: só o instrumento; o áudio sai pela mesma trilha, e os efeitos dela continuam ao vivo.
    - O canal precisa tocar na playlist (no SONG). Ctrl+Z desfaz tudo num passo. Comando: `channel.renderInPlace` (`effects`, `mute`).
+12. **Organizar as raias**: o ponto à direita do nome da raia é o mudo (cheio toca, vazado está mudo). **Ctrl+clique** nele põe a raia em **solo**: com alguma raia em solo, só as em solo tocam, e as outras ficam apagadas, com "fora do solo". O mudo sempre vence. O botão direito no nome da raia tem a **cor** (uma faixa na beira, para achar a voz, a bateria, o 808), mover para cima e para baixo (os blocos vão junto), renomear e a entrada para gravar. O mudo e o solo valem para tocar e para exportar. Comandos: `playlist.setTrack` (`color`, `muted`, `solo`) e `playlist.moveTrack`.
+
+### Áudio para MIDI (bloco 4e)
+
+Na setinha do cabeçalho de um bloco de áudio da playlist, **Virar MIDI**:
+- **Bateria**: o beatbox do MC (ou um loop de bateria) vira um padrão novo no kit: cada batida ganha o papel pelo timbre (o grave é o kick, o agudo e curto é o chimbal, o resto é a caixa, ou a palma se o rack não tiver caixa), encaixada no 1/16 do BPM do projeto, com a força da batida.
+- **Melodia**: uma voz ou um instrumento só (sem a bateria por baixo) vira notas no piano roll do primeiro synth ou plugin do rack (ou do 808), encaixadas no 1/16.
+- O áudio fica como estava, e o padrão novo fica escolhido (Ctrl+Z desfaz). Pela IA: `audio.toMidi` (com `item` ou `path`, `mode` drums ou melody, `channel` e `quantize`).
 
 ## 7b. Plugins VST3
 
@@ -205,6 +215,8 @@ Como usar:
 - **Arraste** para o channel rack: cria um canal, ou troca o sample se soltar no nome de um canal.
 - **Arraste** para a playlist: vira um clipe de áudio na raia e na posição soltas.
 - A **busca** procura em todas as pastas.
+- **BPM e tom**: cada som mostra o andamento e o tom ("120 BPM · Lá menor"), ou a nota de um one-shot (o 808 em "Fá"). Vêm do nome do arquivo ("Loop Am 140bpm", "C#min", "F minor", "Lá menor"), e, sem nome, da leitura do áudio em segundo plano. Um loop curto é repetido até dar o andamento, e o tamanho dele precisa fechar em tempos inteiros. Bateria de um toque só (kick, caixa, prato) não ganha nota. A dica da linha diz de onde veio cada um. No nome, a forma por extenso vence ("Loop Em Lá Menor" é Lá menor), e "AM" só vale num nome todo em maiúsculas ("LOOP_AM_120", Lá menor); "FM" e "GM" não são tom. A leitura fica guardada em `sons-analise.json`, na pasta de dados, e um arquivo que não mudou não é lido de novo. Um arquivo que só está na nuvem (o OneDrive com "Arquivos sob demanda") não é lido, porque abrir baixaria o arquivo: baixe a pasta antes, se quiser o BPM e o tom dele.
+- **Filtro** (a nota musical no cabeçalho): mostra, de todas as pastas, só os sons com **as mesmas notas do projeto** (o mesmo tom ou o relativo; num modo, os tons dele: Ré dórico aceita Dó maior e Lá menor; e o one-shot cuja nota está na escala) ou que **combinam** (também os vizinhos, uma quinta acima e abaixo). O menu diz quais tons entram em cada um; com o **BPM perto do projeto** (4% para mais ou para menos, ou a metade e o dobro); e só **loops** ou só **one-shots**. Os sons ainda não lidos entram na fila e aparecem quando a leitura disser que combinam. A busca continua valendo junto. Pela IA: `browser.info` e `browser.find`.
 
 ## 7d2. Projetos (F11): ouvir sem abrir
 
@@ -245,6 +257,7 @@ Pela IA ou pelo terminal: `library.list`, `library.refresh`, `library.renderPrev
 ## 7e. Controlador MIDI e teclado do computador
 
 - **Controlador**: em **F10** (Áudio e MIDI), seção "Controladores MIDI", ligue a entrada. O controlador toca o canal escolhido no channel rack (clique no nome do canal para escolher), como no FL. Conectou depois de abrir? Clique em "Procurar de novo".
+- **Knobs e faders do controlador (MIDI learn)**: botão direito no fader ou no pan de uma trilha do mixer, num knob da janela de um efeito ou num macro do rack → **Aprender do controlador MIDI** → mexa o knob ou fader do controlador (em até 20 s; o pé da janela avisa). Pronto: ele move aquele controle, e uma mexida inteira é um passo de desfazer. Cada knob do controlador move um controle só, e cada controle tem um knob só: aprender de novo troca. **Esquecer o controlador** desfaz a ligação. As ligações ficam no projeto. Pela IA: `midi.learn`, `midi.map`, `midi.unmap` e `midi.mappings`.
 - **Teclado-piano (Ctrl+T)**: a fileira Z S X D C V G B H N J M é uma oitava, e a vírgula dá o Dó seguinte. A de cima, Q 2 W 3 E R 5 T 6 Y 7 U I 9 O 0 P, vai do Dó central (Q, igual à vírgula) até o Mi 5 (P). Ligado, ele aparece aceso no pé da janela.
   - Os atalhos de uma tecla só (como o L do PAT/SONG) ficam desligados, como no FL. Espaço, as teclas F e os atalhos com Ctrl ou Alt continuam.
   - Num campo de texto (a busca, por exemplo) as letras escrevem, não tocam.

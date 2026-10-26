@@ -85,6 +85,16 @@ namespace
         return maxId + 1;
     }
 
+    juce::var object (std::initializer_list<std::pair<const char*, juce::var>> kv)
+    {
+        auto o = new juce::DynamicObject();
+
+        for (auto& [k, v] : kv)
+            o->setProperty (k, v);
+
+        return juce::var (o);
+    }
+
     juce::String resolvePlaylistTrack (const Project& p, const juce::var& v)
     {
         if (v.isInt() || v.isDouble() || v.isInt64())
@@ -738,7 +748,7 @@ void registerCompositionCommands (CommandRegistry& r)
                  for (auto& i : p.playlistItems)
                  {
                      const auto* pat = i.kind == "audio" ? nullptr : p.findPattern (i.ref);
-                     const bool plays = ! i.muted && (i.kind == "audio" ? i.ref == id : pat != nullptr && patternPlays (*pat));
+                     const bool plays = p.itemSounds (i) && (i.kind == "audio" ? i.ref == id : pat != nullptr && patternPlays (*pat));
 
                      if (plays)
                      {
@@ -1256,6 +1266,67 @@ void registerCompositionCommands (CommandRegistry& r)
                  }
 
                  return CommandResult::fail ("Raia não encontrada ou nome vazio."_t);
+             } });
+
+    // Organizar a playlist (bloco 4, 23/10): cor, mudo e solo por raia, e a ordem das raias. Os blocos vão junto
+    // com a raia (eles guardam o id dela), então mover não mexe em nenhum bloco.
+    r.add ({ "playlist.setTrack", "Ajustar raia",
+             schema ({ { "track", "string", true, "Raia: id ou número (1 = a primeira)"_t },
+                       { "color", "string", false, "Cor \"#RRGGBB\"; vazio = sem cor"_t },
+                       { "muted", "boolean", false, "Raia muda: os blocos dela não tocam nem saem no export"_t },
+                       { "solo", "boolean", false, "Solo: com alguma raia em solo, só as em solo tocam"_t } }), true,
+             [] (CommandContext& c, const juce::var& a)
+             {
+                 auto& p = c.model.data();
+                 const auto id = resolvePlaylistTrack (p, a["track"]);
+
+                 for (auto& t : p.playlistTracks)
+                 {
+                     if (t.id != id)
+                         continue;
+
+                     if (params::has (a, "color"))
+                     {
+                         const auto colour = params::string (a, "color").trim();
+
+                         if (colour.isNotEmpty() && ! (colour.length() == 7 && colour.startsWithChar ('#')
+                                                       && colour.substring (1).containsOnly ("0123456789abcdefABCDEF")))
+                             return CommandResult::fail ("Cor inválida: use \"#RRGGBB\", como \"#5B8DEF\", ou vazio para tirar."_t);
+
+                         t.colour = colour.toUpperCase();
+                     }
+
+                     if (params::has (a, "muted"))
+                         t.muted = params::boolean (a, "muted", false);
+
+                     if (params::has (a, "solo"))
+                         t.solo = params::boolean (a, "solo", false);
+
+                     return CommandResult::success (object ({ { "track", t.id }, { "color", t.colour }, { "muted", t.muted },
+                                                              { "solo", t.solo }, { "sounds", p.laneSounds (t.id) } }));
+                 }
+
+                 return CommandResult::fail ("Raia não encontrada."_t);
+             } });
+
+    r.add ({ "playlist.moveTrack", "Mover raia",
+             schema ({ { "track", "string", true, "Raia: id ou número (1 = a primeira)"_t },
+                       { "to", "integer", true, "Posição nova: 1 = a primeira"_t } }), true,
+             [] (CommandContext& c, const juce::var& a)
+             {
+                 auto& p = c.model.data();
+                 const auto id = resolvePlaylistTrack (p, a["track"]);
+                 const auto from = std::find_if (p.playlistTracks.begin(), p.playlistTracks.end(),
+                                                 [&id] (const PlaylistTrack& t) { return t.id == id; });
+
+                 if (from == p.playlistTracks.end())
+                     return CommandResult::fail ("Raia não encontrada."_t);
+
+                 const int to = juce::jlimit (0, (int) p.playlistTracks.size() - 1, (int) params::number (a, "to", 1) - 1);
+                 auto lane = *from;
+                 p.playlistTracks.erase (from);
+                 p.playlistTracks.insert (p.playlistTracks.begin() + to, lane);
+                 return CommandResult::success (object ({ { "track", id }, { "position", to + 1 } }));
              } });
 
     //==========================================================================

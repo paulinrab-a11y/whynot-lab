@@ -33,8 +33,21 @@ public:
 
     std::function<void (const juce::String& message, bool isError)> onStatus;
 
+    /** A altura pedida mudou sem o projeto mudar (abrir ou fechar os macros): o MixerView refaz o layout. */
+    std::function<void()> onLayoutChanged;
+
     void paint (juce::Graphics&) override;
     void resized() override;
+    void mouseUp (const juce::MouseEvent&) override;
+
+    /** O rack (bloco 4c): os 8 macros entre os efeitos e os envios. Abre sozinho numa trilha com macros ligados;
+        o título "MACROS" abre e fecha. */
+    bool areMacrosOpen() const noexcept   { return macrosOpen; }
+    void setMacrosOpen (bool);
+
+    /** O menu do botão direito de um macro (index de 0 a 7): renomear, zerar, ligar um parâmetro (por efeito, com
+        os ligados marcados) e o que ele move agora. Cada item roda actions[id - 1]. Público para o autoteste. */
+    juce::PopupMenu createMacroMenu (int index, std::vector<std::function<void()>>& actions);
 
     bool isInterestedInDragSource (const SourceDetails&) override;
     void itemDragMove (const SourceDetails&) override;
@@ -53,6 +66,7 @@ public:
 private:
     class Slot;
     class SendRow;
+    class MacroKnob;
 
     void run (const juce::String& command, const juce::var& args, const juce::String& success = {});
     void showAddMenu (int slot, juce::Component* target);
@@ -64,6 +78,8 @@ private:
                          const juce::String& replacing = {}, bool onlyFavourites = false);
     int slotAt (juce::Point<int>) const;
     void createBus (const juce::String& role);
+    void showMacroMenu (int index, juce::Component* target);
+    void askMacroName (int index);
 
     AppController& app;
     juce::String trackId;
@@ -75,10 +91,15 @@ private:
     juce::TextButton chainButton, addSendButton;
     juce::OwnedArray<Slot> slots;
     juce::OwnedArray<SendRow> sends;
-    std::unique_ptr<juce::AlertWindow> nameDialog;   // "Salvar esta cadeia"
+    juce::OwnedArray<MacroKnob> macroKnobs;
+    std::unique_ptr<juce::AlertWindow> nameDialog;   // "Salvar esta cadeia" e o nome do macro (um de cada vez)
     int dropSlot = -1;
+    bool macrosOpen = false, macrosHadLinks = false;
+    juce::String macrosFor;                          // a trilha em que o rack abriu ou fechou sozinho
+    juce::Rectangle<int> macroCaption;
 
     static constexpr int headerHeight = 34, roleHeight = 32, captionHeight = 22, slotHeight = 30, sendHeight = 30;
+    static constexpr int macroColumns = 4, macroRowHeight = 58;
 };
 
 } // namespace whynot

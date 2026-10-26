@@ -19,6 +19,7 @@ export interface CommandInfo {
   risk: 'free' | 'confirm' | 'blocked';
   why?: string;
   paths?: string[];
+  confirmsWhen?: string;   // livre, mas pede a confirmação da pessoa nestes casos
 }
 
 export interface JsonSchemaObject {

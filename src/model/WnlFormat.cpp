@@ -1,5 +1,6 @@
 #include "WnlFormat.h"
 #include "../automation/AutomationTarget.h"
+#include "../automation/Macros.h"
 #include "../common/FolderHints.h"
 #include "../common/SafeJson.h"
 #include "../dsp/FxCatalog.h"
@@ -166,6 +167,8 @@ static void normaliseMixing (Project& p)
             if (ins.sidechain == m.id || ins.sidechain == masterTrackId || p.findMixer (ins.sidechain) == nullptr)
                 ins.sidechain = {};
         }
+
+        macros::tidy (m);   // o rack (bloco 4c): só links para efeitos nativos que ficaram
 
         std::vector<Send> sends;
 
@@ -375,6 +378,24 @@ void normalise (Project& p)
         c.sliceKey = juce::jlimit (0, 128 - juce::jmax (1, (int) c.slices.size()), c.sliceKey);
         c.sliceBpm = std::isfinite (c.sliceBpm) && c.sliceBpm >= 20.0f ? juce::jmin (c.sliceBpm, 999.0f) : 0.0f;
 
+        // Camadas por força (bloco 4f): só no sampler sem fatias (fatiado, cada tecla é uma fatia: fatiar tira as camadas,
+        // e o desfazer devolve); com caminho, a força de 2 a 127, em ordem, uma por força
+        if (c.kind != "sampler" || c.instrument.isNotEmpty() || ! c.slices.empty())
+            c.layers.clear();
+
+        std::erase_if (c.layers, [] (const SampleLayer& l) { return l.samplePath.trim().isEmpty(); });
+
+        for (auto& l : c.layers)
+            l.minVelocity = juce::jlimit (2, 127, l.minVelocity);
+
+        std::stable_sort (c.layers.begin(), c.layers.end(), [] (const SampleLayer& a, const SampleLayer& b) { return a.minVelocity < b.minVelocity; });
+        c.layers.erase (std::unique (c.layers.begin(), c.layers.end(),
+                                     [] (const SampleLayer& a, const SampleLayer& b) { return a.minVelocity == b.minVelocity; }),
+                        c.layers.end());
+
+        if ((int) c.layers.size() > maxSampleLayers)
+            c.layers.resize ((size_t) maxSampleLayers);
+
         if (c.isAudio())
             c.armed = false;   // gravação: o canal de áudio não recebe notas; o áudio arma a trilha do mixer
     }
@@ -412,6 +433,12 @@ void normalise (Project& p)
     for (auto& t : p.playlistTracks)
         if (t.recordTrack == masterTrackId || p.findMixer (t.recordTrack) == nullptr)
             t.recordTrack = {};
+
+    // a cor da raia (bloco 4): só "#RRGGBB"; o resto vira sem cor
+    for (auto& t : p.playlistTracks)
+        if (t.colour.isNotEmpty() && ! (t.colour.length() == 7 && t.colour.startsWithChar ('#')
+                                        && t.colour.substring (1).containsOnly ("0123456789abcdefABCDEF")))
+            t.colour = {};
 
     std::erase_if (p.playlistItems, [&p] (const PlaylistItem& i)
     {
@@ -508,6 +535,47 @@ void normalise (Project& p)
     }
 
     p.automation = std::move (lanes);
+
+    // MIDI learn (bloco 4d): só alvos que existem, o CC de 0 a 127 e o canal de 0 a 16, um alvo por CC e um CC por
+    // alvo (o último vence). Tirar a trilha ou o efeito tira o link (o desfazer devolve os dois).
+    std::vector<MidiLink> links;
+
+    for (auto it = p.midiMap.rbegin(); it != p.midiMap.rend(); ++it)
+    {
+        auto link = *it;
+        const auto* m = p.findMixer (link.track);
+        bool valid = m != nullptr && link.cc >= 0 && link.cc <= 127 && link.channel >= 0 && link.channel <= 16;
+
+        if (valid && link.kind == "mixer")
+        {
+            link.insert = {};
+            valid = link.param == "volume" || link.param == "pan";
+        }
+        else if (valid && link.kind == "insert")
+        {
+            const auto* ins = m->findInsert (link.insert);
+            const auto* info = ins != nullptr && ins->kind == "whynot" ? dsp::findEffect (ins->type.toStdString()) : nullptr;
+            const int index = info != nullptr ? info->indexOf (link.param.toRawUTF8()) : -1;
+            valid = index >= 0 && ! info->params[(size_t) index].hidden;
+        }
+        else if (valid && link.kind == "macro")
+        {
+            link.insert = {};
+            valid = link.param.containsOnly ("0123456789") && link.param.getIntValue() >= 1 && link.param.getIntValue() <= maxMacros
+                    && link.param == juce::String (link.param.getIntValue());
+        }
+        else
+        {
+            valid = false;
+        }
+
+        if (valid && (int) links.size() < maxMidiLinks
+            && std::none_of (links.begin(), links.end(), [&link] (const MidiLink& l) { return l.sameControl (link) || l.sameTarget (link); }))
+            links.push_back (link);
+    }
+
+    std::reverse (links.begin(), links.end());
+    p.midiMap = std::move (links);
 }
 
 //==============================================================================
@@ -604,6 +672,21 @@ juce::String toJsonReference (const Project& p)
             set (sampler, "slicesPpm", starts);
             set (sampler, "sliceKey", c.sliceKey);
             set (sampler, "sliceBpm", roundTo (c.sliceBpm, 3));
+        }
+
+        if (! c.layers.empty())   // camadas por força (bloco 4f): só quando há
+        {
+            juce::Array<juce::var> layers;
+
+            for (auto& l : c.layers)
+            {
+                auto lo = obj();
+                set (lo, "path", l.samplePath);
+                set (lo, "minVelocity", l.minVelocity);
+                layers.add (lo);
+            }
+
+            set (sampler, "layers", layers);
         }
 
         set (ch, "sampler", sampler);
@@ -738,6 +821,15 @@ juce::String toJsonReference (const Project& p)
         if (t.recordTrack.isNotEmpty())
             set (to, "recordTrack", t.recordTrack);
 
+        if (t.colour.isNotEmpty())
+            set (to, "colour", t.colour);
+
+        if (t.muted)
+            set (to, "muted", true);
+
+        if (t.solo)
+            set (to, "solo", true);
+
         plTracks.add (to);
     }
 
@@ -845,6 +937,32 @@ juce::String toJsonReference (const Project& p)
         set (root, "automation", lanes);
     }
 
+    // MIDI learn (bloco 4d), opcional: projeto sem controlador ligado sai igual.
+    if (! p.midiMap.empty())
+    {
+        juce::Array<juce::var> links;
+
+        for (auto& link : p.midiMap)
+        {
+            auto lo = obj();
+            set (lo, "cc", link.cc);
+
+            if (link.channel > 0)
+                set (lo, "channel", link.channel);
+
+            set (lo, "kind", link.kind);
+            set (lo, "track", link.track);
+
+            if (link.insert.isNotEmpty())
+                set (lo, "insert", link.insert);
+
+            set (lo, "param", link.param);
+            links.add (lo);
+        }
+
+        set (root, "midiMap", links);
+    }
+
     juce::Array<juce::var> tracks;
 
     for (auto& m : p.mixer)
@@ -927,6 +1045,38 @@ juce::String toJsonReference (const Project& p)
 
         set (mo, "inserts", inserts);
         set (mo, "sends", sends);
+
+        if (! m.macros.empty())   // o rack (bloco 4c): opcional, igual ao toJson
+        {
+            juce::Array<juce::var> macroList;
+
+            for (auto& mac : m.macros)
+            {
+                auto ao = obj();
+
+                if (mac.name.isNotEmpty())
+                    set (ao, "name", mac.name);
+
+                set (ao, "value", roundTo (mac.value, 4));
+                juce::Array<juce::var> links;
+
+                for (auto& link : mac.links)
+                {
+                    auto lo = obj();
+                    set (lo, "insert", link.insert);
+                    set (lo, "param", link.param);
+                    set (lo, "min", roundTo (link.min, 4));
+                    set (lo, "max", roundTo (link.max, 4));
+                    links.add (lo);
+                }
+
+                set (ao, "links", links);
+                macroList.add (ao);
+            }
+
+            set (mo, "macros", macroList);
+        }
+
         tracks.add (mo);
     }
 
@@ -1202,6 +1352,21 @@ juce::String toJson (const Project& p)
             w.member ("sliceBpm", rounded (c.sliceBpm, 3));
         }
 
+        if (! c.layers.empty())   // camadas por força (bloco 4f), igual ao toJsonReference
+        {
+            w.key ("layers").beginArray();
+
+            for (auto& l : c.layers)
+            {
+                w.item().beginObject();
+                w.member ("path", l.samplePath);
+                w.member ("minVelocity", l.minVelocity);
+                w.endObject();
+            }
+
+            w.endArray();
+        }
+
         w.endObject();
 
         if (c.isPlugin())
@@ -1352,6 +1517,15 @@ juce::String toJson (const Project& p)
         if (t.recordTrack.isNotEmpty())
             w.member ("recordTrack", t.recordTrack);
 
+        if (t.colour.isNotEmpty())
+            w.member ("colour", t.colour);
+
+        if (t.muted)
+            w.member ("muted", true);
+
+        if (t.solo)
+            w.member ("solo", true);
+
         w.endObject();
     }
 
@@ -1460,6 +1634,32 @@ juce::String toJson (const Project& p)
         w.endArray();
     }
 
+    // MIDI learn (bloco 4d), opcional, igual ao toJsonReference
+    if (! p.midiMap.empty())
+    {
+        w.key ("midiMap").beginArray();
+
+        for (auto& link : p.midiMap)
+        {
+            w.item().beginObject();
+            w.member ("cc", link.cc);
+
+            if (link.channel > 0)
+                w.member ("channel", link.channel);
+
+            w.member ("kind", link.kind);
+            w.member ("track", link.track);
+
+            if (link.insert.isNotEmpty())
+                w.member ("insert", link.insert);
+
+            w.member ("param", link.param);
+            w.endObject();
+        }
+
+        w.endArray();
+    }
+
     w.key ("mixer").beginObject();
     w.key ("tracks").beginArray();
 
@@ -1549,6 +1749,38 @@ juce::String toJson (const Project& p)
         }
 
         w.endArray();
+
+        if (! m.macros.empty())   // o rack (bloco 4c): opcional, igual ao toJsonReference
+        {
+            w.key ("macros").beginArray();
+
+            for (auto& mac : m.macros)
+            {
+                w.item().beginObject();
+
+                if (mac.name.isNotEmpty())
+                    w.member ("name", mac.name);
+
+                w.member ("value", rounded (mac.value, 4));
+                w.key ("links").beginArray();
+
+                for (auto& link : mac.links)
+                {
+                    w.item().beginObject();
+                    w.member ("insert", link.insert);
+                    w.member ("param", link.param);
+                    w.member ("min", rounded (link.min, 4));
+                    w.member ("max", rounded (link.max, 4));
+                    w.endObject();
+                }
+
+                w.endArray();
+                w.endObject();
+            }
+
+            w.endArray();
+        }
+
         w.endObject();
     }
 
@@ -1645,6 +1877,10 @@ juce::Result fromJson (const juce::String& json, Project& out)
 
             c.sliceKey = getInt (co["sampler"], "sliceKey", c.sliceKey);
             c.sliceBpm = (float) getDouble (co["sampler"], "sliceBpm", c.sliceBpm);
+
+            if (auto* layers = co["sampler"]["layers"].getArray())   // camadas por força (bloco 4f); o normalise confere
+                for (auto& lo : *layers)
+                    c.layers.push_back ({ getString (lo, "path"), getInt (lo, "minVelocity", 100) });
             c.plugin = pluginFromJson (co["plugin"]);
             c.synthPreset = getString (co["synth"], "preset");
 
@@ -1713,6 +1949,26 @@ juce::Result fromJson (const juce::String& json, Project& out)
             if (auto* sends = mo["sends"].getArray())
                 for (auto& so : *sends)
                     m.sends.push_back ({ getString (so, "to"), (float) getDouble (so, "db", -12.0), getBool (so, "pre", false) });
+
+            if (auto* macroList = mo["macros"].getArray())   // o rack (bloco 4c); o normalise confere os links
+            {
+                for (auto& ao : *macroList)
+                {
+                    if ((int) m.macros.size() >= maxMacros)
+                        break;
+
+                    Macro mac;
+                    mac.name = getString (ao, "name");
+                    mac.value = (float) getDouble (ao, "value", 0.0);
+
+                    if (auto* links = ao["links"].getArray())
+                        for (auto& lo : *links)
+                            mac.links.push_back ({ getString (lo, "insert"), getString (lo, "param"),
+                                                   (float) getDouble (lo, "min", 0.0), (float) getDouble (lo, "max", 1.0) });
+
+                    m.macros.push_back (mac);
+                }
+            }
 
             p.mixer.push_back (m);
         }
@@ -1791,6 +2047,9 @@ juce::Result fromJson (const juce::String& json, Project& out)
             t.id = getString (to, "id");
             t.name = getString (to, "name", "Raia");
             t.recordTrack = getString (to, "recordTrack");   // gravar voz (21/10); o normalise confere
+            t.colour = getString (to, "colour");             // bloco 4 (23/10): cor, mudo e solo da raia; opcionais
+            t.muted = getBool (to, "muted", false);
+            t.solo = getBool (to, "solo", false);
 
             if (t.id.isNotEmpty() && p.findPlaylistTrack (t.id) == nullptr)
                 p.playlistTracks.push_back (t);
@@ -1865,6 +2124,11 @@ juce::Result fromJson (const juce::String& json, Project& out)
         }
     }
 
+    if (auto* links = root["midiMap"].getArray())   // MIDI learn (bloco 4d); o normalise confere os alvos
+        for (auto& lo : *links)
+            p.midiMap.push_back ({ getInt (lo, "channel", 0), getInt (lo, "cc", -1), getString (lo, "kind"), getString (lo, "track"),
+                                   getString (lo, "insert"), getString (lo, "param") });
+
     normalise (p);
     out = std::move (p);
     return juce::Result::ok();
@@ -1918,6 +2182,40 @@ juce::Result save (Project& p, const juce::File& file, bool collectSamples, cons
     if (collectSamples)
     {
         const auto samplesDir = folder.getChildFile ("samples");
+
+        // as camadas por força (bloco 4f) vão junto, como o sample do canal (sem o originalPath)
+        for (auto& c : p.channels)
+        {
+            for (auto& l : c.layers)
+            {
+                const juce::File src = juce::File::isAbsolutePath (l.samplePath)
+                                         ? juce::File (l.samplePath)
+                                         : (previousFolder != juce::File() ? previousFolder : folder).getChildFile (l.samplePath);
+
+                if (! src.existsAsFile())
+                    continue;
+
+                if (src.isAChildOf (folder))
+                {
+                    l.samplePath = relativeTo (src, folder);
+                    continue;
+                }
+
+                if (! samplesDir.createDirectory())
+                    return juce::Result::fail ("Não consegui criar a pasta de samples em "_t + folder.getFullPathName() + "."
+                                               + noPermissionHint (folder, "salve"));
+
+                auto dest = samplesDir.getChildFile (src.getFileName());
+
+                if (dest.existsAsFile() && ! dest.hasIdenticalContentTo (src))
+                    dest = samplesDir.getNonexistentChildFile (src.getFileNameWithoutExtension(), src.getFileExtension(), false);
+
+                if (! dest.existsAsFile() && ! src.copyFileTo (dest))
+                    return juce::Result::fail ("Não consegui copiar o sample "_t + src.getFullPathName());
+
+                l.samplePath = relativeTo (dest, folder);
+            }
+        }
 
         for (auto& c : p.channels)
         {

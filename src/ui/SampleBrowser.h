@@ -4,6 +4,7 @@
 
 #include "Controls.h"
 #include "FavoriteStar.h"
+#include "../engine/SoundInfo.h"
 
 #include <set>
 
@@ -19,6 +20,8 @@ class AppController;
     o sample se soltar no nome) ou para a playlist (clipe de áudio). Duplo clique ou Enter cria um canal.
     A busca procura em todas as pastas, num índice montado em segundo plano.
     A estrela no fim da linha marca o som ou a pasta (kit) como favorito; a estrela do cabeçalho mostra só os favoritos.
+    Cada som mostra o BPM e o tom (ou a nota, num one-shot), pelo nome ou pela leitura do áudio em segundo plano
+    (bloco 4b, 23/10). O filtro do cabeçalho mostra só os que combinam com o projeto: o tom, o BPM, loops ou one-shots.
 */
 class SampleBrowser : public juce::Component,
                       private juce::ListBoxModel,
@@ -47,6 +50,13 @@ public:
     /** Só os favoritos (a estrela do cabeçalho): as pastas marcadas e os sons marcados. */
     void setFavouritesOnly (bool);
     bool isFavouritesOnly() const noexcept   { return favouritesButton.getToggleState(); }
+
+    /** O filtro (bloco 4b): o tom do projeto (ou também os vizinhos), o BPM perto do projeto, só loops ou só one-shots. */
+    void setFilters (soundinfo::KeyFilter, soundinfo::BpmFilter, soundinfo::KindFilter);
+    bool isFiltering() const noexcept;
+
+    /** Para o autoteste: o índice da busca e do filtro, sem ler as pastas (as de verdade são as suas). */
+    void setIndexForTest (juce::Array<juce::File>);
 
     /** Para o autoteste: a linha desse arquivo ou pasta (-1 = não está na lista) e a lista. */
     int rowOf (const juce::File&) const;
@@ -108,6 +118,13 @@ private:
     void toggleFavourite (const Node&);
     juce::Rectangle<int> starColumn (int width, int height) const;
 
+    // o filtro por tom e BPM (bloco 4b)
+    void showFilterMenu();
+    void soundsAnalysed();
+    bool filterPasses (const SoundInfo&) const;
+    juce::String filterCaption() const;
+    void updateFilterButton();
+
     AppController& app;
     std::unique_ptr<juce::PropertiesFile> settings;
     std::vector<Root> roots;
@@ -124,6 +141,13 @@ private:
     juce::uint32 lastSelectionChange = 0;
 
     IconButton favouritesButton { "Favoritos", Icon::star };
+    IconButton filterButton { "Filtrar por tom e BPM", Icon::note };
+    soundinfo::KeyFilter keyFilter = soundinfo::KeyFilter::any;
+    soundinfo::BpmFilter bpmFilter = soundinfo::BpmFilter::any;
+    soundinfo::KindFilter kindFilter = soundinfo::KindFilter::any;
+    int filterPending = 0, filterMatched = 0;
+    bool rebuildQueued = false;   // com o filtro, a lista se refaz no máximo a cada 250 ms (1 s numa biblioteca grande) enquanto os sons são lidos
+    bool restoringSelection = false;   // a lista refeita devolve a seleção ao mesmo arquivo, sem tocar a prévia
     IconButton openButton { "Abrir pasta", Icon::folder };
     IconButton addButton { "Adicionar pasta", Icon::plus };
     juce::TextEditor search;

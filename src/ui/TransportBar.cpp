@@ -331,9 +331,11 @@ void TransportBar::refresh (const Project& p)
     juce::StringArray ids, names;
     for (auto& pat : p.patterns) { ids.add (pat.id); names.add (pat.name); }
 
-    if (ids != patternIds)
+    // os nomes também: o pattern.rename (pela IA ou pelo menu) não muda o id (teste 6.5 da Fase 4, 23/10)
+    if (ids != patternIds || names != patternNames)
     {
         patternIds = ids;
+        patternNames = names;
         patternBox.clear (juce::dontSendNotification);
         for (int i = 0; i < names.size(); ++i)
             patternBox.addItem (names[i], i + 1);

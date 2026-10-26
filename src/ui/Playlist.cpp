@@ -11,6 +11,14 @@ namespace whynot
 
 namespace
 {
+    // As cores das raias (bloco 4, 23/10): etiquetas para achar a voz, a bateria, o 808. Uma faixa fina na beira do
+    // cabeçalho, nada no bloco (o laranja continua só no que toca).
+    struct LaneColour { const char* name; const char* hex; };
+
+    constexpr LaneColour laneColours[] { { "Vermelho", "#E0604F" }, { "Laranja", "#E8915A" }, { "Amarelo", "#D9B44A" },
+                                         { "Verde", "#6FBF73" }, { "Ciano", "#4FB3BF" }, { "Azul", "#5B8DEF" },
+                                         { "Roxo", "#9B7BE0" }, { "Rosa", "#D46FA8" } };
+
     // Bloco estreito com takes (pedido do Design, 22/10): sem lugar para um nome legível ao lado da pílula "N takes",
     // o nome e a setinha do menu somem e fica só a pílula. O menu volta com o zoom, como em todo bloco estreito.
     bool onlyPill (juce::Rectangle<float> block, juce::Rectangle<float> pill)
@@ -683,6 +691,9 @@ void PlaylistGrid::showBlockMenu (const juce::String& id)
         menu.addItem (2, "Voltar ao tempo do arquivo (×1)"_t, item->stretch != 1.0);
         menu.addItem (3, "Esticar para o BPM do projeto (warp, o tom fica)"_t);
         menu.addItem (4, "Pegar o swing deste loop para os canais do padrão"_t);
+        menu.addSectionHeader ("Virar MIDI (um padrão novo; o áudio fica)"_t);
+        menu.addItem (5, "Bateria: o beatbox vira o kit (kick, caixa, chimbal)"_t);
+        menu.addItem (6, "Melodia: a voz ou o instrumento vira notas"_t);
     }
 
     // edição do clipe (gravar voz): ids 20 a 39; o fatiar usa de 40 em diante, no fim do menu
@@ -743,7 +754,24 @@ void PlaylistGrid::showBlockMenu (const juce::String& id)
 
         CommandResult result;
 
-        if (choice == 3)
+        if (choice == 5 || choice == 6)
+        {
+            // áudio para MIDI (bloco 4e): um padrão novo, escolhido; o áudio fica como estava
+            result = safe->app.run ("audio.toMidi", args ({ { "item", id }, { "mode", choice == 5 ? "drums" : "melody" } }));
+
+            if (result.ok && safe->onStatus)
+            {
+                const auto name = result.value["name"].toString();
+                const auto note = result.value["note"].toString();
+                safe->onStatus (choice == 5 ? "\""_t + name + "\": " + juce::String ((int) result.value["kick"]) + " kicks, "
+                                                  + juce::String ((int) result.value["snare"]) + " caixas e " + juce::String ((int) result.value["hat"])
+                                                  + " chimbais no padrão novo (Ctrl+Z desfaz)."_t + (note.isNotEmpty() ? " " + note : juce::String())
+                                            : "\""_t + name + "\": " + juce::String ((int) result.value["notes"])
+                                                  + " notas no piano roll, no padrão novo (Ctrl+Z desfaz)."_t,
+                                false);
+            }
+        }
+        else if (choice == 3)
         {
             // warp (bloco 3): o loop no BPM do projeto, sem mudar o tom
             result = safe->app.run ("audio.warpToProject", args ({ { "item", id } }));
@@ -1134,6 +1162,40 @@ void PlaylistGrid::paint (juce::Graphics& g)
         for (int i = firstRow; i <= lastRow && i < (int) tracks.size(); ++i)
         {
             const auto row = juce::Rectangle<float> (0.0f, trackToY (i), (float) headerWidth, (float) trackHeight);
+            const auto& lane = tracks[(size_t) i];
+
+            // a cor da raia (bloco 4): uma faixa na beira, como a etiqueta de cor do FL
+            if (lane.colour.isNotEmpty())
+            {
+                g.setColour (theme::fromHex (lane.colour));
+                g.fillRect (row.withWidth (4.0f).reduced (0.0f, 1.0f));
+            }
+
+            // o mudo da raia: o ponto cheio toca, o vazado está mudo, o apagado não toca por causa do solo de outra
+            // raia; com solo, um S ao lado (clique = mudo, Ctrl+clique = solo)
+            {
+                const auto dot = laneLed (i).reduced (2.0f);
+                const bool sounds = laneSilence (lane.id).isEmpty();
+
+                if (lane.muted)
+                {
+                    g.setColour (colour::textFaint);
+                    g.drawEllipse (dot.reduced (0.6f), 1.2f);
+                }
+                else
+                {
+                    g.setColour (sounds ? colour::text : colour::textFaint.withAlpha (0.5f));
+                    g.fillEllipse (dot);
+                }
+
+                if (lane.solo)
+                {
+                    g.setColour (colour::text);
+                    g.setFont (font (type::small, Weight::semibold));
+                    g.drawText ("S", laneLed (i).translated (-14.0f, 0.0f), juce::Justification::centred, false);
+                }
+            }
+
             g.setColour (colour::textDim);
             g.setFont (font (12.0f));
             g.drawText (juce::String (i + 1), row.withWidth (30.0f), juce::Justification::centred, false);
@@ -1143,7 +1205,7 @@ void PlaylistGrid::paint (juce::Graphics& g)
             // a raia que grava (a entrada escolhida no cabeçalho): o nome sobe e a entrada aparece embaixo,
             // com o ponto do armar em vermelho quando a trilha dela está armada
             const auto* recordTrack = app.getModel().get().findMixer (tracks[(size_t) i].recordTrack);
-            auto nameRow = row.withTrimmedLeft (30.0f).withTrimmedRight (8.0f);
+            auto nameRow = row.withTrimmedLeft (30.0f).withTrimmedRight (lane.solo ? 44.0f : 30.0f);   // o ponto (e o S) à direita
 
             if (recordTrack != nullptr)
             {
@@ -1393,14 +1455,17 @@ void PlaylistGrid::paintBlock (juce::Graphics& g, const Block& b, juce::Rectangl
         }
     }
 
-    if (b.item.muted)
+    if (auto silence = b.item.muted ? juce::String ("mudo") : laneSilence (b.item.track); silence.isNotEmpty())
     {
-        // mudo: o bloco apaga e ganha o aviso na cabeça
+        if (silence.length() > 4 && nameArea.getWidth() < 170.0f)
+            silence = "mudo";   // bloco estreito: o aviso curto, para não cobrir o nome
+
+        // mudo (o bloco, ou a raia inteira, ou fora do solo): o bloco apaga e ganha o aviso na cabeça
         g.setColour (colour::background.withAlpha (0.55f));
         g.fillRoundedRectangle (r, 3.0f);
         g.setColour (colour::textFaint);
         g.setFont (font (11.0f, Weight::medium));
-        g.drawText (stretched ? "mudo  " + stretchText : juce::String ("mudo"), nameArea.getIntersection (clip),
+        g.drawText (stretched ? silence + "  " + stretchText : silence, nameArea.getIntersection (clip),
                     juce::Justification::centredRight, false);
     }
 
@@ -1553,6 +1618,29 @@ void PlaylistGrid::showLaneMenu (int index)
     const bool stereo = rec != nullptr && rec->settings().stereo;
 
     juce::PopupMenu menu;
+
+    // organizar (bloco 4): mudo, solo, cor e a ordem das raias
+    menu.addSectionHeader ("Raia"_t);
+    menu.addItem (10, "Mudo (clique no ponto)"_t, true, lane.muted);
+    menu.addItem (11, "Solo: só esta e as outras em solo tocam (Ctrl+clique no ponto)"_t, true, lane.solo);
+    juce::PopupMenu colours;
+
+    for (int k = 0; k < (int) std::size (laneColours); ++k)
+    {
+        juce::PopupMenu::Item item (laneColours[k].name);
+        item.itemID = 20 + k;
+        item.colour = theme::fromHex (laneColours[k].hex);
+        item.isTicked = lane.colour == laneColours[k].hex;
+        colours.addItem (item);
+    }
+
+    colours.addSeparator();
+    colours.addItem (19, "Sem cor"_t, lane.colour.isNotEmpty());
+    menu.addSubMenu ("Cor"_t, colours);
+    menu.addItem (12, "Mover para cima"_t, index > 0);
+    menu.addItem (13, "Mover para baixo"_t, index + 1 < (int) tracks.size());
+    menu.addItem (14, "Renomear... (duplo clique)"_t);
+    menu.addSeparator();
     menu.addSectionHeader ("Gravar nesta raia (escolher a entrada já arma)"_t);
 
     for (int i = 0; i < names.size(); ++i)
@@ -1573,10 +1661,16 @@ void PlaylistGrid::showLaneMenu (int index)
 
     const auto area = localAreaToGlobal (juce::Rectangle<int> (0, (int) trackToY (index), headerWidth, trackHeight));
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea (area).withMinimumWidth (240),
-                        [safe = juce::Component::SafePointer<PlaylistGrid> (this), id = lane.id] (int choice)
+                        [safe = juce::Component::SafePointer<PlaylistGrid> (this), id = lane.id, index] (int choice)
     {
         if (safe == nullptr || choice == 0)
             return;
+
+        if (choice >= 10 && choice < 30)
+        {
+            safe->laneMenuChoice (id, index, choice);
+            return;
+        }
 
         const auto result = choice == 2 ? safe->app.run ("playlist.setLaneInput", args ({ { "track", id }, { "first", 0 } }))
                                         : safe->app.run ("playlist.setLaneInput", args ({ { "track", id }, { "first", choice % 100 + 1 },
@@ -1592,6 +1686,68 @@ void PlaylistGrid::showLaneMenu (int index)
                 safe->onStatus ("Raia armada: com o REC, o play grava a entrada nela."_t, false);
         }
     });
+}
+
+//==============================================================================
+// Organizar a playlist (bloco 4, 23/10)
+juce::Rectangle<float> PlaylistGrid::laneLed (int index) const
+{
+    return { (float) headerWidth - 24.0f, trackToY (index) + (float) (trackHeight - 14) * 0.5f, 14.0f, 14.0f };
+}
+
+juce::String PlaylistGrid::laneSilence (const juce::String& laneId) const
+{
+    bool anySolo = false;
+    const PlaylistTrack* lane = nullptr;
+
+    for (auto& t : tracks)
+    {
+        anySolo = anySolo || t.solo;
+
+        if (t.id == laneId)
+            lane = &t;
+    }
+
+    if (lane == nullptr)
+        return {};
+
+    if (lane->muted)
+        return "raia muda"_t;
+
+    return anySolo && ! lane->solo ? juce::String ("fora do solo"_t) : juce::String();
+}
+
+void PlaylistGrid::toggleLane (int index, bool solo)
+{
+    if (! juce::isPositiveAndBelow (index, (int) tracks.size()))
+        return;
+
+    const auto& lane = tracks[(size_t) index];
+    const auto result = solo ? app.run ("playlist.setTrack", args ({ { "track", lane.id }, { "solo", ! lane.solo } }))
+                             : app.run ("playlist.setTrack", args ({ { "track", lane.id }, { "muted", ! lane.muted } }));
+
+    if (! result.ok && onStatus)
+        onStatus (result.error, true);
+}
+
+void PlaylistGrid::laneMenuChoice (const juce::String& laneId, int index, int choice)
+{
+    CommandResult result = CommandResult::success();
+
+    if (choice == 10 || choice == 11)
+        return toggleLane (index, choice == 11);
+
+    if (choice == 12 || choice == 13)
+        result = app.run ("playlist.moveTrack", args ({ { "track", laneId }, { "to", index + (choice == 12 ? 0 : 2) } }));
+    else if (choice == 14)
+        return renameTrack (index);
+    else if (choice == 19)
+        result = app.run ("playlist.setTrack", args ({ { "track", laneId }, { "color", "" } }));
+    else if (juce::isPositiveAndBelow (choice - 20, (int) std::size (laneColours)))
+        result = app.run ("playlist.setTrack", args ({ { "track", laneId }, { "color", laneColours[choice - 20].hex } }));
+
+    if (! result.ok && onStatus)
+        onStatus (result.error, true);
 }
 
 void PlaylistGrid::renameTrack (int index)
@@ -2010,7 +2166,19 @@ void PlaylistGrid::mouseDown (const juce::MouseEvent& e)
         return;
     }
 
-    // cabeçalho da raia: botão direito escolhe a entrada da placa para gravar nela (já arma), como no FL
+    // o ponto do mudo da raia (bloco 4): clique = mudo; Ctrl+clique = solo (no FL, o botão direito no botão)
+    if (headerArea().toFloat().contains (pos) && ! e.mods.isPopupMenu() && ! tracks.empty())
+    {
+        const int lane = yToTrack (pos.y);
+
+        if (juce::isPositiveAndBelow (lane, (int) tracks.size()) && laneLed (lane).expanded (4.0f).contains (pos))
+        {
+            toggleLane (lane, e.mods.isCommandDown());
+            return;
+        }
+    }
+
+    // cabeçalho da raia: botão direito abre o menu dela (mudo, solo, cor, ordem e a entrada para gravar), como no FL
     if (headerArea().toFloat().contains (pos) && e.mods.isPopupMenu() && ! tracks.empty())
     {
         showLaneMenu (yToTrack (pos.y));
@@ -2720,7 +2888,11 @@ void PlaylistGrid::mouseDoubleClick (const juce::MouseEvent& e)
 
     if (headerArea().toFloat().contains (e.position))
     {
-        renameTrack (yToTrack (e.position.y));
+        // o duplo clique no ponto do mudo é só mudo duas vezes, não renomear (bloco 4)
+        if (const int lane = yToTrack (e.position.y); ! (juce::isPositiveAndBelow (lane, (int) tracks.size())
+                                                          && laneLed (lane).expanded (4.0f).contains (e.position)))
+            renameTrack (lane);
+
         return;
     }
 

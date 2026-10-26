@@ -89,12 +89,13 @@ public:
 
     /** A captura para a IA (fatia 4.6): mostra a tela pedida ("playlist", "channelRack", "pianoRoll", "projects";
         vazio = a atual), grava a tela inteira em PNG com até `maxWidth` de largura e devolve o tamanho da imagem.
-        Vazio = não deu (o motivo em `error`). */
-    juce::Rectangle<int> capturePng (const juce::String& view, int maxWidth, const juce::File& png, juce::String& error);
+        Vazio = não deu (o motivo em `error`). `channel` escolhe antes o canal do piano roll (vazio = o escolhido;
+        sem `view`, mostra o piano roll) e volta com o canal que o piano roll mostra. */
+    juce::Rectangle<int> capturePng (const juce::String& screenName, juce::String& channel, int maxWidth, const juce::File& png, juce::String& error);
 
     /** Sem janela (--headless): monta a tela fora da área de trabalho, no tamanho de uma janela comum, só para a
         captura, e desmonta. Não rouba o foco nem aparece na tela. */
-    static juce::Rectangle<int> captureOffscreen (AppController&, const juce::String& view, int maxWidth,
+    static juce::Rectangle<int> captureOffscreen (AppController&, const juce::String& view, juce::String& channel, int maxWidth,
                                                   const juce::File& png, juce::String& error);
 
     /** Para o autoteste: o cartão da pergunta aberto (ou nullptr) e o aviso do pé. */

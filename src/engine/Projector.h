@@ -183,6 +183,8 @@ private:
         int pluginTriedVersion = -1;       // versão do catálogo na última tentativa (refaz se mudar)
         juce::String kind;                 // bindingKind(): o tipo do canal e o instrumento interno
         juce::String resolvedSample;
+        juce::String resolvedLayers;   // as camadas por força (bloco 4f): caminhos e forças, para saber se mudou
+        juce::String missingLayers;    // as que não abriram: o aviso volta a cada sync enquanto faltarem
         std::vector<MidiSpec> midi;
         std::vector<AudioSpec> audio;
         std::vector<te::Clip::Ptr> midiClips;    // o clipe de cada MidiSpec, na mesma ordem

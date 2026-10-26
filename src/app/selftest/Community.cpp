@@ -5,15 +5,24 @@
 // - os marcadores na régua (playlist.*Marker), no .wnl e na tela (clique e duplo clique);
 // - 10 efeitos por trilha, o LUFS do master e o botão de comparar no mixer;
 // - o tap tempo.
+// Do bloco 4 (23/10): as raias da playlist (cor, mudo, solo), o navegador com BPM e tom (4b), o rack com 8 macros (4c) e o
+// MIDI learn (4d, com o CC entrando direto no AppController::handleMidiControl, sem controlador de verdade) e o áudio
+// para MIDI (4e, com um beatbox e uma melodia gerados aqui) e as camadas por força (4f, renderizando o padrão).
 // As telas ficam num pai fora da área de trabalho (sem roubar o foco), com capturas em comunidade-*.png.
 
 #include "SelfTestKit.h"
+#include "../../dsp/FxCatalog.h"
 #include "../../engine/Projector.h"
+#include "../../engine/SampleAnalysis.h"
 #include "../../model/NoteTools.h"
 #include "../../model/WnlFormat.h"
+#include "../../ui/MidiLearnMenu.h"
 #include "../../ui/MixerView.h"
 #include "../../ui/PianoRoll.h"
+#include "../../ui/SamplerPanel.h"
 #include "../../ui/Playlist.h"
+#include "../../ui/SampleBrowser.h"
+#include "../../engine/SoundInfo.h"
 #include "../../ui/Theme.h"
 #include "../../ui/TransportBar.h"
 
@@ -50,6 +59,26 @@ namespace
     bool savePng (juce::Component& c, const juce::File& file)
     {
         const auto image = c.createComponentSnapshot (c.getLocalBounds(), true, 1.0f);
+        file.deleteFile();
+
+        if (juce::FileOutputStream out (file); out.openedOk())
+        {
+            juce::PNGImageFormat png;
+            return png.writeImageToStream (image, out) && image.getWidth() > 0;
+        }
+
+        return false;
+    }
+
+    /** A captura sobre o cartão do app: um painel que não pinta o fundo (o pai pinta) sai como na tela. */
+    bool savePngOnPanel (juce::Component& c, const juce::File& file)
+    {
+        juce::Image image (juce::Image::ARGB, juce::jmax (1, c.getWidth()), juce::jmax (1, c.getHeight()), true);
+        {
+            juce::Graphics g (image);
+            g.fillAll (theme::colour::panel);
+            g.drawImageAt (c.createComponentSnapshot (c.getLocalBounds(), true, 1.0f), 0, 0);
+        }
         file.deleteFile();
 
         if (juce::FileOutputStream out (file); out.openedOk())
@@ -498,6 +527,833 @@ void runCommunitySelfTest (SelfTestContext& ctx)
         rep.check (model.get().bpm == bpmBefore && status.contains ("continue"), "o botão TAP: a primeira batida só pede mais ("_t + status + ")");
         rep.check (savePng (bar, ctx.work.getChildFile ("comunidade-transporte.png")), "captura da barra com o TAP"_t);
         host.removeChildComponent (&bar);
+    }
+
+    //--------------------------------------------------------------------------
+    rep.section ("Comunidade: organizar a playlist (bloco 4: cor, mudo, solo e a ordem das raias)"_t);
+    {
+        app.run ("project.new");
+        const auto laneCh = model.get().channels.front().id;
+        const auto patternA = model.get().currentPattern;
+        app.run ("pianoroll.addNotes", args ({ { "channel", laneCh }, { "notes", juce::Array<juce::var> { noteVar (0, 1, 50, false) } }, { "unit", "beats" } }));
+        app.run ("pattern.add", args ({ { "name", "B" } }));
+        const auto patternB = model.get().currentPattern;
+        app.run ("pianoroll.addNotes", args ({ { "channel", laneCh }, { "notes", juce::Array<juce::var> { noteVar (0, 1, 80, false) } }, { "unit", "beats" } }));
+        app.run ("playlist.addItem", args ({ { "ref", patternA }, { "track", 1 }, { "start", 0 } }));
+        app.run ("playlist.addItem", args ({ { "ref", patternB }, { "track", 2 }, { "start", 0 } }));
+        const auto lane1 = model.get().playlistTracks[0].id, lane2 = model.get().playlistTracks[1].id;
+
+        // as notas de teste (50 no padrão A, na raia 1; 80 no B, na raia 2) que a música exporta no MIDI
+        const auto midi = ctx.work.getChildFile ("raias.mid");
+        auto songKeys = [&]
+        {
+            juce::StringArray keys;
+            midi.deleteFile();
+            app.run ("project.exportMidi", args ({ { "path", midi.getFullPathName() }, { "what", "song" } }));
+            juce::MidiFile file;
+
+            if (juce::FileInputStream in (midi); in.openedOk() && file.readFrom (in))
+                for (int t = 0; t < file.getNumTracks(); ++t)
+                    for (auto* e : *file.getTrack (t))
+                        if (e->message.isNoteOn() && (e->message.getNoteNumber() == 50 || e->message.getNoteNumber() == 80))
+                            keys.addIfNotAlreadyThere (juce::String (e->message.getNoteNumber()));
+
+            keys.sort (false);
+            return keys.joinIntoString (" ");
+        };
+
+        rep.check (songKeys() == "50 80", "as duas raias tocam: o MIDI da música tem a nota de cada uma ("_t + songKeys() + ")");
+
+        app.run ("playlist.setTrack", args ({ { "track", lane2 }, { "muted", true } }));
+        rep.check (songKeys() == "50" && ! model.get().laneSounds (lane2), "raia 2 muda: só a raia 1 sai no MIDI da música ("_t + songKeys() + ")");
+
+        app.run ("playlist.setTrack", args ({ { "track", lane2 }, { "muted", false }, { "solo", true } }));
+        rep.check (songKeys() == "80" && ! model.get().laneSounds (lane1), "raia 2 em solo: só ela toca ("_t + songKeys() + ")");
+
+        app.run ("playlist.setTrack", args ({ { "track", lane2 }, { "muted", true } }));
+        rep.check (songKeys().isEmpty(), "em solo e muda ao mesmo tempo: o mudo vence, e nada toca ("_t + songKeys() + ")");
+        app.run ("playlist.setTrack", args ({ { "track", lane2 }, { "muted", false }, { "solo", false } }));
+
+        const auto coloured = app.run ("playlist.setTrack", args ({ { "track", 1 }, { "color", "#5b8def" } }));
+        rep.check (coloured.ok && model.get().playlistTracks[0].colour == "#5B8DEF"
+                     && ! app.run ("playlist.setTrack", args ({ { "track", 1 }, { "color", "azul" } })).ok,
+                   "a cor da raia: \"#5b8def\" fica \"#5B8DEF\"; \"azul\" é recusado"_t);
+
+        // o .wnl: os dois escritores levam a cor, o mudo e o solo, e a leitura devolve
+        app.run ("playlist.setTrack", args ({ { "track", lane2 }, { "muted", true } }));
+        const auto json = wnl::toJson (model.get());
+        Project back;
+        rep.check (json == wnl::toJsonReference (model.get()) && json.contains ("\"colour\": \"#5B8DEF\"") && wnl::fromJson (json, back).wasOk()
+                     && back.playlistTracks[0].colour == "#5B8DEF" && back.playlistTracks[1].muted && ! back.playlistTracks[1].solo,
+                   ".wnl: a cor e o mudo da raia vão e voltam, iguais nos dois escritores"_t);
+        app.run ("playlist.setTrack", args ({ { "track", lane2 }, { "muted", false } }));
+
+        // a ordem: a raia 2 sobe para a primeira, e os blocos vão junto (eles guardam o id da raia)
+        const auto before = wnl::toJson (model.get());
+        const auto moved = app.run ("playlist.moveTrack", args ({ { "track", lane2 }, { "to", 1 } }));
+        bool itemsKept = true;
+
+        for (auto& i : model.get().playlistItems)
+            itemsKept = itemsKept && (i.ref == patternA ? i.track == lane1 : i.track == lane2);
+
+        rep.check (moved.ok && model.get().playlistTracks[0].id == lane2 && model.get().playlistTracks[1].id == lane1 && itemsKept
+                     && songKeys() == "50 80",
+                   "mover a raia 2 para a primeira: a ordem muda, os blocos vão junto e a música soa igual"_t);
+        app.run ("edit.undo");
+        rep.check (wnl::toJson (model.get()) == before, "um Ctrl+Z volta a ordem das raias"_t);
+
+        // na tela: a faixa de cor, o ponto do mudo e o clique nele
+        Playlist playlist (app);
+        host.addAndMakeVisible (playlist);
+        playlist.setBounds (host.getLocalBounds());
+        playlist.refresh (model.get());
+
+        if (auto* grid = childOf<PlaylistGrid> (playlist))
+        {
+            // o ponto fica na direita do cabeçalho (150 px), no meio da raia (54 px, depois da régua de 28 px)
+            const juce::Point<float> ledLane2 { 150.0f - 17.0f, 28.0f + 54.0f + 27.0f };
+            click (*grid, ledLane2);
+            playlist.refresh (model.get());
+            const bool mutedByClick = model.get().playlistTracks[1].muted;
+
+            grid->mouseDown (mouseAt (*grid, ledLane2, juce::ModifierKeys::ctrlModifier));
+            grid->mouseUp (mouseAt (*grid, ledLane2, juce::ModifierKeys::ctrlModifier));
+            playlist.refresh (model.get());
+            rep.check (mutedByClick && model.get().playlistTracks[1].solo, "na tela: clique no ponto da raia = mudo; Ctrl+clique = solo"_t);
+            rep.check (savePng (playlist, ctx.work.getChildFile ("comunidade-raias.png")), "captura das raias com a cor, o mudo e o solo"_t);
+        }
+        else
+        {
+            rep.check (false, "a playlist montou sem a grade"_t);
+        }
+
+        host.removeChildComponent (&playlist);
+    }
+
+    //--------------------------------------------------------------------------
+    rep.section ("Comunidade: navegador de sons com BPM e tom (bloco 4b)"_t);
+    {
+        using soundinfo::BpmFilter;
+        using soundinfo::KeyFilter;
+        using soundinfo::KindFilter;
+
+        // o tom pelo nome: o jeito dos produtores ("Am", "C#min", "F minor", "Lá menor"); letra sozinha e "Amen" não
+        auto keyOf = [] (const char* name)
+        {
+            const auto k = soundinfo::keyFromName (juce::String::fromUTF8 (name));
+            return k ? juce::String (k->first) + (k->second ? "M" : "m") : juce::String ("-");
+        };
+
+        const std::pair<const char*, const char*> nameCases[] {
+            { "Loop Am 92bpm", "9m" }, { "Dark_C#min_140", "1m" }, { "F minor pad", "5m" }, { "Bbmaj7 chords", "10M" },
+            { "E-minor guitar", "4m" }, { "Lá menor - piano", "9m" }, { "Sol# maior", "8M" }, { "F#m7 stab", "6m" },
+            { "loop em Lá menor", "9m" }, { "Amen break", "-" }, { "Kick 01", "-" }, { "Take A 2", "-" }, { "Cm", "0m" },
+            // a revisão de 23/10: a forma por extenso vence a curta, o "M" maiúsculo só num nome todo em maiúsculas
+            { "Loop Em Lá Menor 90bpm", "9m" }, { "LOOP_AM_120", "9m" }, { "LOOP EM LA MENOR", "9m" }, { "Loop AM 120", "-" },
+            { "FM Bass", "-" }, { "GM_Piano", "-" } };
+        juce::StringArray wrong;
+
+        for (auto& [name, expected] : nameCases)
+            if (keyOf (name) != expected)
+                wrong.add (juce::String::fromUTF8 (name) + " deu " + keyOf (name));
+
+        rep.check (wrong.isEmpty(), "o tom pelo nome: 19 nomes (Am, C#min, Bbmaj7, F minor, E-minor, Lá menor, Sol# maior, LOOP_AM_120...; "_t
+                                    "Amen, Kick 01, Take A, FM Bass e GM Piano não são tom; em \"Loop Em Lá Menor\", o Em é a preposição)"_t
+                                    + (wrong.isEmpty() ? juce::String() : ": " + wrong.joinIntoString ("; ")));
+
+        // o que combina com Lá menor
+        auto keyed = [] (int root, bool major, bool note = false)
+        {
+            SoundInfo i;
+            i.keyRoot = root;
+            i.keyMajor = major;
+            i.isNote = note;
+            return i;
+        };
+
+        {
+            // os modos do projeto (a revisão de 23/10): Ré dórico tem as notas de Dó maior
+            const auto dorian = Project::scaleDegrees ("dorian"), harmonic = Project::scaleDegrees ("harmonicMinor"),
+                       penta = Project::scaleDegrees ("pentatonicMinor"), chromatic = Project::scaleDegrees ("chromatic");
+            const bool modes = soundinfo::keyFits (keyed (0, true), 2, dorian, KeyFilter::project) && soundinfo::keyFits (keyed (9, false), 2, dorian, KeyFilter::project)
+                               && ! soundinfo::keyFits (keyed (2, false), 2, dorian, KeyFilter::project)
+                               && soundinfo::keyFits (keyed (11, false, true), 2, dorian, KeyFilter::project)
+                               && ! soundinfo::keyFits (keyed (10, false, true), 2, dorian, KeyFilter::project)
+                               && soundinfo::keyFits (keyed (9, false), 9, harmonic, KeyFilter::project) && soundinfo::keyFits (keyed (0, true), 9, harmonic, KeyFilter::project) && ! soundinfo::keyFits (keyed (4, false), 9, harmonic, KeyFilter::project)
+                               && soundinfo::keyFits (keyed (9, false), 9, penta, KeyFilter::project) && soundinfo::keyFits (keyed (0, true), 9, penta, KeyFilter::project)
+                               && ! soundinfo::keyFits (keyed (7, true), 9, penta, KeyFilter::project) && soundinfo::keyFits (keyed (7, true), 9, penta, KeyFilter::compatible)
+                               && soundinfo::keyFits (keyed (6, true), 0, chromatic, KeyFilter::project);
+            const auto same = soundinfo::keysThatFit (2, dorian, KeyFilter::project);
+            rep.check (modes && same.size() == 2 && soundinfo::projectKeyText (2, "dorian") == "Ré dórico"_t,
+                       "os modos do projeto: em Ré dórico, Dó maior e Lá menor (as mesmas notas) e o 808 em Si; Ré menor e o 808 em Si bemol não; "_t
+                       "na menor harmônica, o tom menor da tônica e o relativo (Mi menor não); na pentatônica, o tom e o relativo (e os vizinhos que têm as 5 notas); "_t
+                       "na cromática, todos ("_t + soundinfo::projectKeyText (2, "dorian") + ")");
+        }
+
+        rep.check (soundinfo::keyFits (keyed (9, false), 9, false, KeyFilter::project) && soundinfo::keyFits (keyed (0, true), 9, false, KeyFilter::project)
+                     && ! soundinfo::keyFits (keyed (4, false), 9, false, KeyFilter::project) && soundinfo::keyFits (keyed (4, false), 9, false, KeyFilter::compatible)
+                     && soundinfo::keyFits (keyed (2, false), 9, false, KeyFilter::compatible) && ! soundinfo::keyFits (keyed (6, false), 9, false, KeyFilter::compatible)
+                     && soundinfo::keyFits (keyed (5, false, true), 9, false, KeyFilter::project) && ! soundinfo::keyFits (keyed (6, false, true), 9, false, KeyFilter::project)
+                     && ! soundinfo::keyFits (SoundInfo(), 9, false, KeyFilter::project),
+                   "no tom de Lá menor: Lá menor e Dó maior (o relativo); com os vizinhos, também Mi menor e Ré menor; Fá# menor não; "_t
+                   "a nota Fá de um 808 cabe, a Fá# não"_t);
+        rep.check (soundinfo::bpmFits (140, 140, BpmFilter::project) && soundinfo::bpmFits (70, 140, BpmFilter::project)
+                     && soundinfo::bpmFits (280, 140, BpmFilter::project) && soundinfo::bpmFits (145, 140, BpmFilter::project)
+                     && ! soundinfo::bpmFits (150, 140, BpmFilter::project) && ! soundinfo::bpmFits (0, 140, BpmFilter::project),
+                   "BPM perto de 140: 140, 145, a metade (70) e o dobro (280); 150 e sem BPM não"_t);
+
+        // os sons do teste: um loop de 2 compassos a 120 BPM (batidas e um acorde de Lá menor), um pad sem nome, um 808 em
+        // Fá, um kick e um nome que já diz tudo
+        const auto dir = ctx.work.getChildFile ("sons-4b");
+        dir.deleteRecursively();
+        dir.createDirectory();
+        constexpr double rate = 44100.0;
+        const double twoPi = juce::MathConstants<double>::twoPi;
+
+        auto writeWav = [&] (const juce::String& name, double seconds, std::function<float (double t)> sample)
+        {
+            const auto f = dir.getChildFile (name + ".wav");
+            const int length = (int) (seconds * rate);
+            juce::AudioBuffer<float> buffer (1, length);
+
+            for (int i = 0; i < length; ++i)
+                buffer.setSample (0, i, sample (i / rate));
+
+            juce::WavAudioFormat wav;
+            std::unique_ptr<juce::OutputStream> out = std::make_unique<juce::FileOutputStream> (f);
+
+            if (auto w = wav.createWriterFor (out, juce::AudioFormatWriterOptions{}.withSampleRate (rate).withNumChannels (1).withBitsPerSample (24)))
+                w->writeFromAudioSampleBuffer (buffer, 0, length);
+
+            return f;
+        };
+
+        auto chord = [twoPi] (double t) { return 0.2 * std::sin (twoPi * 110.0 * t) + 0.1 * (std::sin (twoPi * 220.0 * t) + std::sin (twoPi * 261.63 * t) + std::sin (twoPi * 329.63 * t)); };
+        juce::Random noise (7);
+
+        const auto loopFile = writeWav ("Loop teste", 4.0, [&] (double t)
+        {
+            const double sinceBeat = std::fmod (t, 0.5);   // 120 BPM: uma batida a cada 0,5 s
+            const double hit = sinceBeat < 0.012 ? 0.8 * (noise.nextFloat() * 2.0 - 1.0) * (1.0 - sinceBeat / 0.012) : 0.0;
+            return (float) (chord (t) + hit);
+        });
+        const auto padFile = writeWav ("Pad sem nome", 8.5, [&] (double t) { return (float) (chord (t) * std::min (1.0, t / 0.3)); });
+        const auto bassFile = writeWav ("808 longo", 1.6, [&] (double t) { return (float) (0.8 * std::sin (twoPi * 43.65 * t) * std::exp (-t * 1.5)); });
+        const auto kickFile = writeWav ("Kick 01", 0.35, [&] (double t)
+        {
+            return (float) (0.9 * std::sin (twoPi * (55.0 + 120.0 * std::exp (-t * 40.0)) * t) * std::exp (-t * 12.0));
+        });
+        const auto trapFile = writeWav ("Trap 140bpm Cm", 2.0, [&] (double) { return (float) (0.3 * (noise.nextFloat() * 2.0 - 1.0)); });
+
+        {
+            SoundInfoCache cache (dir.getChildFile ("cache.json"));
+            const auto loop = cache.waitFor (loopFile, 30000);
+            const auto pad = cache.waitFor (padFile, 30000);
+            const auto bass = cache.waitFor (bassFile, 30000);
+            const auto kick = cache.waitFor (kickFile, 30000);
+            const auto trap = cache.waitFor (trapFile, 30000);
+
+            rep.check (loop.analysed && std::abs (loop.bpm - 120.0) < 1.0 && loop.bpmSource == "análise"_t && loop.isLoop()
+                         && soundinfo::keyFits (loop, 9, false, KeyFilter::project),
+                       "o loop de 2 compassos sem nada no nome: "_t + juce::String (loop.bpm, 1) + " BPM pela leitura (repetido até o "_t
+                           "detector achar o pulso), tom " + loop.keyText() + " (cabe em Lá menor): \""_t + loop.tags() + "\"");
+            rep.check (pad.analysed && ! pad.isLoop() && soundinfo::keyFits (pad, 9, false, KeyFilter::project),
+                       "o pad sem ataques: sem BPM, tom "_t + pad.keyText() + " pela leitura");
+            rep.check (bass.isNote && bass.keyRoot == 5 && ! bass.isLoop() && bass.tags() == "Fá"_t,
+                       "o 808 de 1,6 s: one-shot, a nota "_t + bass.keyText() + " (Fá)"_t);
+            rep.check (! kick.hasKey() && ! kick.isLoop() && kick.role == "kick" && kick.tags().isEmpty(),
+                       "o kick: sem nota e sem BPM (bateria), papel "_t + kick.role);
+            rep.check (trap.bpm == 140.0 && trap.bpmSource == "nome" && trap.keyRoot == 0 && ! trap.keyMajor && trap.keySource == "nome",
+                       "o \"Trap 140bpm Cm\": 140 BPM e Dó menor pelo nome, sem trocar pela leitura: \""_t + trap.tags() + "\"");
+        }
+
+        {
+            // o cache em disco: o mesmo arquivo, com o mesmo tamanho e a mesma data, não é lido de novo
+            SoundInfoCache again (dir.getChildFile ("cache.json"));
+            const auto before = again.find (loopFile);
+            const auto t0 = juce::Time::getMillisecondCounterHiRes();
+            const auto loop = again.waitFor (loopFile, 5000);
+            const auto ms = juce::Time::getMillisecondCounterHiRes() - t0;
+            rep.check (before.has_value() && before->analysed && std::abs (loop.bpm - 120.0) < 1.0 && ms < 400.0,
+                       "o cache reabre do disco: o loop já vem lido, e conferir a data levou "_t + juce::String (ms, 1) + " ms");
+        }
+
+        // os comandos da IA, no tom e no BPM do projeto
+        app.run ("project.new");
+        app.run ("project.setKey", args ({ { "root", "A" }, { "scale", "minor" } }));
+        app.run ("transport.setBpm", args ({ { "bpm", 120 } }));
+        const auto info = app.run ("browser.info", args ({ { "path", loopFile.getFullPathName() } }));
+        rep.check (info.ok && std::abs ((double) info.value["bpm"] - 120.0) < 1.0 && (bool) info.value["loop"] && info.value["key"].toString().isNotEmpty(),
+                   "browser.info: "_t + juce::JSON::toString (info.value, true).substring (0, 160));
+
+        for (auto& f : { padFile, bassFile, kickFile, trapFile })
+            app.run ("browser.info", args ({ { "path", f.getFullPathName() } }));
+
+        auto names = [] (const CommandResult& r)
+        {
+            juce::StringArray found;
+
+            if (auto* list = r.value["sounds"].getArray())
+                for (auto& sound : *list)
+                    found.add (sound["name"].toString());
+
+            found.sort (true);
+            return found.joinIntoString (", ");
+        };
+
+        const auto loopsInKey = app.run ("browser.find", args ({ { "folder", dir.getFullPathName() }, { "key", "project" }, { "kind", "loop" } }));
+        const auto nearBpm = app.run ("browser.find", args ({ { "folder", dir.getFullPathName() }, { "bpm", "project" } }));
+        const auto compatible = app.run ("browser.find", args ({ { "folder", dir.getFullPathName() }, { "key", "compatible" } }));
+        rep.check (loopsInKey.ok && names (loopsInKey) == "Loop teste" && (int) loopsInKey.value["pending"] == 0,
+                   "browser.find { key: project, kind: loop } em Lá menor: só o loop ("_t + names (loopsInKey) + ")");
+        rep.check (names (nearBpm) == "Loop teste", "browser.find { bpm: project } a 120 BPM: o loop; o Trap de 140 não ("_t + names (nearBpm) + ")");
+        rep.check (names (compatible) == "808 longo, Loop teste, Pad sem nome",
+                   "browser.find { key: compatible }: o loop, o pad e o 808 em Fá; o kick (sem nota) e o Trap em Dó menor não ("_t
+                       + names (compatible) + ")");
+        rep.check (! app.run ("browser.find", args ({ { "key", "qualquer" } })).ok, "browser.find com key errado: recusado"_t);
+
+        // na tela: as etiquetas e o filtro (o índice do teste, sem as suas pastas de verdade)
+        host.setSize (320, 420);
+        SampleBrowser browser (app);
+        host.addAndMakeVisible (browser);
+        browser.setBounds (host.getLocalBounds());
+        browser.setIndexForTest ({ loopFile, padFile, bassFile, kickFile, trapFile });
+        browser.setFilters (KeyFilter::project, BpmFilter::any, KindFilter::loops);
+        const bool onlyLoop = browser.rowOf (loopFile) >= 0 && browser.rowOf (padFile) < 0 && browser.rowOf (trapFile) < 0;
+
+        browser.setFilters (KeyFilter::compatible, BpmFilter::any, KindFilter::any);
+        const bool three = browser.rowOf (loopFile) >= 0 && browser.rowOf (padFile) >= 0 && browser.rowOf (bassFile) >= 0
+                           && browser.rowOf (kickFile) < 0 && browser.rowOf (trapFile) < 0 && browser.isFiltering();
+        rep.check (onlyLoop && three, "o filtro do navegador: os loops no tom do projeto (só o loop); os que combinam (o loop, o pad e o 808)"_t);
+        rep.check (savePng (browser, ctx.work.getChildFile ("comunidade-sons-tom-bpm.png")), "captura do navegador com o filtro e as etiquetas"_t);
+
+        browser.setFilters (KeyFilter::any, BpmFilter::any, KindFilter::any);   // a preferência do autoteste volta ao normal
+        host.removeChildComponent (&browser);
+    }
+
+    //--------------------------------------------------------------------------
+    rep.section ("Comunidade: rack com 8 macros (bloco 4c)"_t);
+    {
+        app.run ("project.new");
+        const auto track = app.run ("mixer.addTrack", args ({ { "name", "Rack" } })).value["track"].toString();
+        const auto eq = app.run ("mixer.addInsert", args ({ { "track", track }, { "type", "eq" } })).value["insert"].toString();
+        const auto sat = app.run ("mixer.addInsert", args ({ { "track", track }, { "type", "sat" } })).value["insert"].toString();
+
+        auto valueOf = [&model] (const juce::String& trackId, const juce::String& insertId, const char* id) -> float
+        {
+            const auto* m = model.get().findMixer (trackId);
+            const auto* ins = m != nullptr ? m->findInsert (insertId) : nullptr;
+            const auto* info = ins != nullptr ? dsp::findEffect (ins->type.toStdString()) : nullptr;
+
+            if (info == nullptr)
+                return -999.0f;
+
+            if (auto it = ins->params.find (id); it != ins->params.end())
+                return it->second;
+
+            const int i = info->indexOf (id);
+            return i >= 0 ? info->params[(size_t) i].def : -999.0f;
+        };
+        auto param = [&] (const juce::String& insertId, const char* id) { return valueOf (track, insertId, id); };
+        auto closeTo = [] (float a, float b, float tolerance) { return std::abs (a - b) <= tolerance; };
+        auto macroArgs = [&track] (int macro, std::initializer_list<std::pair<const char*, juce::var>> more)
+        {
+            auto a = args ({ { "track", track }, { "macro", macro } });
+
+            for (auto& [k, v] : more)
+                a.getDynamicObject()->setProperty (k, v);
+
+            return a;
+        };
+
+        // ligar: sem faixa, ela começa onde o parâmetro está (0 dB no agudo) e vai ao máximo; com faixa, vale na hora
+        const auto mapped = app.run ("mixer.mapMacro", macroArgs (1, { { "insert", eq }, { "param", "highGain" } }));
+        const auto mappedSat = app.run ("mixer.mapMacro", macroArgs (1, { { "insert", sat }, { "param", "drive" }, { "min", 0 }, { "max", 24 } }));
+        rep.check (mapped.ok && mappedSat.ok && closeTo (param (eq, "highGain"), 0.0f, 0.001f) && closeTo (param (sat, "drive"), 0.0f, 0.001f),
+                   "ligar ao macro: o agudo fica em 0 dB (a faixa padrão começa nele); o drive, com a faixa de 0 a 24 dB, vai a 0 na hora"_t);
+
+        const auto half = app.run ("mixer.setMacro", macroArgs (1, { { "value", 0.5 } }));
+        rep.check (half.ok && (int) half.value["changed"] == 2 && closeTo (param (eq, "highGain"), 9.0f, 0.01f) && closeTo (param (sat, "drive"), 12.0f, 0.01f),
+                   "o macro 1 no meio: o agudo em +9 dB e o drive em 12 dB, os dois de uma vez ("_t
+                       + juce::String (param (eq, "highGain"), 2) + " e " + juce::String (param (sat, "drive"), 2) + ")");
+
+        app.run ("mixer.mapMacro", macroArgs (2, { { "insert", eq }, { "param", "highFreq" }, { "min", 2000 }, { "max", 16000 } }));
+        app.run ("mixer.mapMacro", macroArgs (2, { { "insert", sat }, { "param", "mix" }, { "min", 100 }, { "max", 40 } }));
+        app.run ("mixer.setMacro", macroArgs (2, { { "value", 0.5 } }));
+        rep.check (closeTo (param (eq, "highFreq"), 5656.85f, 3.0f) && closeTo (param (sat, "mix"), 70.0f, 0.05f),
+                   "o macro 2 no meio: a frequência anda no knob (de 2 a 16 kHz, o meio dá "_t + juce::String (param (eq, "highFreq"), 0)
+                       + " Hz) e a faixa invertida desce a mistura (de 100% a 40%, no meio "_t + juce::String (param (sat, "mix"), 1) + "%)");
+
+        app.run ("mixer.setMacro", macroArgs (1, { { "name", "Brilho" } }));
+        const auto seen = app.run ("mixer.macros", args ({ { "track", track } }));
+        const auto* list = seen.value["macros"].getArray();
+        const bool listed = seen.ok && list != nullptr && list->size() == maxMacros && (*list)[0]["name"].toString() == "Brilho"
+                            && (*list)[0]["links"].size() == 2 && (*list)[2]["name"].toString() == "Macro 3" && (*list)[2]["links"].size() == 0
+                            && (*list)[1]["links"][0]["param"].toString() == "highFreq"
+                            && closeTo ((float) (double) (*list)[1]["links"][0]["min"], 2000.0f, 1.0f)
+                            && closeTo ((float) (double) (*list)[1]["links"][0]["now"], 5656.85f, 3.0f);
+        rep.check (listed, "mixer.macros: os 8, com o nome (\"Brilho\", \"Macro 3\"), e cada parâmetro com o valor em 0, em 1 e agora"_t);
+
+        const bool refused = ! app.run ("mixer.mapMacro", macroArgs (9, { { "insert", eq }, { "param", "highGain" } })).ok
+                             && ! app.run ("mixer.mapMacro", macroArgs (1, { { "insert", eq }, { "param", "nada" } })).ok
+                             && ! app.run ("mixer.setMacro", macroArgs (0, { { "value", 1 } })).ok
+                             && ! app.run ("mixer.unmapMacro", macroArgs (3, {})).ok;
+        rep.check (refused, "recusados: o macro 9 e o 0, um parâmetro que não existe e desligar um macro sem nada"_t);
+
+        {
+            const auto json = wnl::toJson (model.get());
+            Project back;
+            const bool read = wnl::fromJson (json, back).wasOk();
+            const auto* m = back.findMixer (track);
+            rep.check (json == wnl::toJsonReference (model.get()) && json.contains ("\"macros\"") && read && m != nullptr
+                           && m->macros == model.get().findMixer (track)->macros,
+                       "o .wnl: os dois escritores iguais, e o rack volta igual do arquivo"_t);
+        }
+
+        app.run ("mixer.removeInsert", args ({ { "track", track }, { "insert", eq } }));
+        const auto* afterRemove = model.get().findMixer (track);
+        const bool dropped = afterRemove != nullptr && afterRemove->macros.size() >= 2 && afterRemove->macros[0].links.size() == 1
+                             && afterRemove->macros[1].links.size() == 1 && afterRemove->macros[0].links[0].insert == sat;
+        app.run ("edit.undo");
+        const auto* afterUndo = model.get().findMixer (track);
+        rep.check (dropped && afterUndo != nullptr && afterUndo->macros[0].links.size() == 2 && closeTo (param (eq, "highGain"), 9.0f, 0.01f),
+                   "tirar o EQ tira os links dele (cada macro fica com o da saturação); o Ctrl+Z volta o EQ e os links"_t);
+
+        app.getCommands().beginGesture ("Mexer no macro"_t);
+
+        for (double v : { 0.6, 0.7, 0.85, 1.0 })
+            app.run ("mixer.setMacro", macroArgs (1, { { "value", v } }));
+
+        app.getCommands().endGesture();
+        const bool atTop = closeTo (param (eq, "highGain"), 18.0f, 0.01f) && closeTo (param (sat, "drive"), 24.0f, 0.01f);
+        app.run ("edit.undo");
+        rep.check (atTop && closeTo (param (eq, "highGain"), 9.0f, 0.01f) && closeTo (param (sat, "drive"), 12.0f, 0.01f),
+                   "arrastar o macro até o fim leva o agudo a +18 dB e o drive a 24 dB; um Ctrl+Z volta ao meio (um passo só)"_t);
+
+        // a cadeia salva leva o rack, ligado aos efeitos novos
+        const juce::String chainName ("Rack do autoteste 4c");
+        const auto saved = app.run ("mixer.saveChain", args ({ { "track", track }, { "name", chainName } }));
+        const auto other = app.run ("mixer.addTrack", args ({ { "name", "Outra" } })).value["track"].toString();
+        const auto loaded = app.run ("mixer.loadChain", args ({ { "track", other }, { "name", chainName } }));
+        const auto* ot = model.get().findMixer (other);
+        const bool chainOk = saved.ok && loaded.ok && (int) loaded.value["macros"] == 2 && ot != nullptr && ot->inserts.size() == 2
+                             && ot->macros.size() >= 2 && ot->macros[0].name == "Brilho" && ot->macros[0].links.size() == 2
+                             && ot->macros[0].links[0].insert == ot->inserts[0].id && ot->inserts[0].id != eq;
+        rep.check (chainOk, "a cadeia salva leva o rack: na outra trilha, o \"Brilho\" move os efeitos dela (ids novos)"_t);
+
+        if (chainOk)
+        {
+            const auto otherEq = ot->inserts[0].id;
+            app.run ("mixer.setMacro", args ({ { "track", other }, { "macro", 1 }, { "value", 0.0 } }));
+            rep.check (closeTo (valueOf (other, otherEq, "highGain"), 0.0f, 0.01f) && closeTo (param (eq, "highGain"), 9.0f, 0.01f),
+                       "o macro da outra trilha a 0: o agudo dela volta a 0 dB, e o da primeira fica em +9 dB"_t);
+
+            const auto appended = app.run ("mixer.loadChain", args ({ { "track", other }, { "name", chainName }, { "mode", "append" } }));
+            const auto* oa = model.get().findMixer (other);
+            rep.check (appended.ok && (int) appended.value["macros"] == 2 && oa != nullptr && oa->inserts.size() == 4 && oa->macros.size() >= 4
+                           && oa->macros[2].name == "Brilho" && ! oa->macros[2].links.empty() && oa->macros[2].links[0].insert == oa->inserts[2].id
+                           && oa->macros[0].links[0].insert == oa->inserts[0].id,
+                       "somar a mesma cadeia: o rack dela vai para os macros 3 e 4 (o 1 e o 2 já movem alguma coisa)"_t);
+        }
+
+        app.run ("mixer.deleteChain", args ({ { "name", chainName } }));
+
+        // a tela: o rack abre sozinho na trilha com macros, e o menu do macro liga um parâmetro
+        InsertPanel panel (app);
+        host.addAndMakeVisible (panel);
+        panel.setTrack (track);
+        panel.refresh (model.get());
+        panel.setSize (InsertPanel::idealWidth, panel.getIdealHeight());
+        const bool opened = panel.areMacrosOpen();
+
+        std::vector<std::function<void()>> actions;
+        const auto menu = panel.createMacroMenu (2, actions);
+        int linkItem = 0, renameItem = 0;
+
+        for (juce::PopupMenu::MenuItemIterator it (menu, true); it.next();)
+        {
+            if (it.getItem().text == "Ganho agudo" && linkItem == 0)
+                linkItem = it.getItem().itemID;
+
+            if (it.getItem().text == "Renomear...")
+                renameItem = it.getItem().itemID;
+        }
+
+        if (linkItem > 0 && linkItem <= (int) actions.size())
+            actions[(size_t) linkItem - 1]();
+
+        const auto* linkedNow = model.get().findMixer (track);
+        rep.check (opened && renameItem > 0 && linkedNow != nullptr && linkedNow->macros.size() >= 3 && linkedNow->macros[2].links.size() == 1
+                       && linkedNow->macros[2].links[0].param == "highGain",
+                   "na tela: o rack abre sozinho na trilha com macros, e o menu do macro 3 liga o Ganho agudo do EQ"_t);
+
+        actions.clear();
+        int ticked = 0;
+        bool movesNow = false;
+
+        const auto brilho = panel.createMacroMenu (0, actions);   // o iterador guarda uma referência: o menu precisa viver
+
+        for (juce::PopupMenu::MenuItemIterator it (brilho, true); it.next();)
+        {
+            ticked += it.getItem().isTicked ? 1 : 0;
+            movesNow |= it.getItem().isTicked && it.getItem().text.startsWith ("EQ") && it.getItem().text.contains ("Ganho agudo");
+        }
+
+        rep.check (ticked == 4 && movesNow, "o menu do Brilho marca o Ganho agudo e o Drive nas listas dos efeitos e mostra os dois no que ele move agora ("_t
+                                                + juce::String (ticked) + " marcados)");
+
+        panel.refresh (model.get());
+        panel.setMacrosOpen (false);
+        const int closedHeight = panel.getIdealHeight();
+        panel.setMacrosOpen (true);
+        rep.check (panel.getIdealHeight() - closedHeight == 2 * 58, "o título MACROS fecha e abre os 8 knobs (duas linhas de 4)"_t);
+
+        panel.setSize (InsertPanel::idealWidth, panel.getIdealHeight());
+        rep.check (savePngOnPanel (panel, ctx.work.getChildFile ("comunidade-macros.png")), "captura do painel de efeitos com o rack"_t);
+        host.removeChildComponent (&panel);
+    }
+
+    //--------------------------------------------------------------------------
+    rep.section ("Comunidade: MIDI learn (bloco 4d)"_t);
+    {
+        app.run ("project.new");
+        const auto track = app.run ("mixer.addTrack", args ({ { "name", "Controle" } })).value["track"].toString();
+        const auto eq = app.run ("mixer.addInsert", args ({ { "track", track }, { "type", "eq" } })).value["insert"].toString();
+        app.run ("mixer.mapMacro", args ({ { "track", track }, { "macro", 1 }, { "insert", eq }, { "param", "lowGain" }, { "min", -6 }, { "max", 6 } }));
+
+        auto param = [&model, &track, &eq] (const char* id) -> float
+        {
+            const auto* m = model.get().findMixer (track);
+            const auto* ins = m != nullptr ? m->findInsert (eq) : nullptr;
+            const auto it = ins != nullptr ? ins->params.find (id) : std::map<juce::String, float>::const_iterator();
+            return ins != nullptr && it != ins->params.end() ? it->second : 0.0f;
+        };
+        auto mixerTrack = [&model, &track] { return model.get().findMixer (track); };
+        auto closeTo = [] (float a, float b, float tolerance) { return std::abs (a - b) <= tolerance; };
+        const MidiLink highGain { 0, 0, "insert", track, eq, "highGain" };
+
+        // aprender: o alvo arma; o primeiro CC que chega liga e não mexe no parâmetro
+        const auto learn = app.run ("midi.learn", args ({ { "kind", "insert" }, { "track", track }, { "insert", eq }, { "param", "highGain" } }));
+        const bool armed = learn.ok && app.isLearningMidi();
+        app.handleMidiControl (1, 21, 100);
+        const auto* bound = midilearn::linkFor (model.get(), highGain);
+        rep.check (armed && ! app.isLearningMidi() && bound != nullptr && bound->cc == 21 && bound->channel == 1 && closeTo (param ("highGain"), 0.0f, 0.001f),
+                   "aprender: o midi.learn arma, o CC 21 do canal 1 liga ao Ganho agudo do EQ, e o CC que ligou não mexe nele"_t);
+
+        // mexer: a rajada move o agudo de -18 a +18 dB e vira um passo de desfazer só
+        for (int v : { 0, 32, 64, 96, 127 })
+            app.handleMidiControl (1, 21, v);
+
+        app.finishMidiControlGesture();
+        const bool top = closeTo (param ("highGain"), 18.0f, 0.01f);
+        app.run ("edit.undo");
+        rep.check (top && closeTo (param ("highGain"), 0.0f, 0.01f) && midilearn::linkFor (model.get(), highGain) != nullptr,
+                   "o CC 21 leva o agudo até +18 dB no 127; um Ctrl+Z desfaz a rajada inteira (o link fica)"_t);
+
+        // Ctrl+Z logo depois de girar (o gesto do controlador ainda aberto): ele fecha antes, e o desfazer tira a mexida
+        app.handleMidiControl (1, 21, 127);
+        app.run ("edit.undo");
+        const bool undoneOpen = closeTo (param ("highGain"), 0.0f, 0.01f) && ! app.getCommands().isInGesture();
+        app.run ("edit.redo");
+        rep.check (undoneOpen && closeTo (param ("highGain"), 18.0f, 0.01f),
+                   "Ctrl+Z com o knob acabado de girar: o passo do controlador fecha antes e sai; o refazer volta"_t);
+        app.run ("edit.undo");
+
+        app.handleMidiControl (2, 21, 127);   // outro canal MIDI: o link é do canal 1
+        app.finishMidiControlGesture();
+        rep.check (closeTo (param ("highGain"), 0.0f, 0.01f), "o mesmo CC no canal 2 não move nada (o link é do canal 1)"_t);
+
+        // o volume, o pan e o macro
+        const bool mapped = app.run ("midi.map", args ({ { "cc", 7 }, { "kind", "mixer" }, { "track", track }, { "param", "volume" } })).ok
+                            && app.run ("midi.map", args ({ { "cc", 10 }, { "kind", "mixer" }, { "track", track }, { "param", "pan" } })).ok
+                            && app.run ("midi.map", args ({ { "cc", 22 }, { "kind", "macro" }, { "track", track }, { "param", "1" } })).ok;
+        app.handleMidiControl (1, 7, 0);
+        const bool silent = mixerTrack() != nullptr && mixerTrack()->volumeDb <= -99.0f;
+        app.handleMidiControl (1, 7, 127);
+        const bool loud = mixerTrack() != nullptr && closeTo (mixerTrack()->volumeDb, 6.0f, 0.05f);
+        app.handleMidiControl (1, 10, 64);
+        const bool centre = mixerTrack() != nullptr && closeTo (mixerTrack()->pan, 0.0f, 0.001f);
+        app.handleMidiControl (1, 10, 127);
+        const bool right = mixerTrack() != nullptr && closeTo (mixerTrack()->pan, 1.0f, 0.001f);
+        app.handleMidiControl (5, 22, 127);   // o link do midi.map sem canal vale em qualquer um
+        app.finishMidiControlGesture();
+        const bool macroMoved = mixerTrack() != nullptr && ! mixerTrack()->macros.empty() && closeTo (mixerTrack()->macros[0].value, 1.0f, 0.001f)
+                                && closeTo (param ("lowGain"), 6.0f, 0.01f);
+        rep.check (mapped && silent && loud && centre && right && macroMoved,
+                   "o CC 7 no volume (0 = mudo, 127 = +6 dB), o CC 10 no pan (64 = centro) e o CC 22 no macro 1, que leva o grave a +6 dB"_t);
+
+        // um CC move um alvo só, e um alvo tem um CC só
+        app.run ("midi.map", args ({ { "cc", 21 }, { "kind", "mixer" }, { "track", track }, { "param", "pan" } }));
+        const auto& links = model.get().midiMap;
+        const bool single = links.size() == 3 && midilearn::linkFor (model.get(), highGain) == nullptr
+                            && std::none_of (links.begin(), links.end(), [] (const MidiLink& l) { return l.cc == 10; });
+        rep.check (single, "ligar o CC 21 ao pan tira o link do agudo (o CC 21) e o do pan antigo (o CC 10)"_t);
+
+        {
+            const auto json = wnl::toJson (model.get());
+            Project back;
+            rep.check (json == wnl::toJsonReference (model.get()) && json.contains ("\"midiMap\"") && wnl::fromJson (json, back).wasOk()
+                           && back.midiMap == model.get().midiMap,
+                       "o .wnl: os dois escritores iguais, e os controles ligados voltam iguais do arquivo"_t);
+        }
+
+        app.run ("mixer.removeTrack", args ({ { "track", track } }));
+        const bool gone = model.get().midiMap.empty();
+        app.run ("edit.undo");
+        rep.check (gone && model.get().midiMap.size() == 3, "tirar a trilha tira os controles dela; o Ctrl+Z volta os dois"_t);
+
+        const bool refused = ! app.run ("midi.learn", args ({ { "kind", "insert" }, { "track", track }, { "insert", eq }, { "param", "nada" } })).ok
+                             && ! app.run ("midi.learn", args ({ { "kind", "mixer" }, { "track", track }, { "param", "eco" } })).ok
+                             && ! app.run ("midi.map", args ({ { "cc", 200 }, { "kind", "mixer" }, { "track", track }, { "param", "volume" } })).ok
+                             && ! app.run ("midi.map", args ({ { "cc", 3 }, { "kind", "macro" }, { "track", track }, { "param", "9" } })).ok
+                             && ! app.run ("midi.unmap", args ({ { "cc", 99 } })).ok;
+        rep.check (refused, "recusados: um parâmetro que não existe, o mixer sem volume ou pan, o CC 200, o macro 9 e esquecer o que não está ligado"_t);
+
+        app.run ("midi.learn", args ({ { "kind", "mixer" }, { "track", track }, { "param", "volume" } }));
+        const bool waiting = app.isLearningMidi();
+        std::vector<std::function<void()>> actions;
+        juce::PopupMenu menu;
+        midilearn::addItems (menu, app, MidiLink { 0, 0, "mixer", track, {}, "pan" }, actions);
+        bool showsCc = false;
+
+        for (juce::PopupMenu::MenuItemIterator it (menu); it.next();)
+            showsCc |= it.getItem().text.startsWith ("Controlador: CC 21");
+
+        const auto mappings = app.run ("midi.mappings");
+        app.run ("midi.cancelLearn");
+        rep.check (waiting && ! app.isLearningMidi() && showsCc && mappings.ok && mappings.value["mappings"].size() == 3,
+                   "o menu do pan mostra o CC 21; midi.mappings lista os 3; midi.cancelLearn para o aprender"_t);
+
+        const auto unmapped = app.run ("midi.unmap", args ({ { "kind", "mixer" }, { "track", track }, { "param", "pan" } }));
+        rep.check (unmapped.ok && model.get().midiMap.size() == 2, "esquecer o controlador do pan (pelo alvo)"_t);
+    }
+
+    //--------------------------------------------------------------------------
+    rep.section ("Comunidade: áudio para MIDI (bloco 4e)"_t);
+    {
+        app.run ("project.new");
+        app.run ("transport.setBpm", args ({ { "bpm", 120 } }));
+        const double rate = 44100.0, stepSeconds = 0.125;   // 1/16 a 120 BPM
+        const auto dir = ctx.work.getChildFile ("audio-midi-4e");
+        dir.createDirectory();
+
+        auto writeWav = [&rate] (const juce::File& f, const std::vector<float>& x)
+        {
+            f.deleteFile();
+            juce::WavAudioFormat wav;
+            std::unique_ptr<juce::OutputStream> out = std::make_unique<juce::FileOutputStream> (f);
+            auto writer = wav.createWriterFor (out, juce::AudioFormatWriterOptions{}.withSampleRate (rate).withNumChannels (1).withBitsPerSample (16));
+
+            if (writer == nullptr)
+                return false;
+
+            const float* chans[] { x.data() };
+            return writer->writeFromFloatArrays (chans, 1, (int) x.size());
+        };
+
+        // o beatbox: kick (grave que cai), caixa (corpo em 250 Hz e ruído) e chimbal (ruído agudo e curto)
+        const int kicks[] { 0, 6, 8 }, snares[] { 4, 12 }, hats[] { 2, 10, 14 };
+        std::vector<float> beat ((size_t) (2.2 * rate), 0.0f);
+        juce::Random noise (42);
+        const double twoPi = juce::MathConstants<double>::twoPi;
+        auto put = [&] (int step, double seconds, auto sample)
+        {
+            const auto at = (size_t) (step * stepSeconds * rate);
+
+            for (size_t i = 0; i < (size_t) (seconds * rate) && at + i < beat.size(); ++i)
+                beat[at + i] += (float) sample ((double) i / rate);
+        };
+
+        for (int st : kicks)
+            put (st, 0.2, [&] (double t) { return 0.8 * std::exp (-t / 0.07) * std::sin (twoPi * (55.0 * t + 40.0 * 0.03 * (1.0 - std::exp (-t / 0.03)))); });
+
+        for (int st : snares)
+            put (st, 0.15, [&] (double t) { return std::exp (-t / 0.05) * (0.45 * std::sin (twoPi * 250.0 * t) + 0.25 * (noise.nextFloat() * 2.0f - 1.0f)); });
+
+        double hp = 0.0, last = 0.0;
+
+        for (int st : hats)
+            put (st, 0.04, [&] (double t)
+            {
+                const double x = noise.nextFloat() * 2.0f - 1.0f;   // ruído menos ele mesmo suavizado: só o agudo
+                hp = 0.75 * (hp + x - last);
+                last = x;
+                return 0.6 * std::exp (-t / 0.012) * hp;
+            });
+
+        const auto beatFile = dir.getChildFile ("beatbox.wav");
+        const bool wroteBeat = writeWav (beatFile, beat);
+        const auto drums = app.run ("audio.toMidi", args ({ { "path", beatFile.getFullPathName() }, { "mode", "drums" } }));
+        const auto* pat = model.get().currentPatternPtr();
+
+        auto stepsOf = [&model, pat] (const char* role)
+        {
+            juce::StringArray on;
+
+            for (auto& ch : model.get().channels)
+                if (pat != nullptr && roleFromName (ch.name) == (juce::String (role) == "kick" ? SampleRole::kick : juce::String (role) == "hat" ? SampleRole::hat : SampleRole::clap))
+                    if (auto it = pat->steps.find (ch.id); it != pat->steps.end())
+                        for (size_t i = 0; i < it->second.size(); ++i)
+                            if (it->second[i].on)
+                                on.add (juce::String ((int) i));
+
+            return on.joinIntoString (" ");
+        };
+
+        const auto kickSteps = stepsOf ("kick"), clapSteps = stepsOf ("clap"), hatSteps = stepsOf ("hat");
+        rep.check (wroteBeat && drums.ok && pat != nullptr && pat->id == drums.value["pattern"].toString() && kickSteps == "0 6 8" && clapSteps == "4 12"
+                       && hatSteps == "2 10 14",
+                   "o beatbox vira o kit num padrão novo: kick em "_t + kickSteps + ", palma (a caixa do kit) em " + clapSteps + ", chimbal em " + hatSteps
+                       + (drums.ok ? juce::String() : " (" + drums.error + ")"));
+
+        // a melodia: Lá 3, Dó 4, Mi 4 e Sol 4 (meio segundo, meio, um quarto e meio), com um respiro entre as notas
+        const struct { int key; double start, length; } tune[] { { 57, 0.0, 0.48 }, { 60, 0.5, 0.48 }, { 64, 1.0, 0.23 }, { 67, 1.5, 0.48 } };
+        std::vector<float> sung ((size_t) (2.2 * rate), 0.0f);
+
+        for (auto& n : tune)
+        {
+            const double hz = 440.0 * std::pow (2.0, (n.key - 69) / 12.0);
+
+            for (size_t i = 0; i < (size_t) (n.length * rate); ++i)
+            {
+                const double t = (double) i / rate, fade = juce::jmin (1.0, t / 0.01, (n.length - t) / 0.01);
+                sung[(size_t) (n.start * rate) + i] = (float) (0.5 * fade * std::sin (twoPi * hz * t));
+            }
+        }
+
+        const auto tuneFile = dir.getChildFile ("melodia.wav");
+        const bool wroteTune = writeWav (tuneFile, sung);
+        const auto synth = app.run ("channel.addSynth");
+        const auto synthId = synth.value["channel"].toString();
+        const auto melody = app.run ("audio.toMidi", args ({ { "path", tuneFile.getFullPathName() }, { "mode", "melody" }, { "channel", synthId } }));
+        const auto notes = notesOf (model.get(), synthId);
+        juce::StringArray got;
+
+        for (auto& n : notes)
+            got.add (juce::String (n.key) + "@" + juce::String (n.start / ticksPerStep) + "+" + juce::String (n.length / ticksPerStep));
+
+        rep.check (wroteTune && melody.ok && got.joinIntoString (" ") == "57@0+4 60@4+4 64@8+2 67@12+4",
+                   "a melodia vira notas no synth, encaixadas no 1/16 (nota@passo+passos): "_t + got.joinIntoString (" ")
+                       + (melody.ok ? juce::String() : " (" + melody.error + ")"));
+
+        const bool refused = ! app.run ("audio.toMidi", args ({ { "path", tuneFile.getFullPathName() }, { "mode", "baixo" } })).ok
+                             && ! app.run ("audio.toMidi", args ({ { "path", "relativo.wav" }, { "mode", "drums" } })).ok
+                             && ! app.run ("audio.toMidi", args ({ { "mode", "drums" } })).ok;
+        const int before = (int) model.get().patterns.size();
+        app.run ("edit.undo");
+        rep.check (refused && (int) model.get().patterns.size() == before - 1,
+                   "recusados: o modo errado, o caminho incompleto e sem áudio; o Ctrl+Z tira o padrão da melodia"_t);
+    }
+
+    //--------------------------------------------------------------------------
+    rep.section ("Comunidade: pads com camadas por força (bloco 4f)"_t);
+    {
+        app.run ("project.new");
+        const double rate = 44100.0;
+        const auto dir = ctx.work.getChildFile ("camadas-4f");
+        dir.createDirectory();
+
+        auto sineWav = [&] (const juce::String& name, double hz)
+        {
+            const auto f = dir.getChildFile (name + ".wav");
+            f.deleteFile();
+            juce::AudioBuffer<float> buffer (1, (int) rate);
+
+            for (int i = 0; i < buffer.getNumSamples(); ++i)
+                buffer.setSample (0, i, 0.5f * (float) std::sin (juce::MathConstants<double>::twoPi * hz * i / rate));
+
+            juce::WavAudioFormat wav;
+            std::unique_ptr<juce::OutputStream> out = std::make_unique<juce::FileOutputStream> (f);
+
+            if (auto w = wav.createWriterFor (out, juce::AudioFormatWriterOptions{}.withSampleRate (rate).withNumChannels (1).withBitsPerSample (24)))
+                w->writeFromAudioSampleBuffer (buffer, 0, buffer.getNumSamples());
+
+            return f;
+        };
+
+        const auto soft = sineWav ("Pad suave", 220.0), hard = sineWav ("Pad forte", 440.0), harder = sineWav ("Pad muito forte", 880.0);
+        const auto added = app.run ("channel.addSampler", args ({ { "path", soft.getFullPathName() }, { "name", "Pad" } }));
+        const auto pad = added.value["channel"].toString();
+        app.run ("mixer.setSolo", args ({ { "track", added.value["mixerTrack"].toString() }, { "on", true } }));
+
+        const auto layered = app.run ("channel.addLayer", args ({ { "channel", pad }, { "path", hard.getFullPathName() } }));
+        const auto* padCh = model.get().findChannel (pad);
+        rep.check (added.ok && layered.ok && padCh != nullptr && padCh->layers.size() == 1 && padCh->layers[0].minVelocity == 100,
+                   "uma camada no pad: o sample forte a partir da força 100 (o padrão da primeira)"_t);
+
+        int renders = 0;
+        auto hzAt = [&] (int velocity)
+        {
+            setGrid (app, pad, "x...............", velocity);
+            const auto f = dir.getChildFile ("camadas-" + juce::String (++renders) + ".wav");
+            app.run ("project.exportWav", args ({ { "path", f.getFullPathName() }, { "loops", 1 }, { "what", "pattern" } }));
+            return measureHz (readWav (f), 0.05, 0.5);
+        };
+
+        const double softHz = hzAt (60), hardHz = hzAt (120), edgeHz = hzAt (100), belowHz = hzAt (99);
+        rep.check (std::abs (softHz - 220.0) < 2.0 && std::abs (hardHz - 440.0) < 3.0 && std::abs (edgeHz - 440.0) < 3.0 && std::abs (belowHz - 220.0) < 2.0,
+                   "a força escolhe o sample: 60 toca o suave ("_t + juce::String (softHz, 1) + " Hz), 120 e 100 o forte ("
+                       + juce::String (hardHz, 1) + " e " + juce::String (edgeHz, 1) + " Hz), 99 o suave (" + juce::String (belowHz, 1) + " Hz)");
+
+        app.run ("channel.addLayer", args ({ { "channel", pad }, { "path", harder.getFullPathName() }, { "minVelocity", 120 } }));
+        const double topHz = hzAt (127), middleHz = hzAt (110);
+        rep.check (std::abs (topHz - 880.0) < 5.0 && std::abs (middleHz - 440.0) < 3.0,
+                   "três forças: 127 toca o muito forte ("_t + juce::String (topHz, 1) + " Hz), 110 o forte (" + juce::String (middleHz, 1) + " Hz)");
+
+        {
+            const auto json = wnl::toJson (model.get());
+            Project back;
+            const bool read = wnl::fromJson (json, back).wasOk();
+            const auto* backCh = back.findChannel (pad);
+            rep.check (json == wnl::toJsonReference (model.get()) && json.contains ("\"layers\"") && read && backCh != nullptr
+                           && backCh->layers == model.get().findChannel (pad)->layers,
+                       "o .wnl: os dois escritores iguais, e as camadas voltam iguais do arquivo"_t);
+
+            // salvar coletando: as camadas vão para samples/, como o sample do canal
+            auto copy = model.get();
+            const auto folder = dir.getChildFile ("projeto");
+            folder.deleteRecursively();
+            const auto file = folder.getChildFile ("Camadas.wnl");
+            const bool saved = wnl::save (copy, file, true).wasOk();
+            const auto* savedCh = copy.findChannel (pad);
+            rep.check (saved && savedCh != nullptr && savedCh->layers.size() == 2 && savedCh->layers[0].samplePath.startsWith ("samples/")
+                           && folder.getChildFile ("samples").getChildFile ("Pad forte.wav").existsAsFile()
+                           && folder.getChildFile ("samples").getChildFile ("Pad muito forte.wav").existsAsFile(),
+                       "salvar com os samples copia as camadas para samples/ (\""_t + (savedCh != nullptr && ! savedCh->layers.empty() ? savedCh->layers[0].samplePath : juce::String()) + "\")");
+        }
+
+        const auto audioCh = app.run ("channel.addAudio", args ({ { "path", soft.getFullPathName() } })).value["channel"].toString();
+        const bool refused = ! app.run ("channel.addLayer", args ({ { "channel", pad }, { "path", soft.getFullPathName() }, { "minVelocity", 100 } })).ok
+                             && ! app.run ("channel.addLayer", args ({ { "channel", pad }, { "path", dir.getChildFile ("nao-existe.wav").getFullPathName() } })).ok
+                             && ! app.run ("channel.addLayer", args ({ { "channel", audioCh }, { "path", hard.getFullPathName() } })).ok
+                             && ! app.run ("channel.setLayer", args ({ { "channel", pad }, { "layer", 2 }, { "minVelocity", 100 } })).ok
+                             && ! app.run ("channel.removeLayer", args ({ { "channel", pad }, { "layer", 3 } })).ok;
+        rep.check (refused, "recusados: a mesma força de outra camada, o arquivo que não existe, um canal de áudio e a camada 3 que não há"_t);
+
+        // a tela: a linha das camadas no painel do sampler
+        SamplerPanel panel (app, pad);
+        host.addAndMakeVisible (panel);
+        const auto labels = panel.layerLabels();
+        rep.check (labels.size() == 3 && labels[0].contains ("1 a 99") && labels[1].contains ("100 a 119") && labels[2].contains ("120+"),
+                   "o painel do sampler mostra as faixas de força: "_t + labels.joinIntoString (" | "));
+        rep.check (savePngOnPanel (panel, ctx.work.getChildFile ("comunidade-camadas.png")), "captura do painel do sampler com as camadas"_t);
+        host.removeChildComponent (&panel);
+
+        const auto removed = app.run ("channel.removeLayer", args ({ { "channel", pad }, { "layer", 1 } }));
+        const auto* after = model.get().findChannel (pad);
+        const size_t left = after != nullptr ? after->layers.size() : 99;   // antes do Ctrl+Z: ele troca o projeto inteiro
+        app.run ("edit.undo");
+        const auto* back = model.get().findChannel (pad);
+        rep.check (removed.ok && left == 1 && back != nullptr && back->layers.size() == 2, "tirar uma camada e o Ctrl+Z devolve"_t);
+
+        const auto sliced = app.run ("channel.slice", args ({ { "channel", pad }, { "mode", "grid" }, { "division", "1/4" } }));
+        const auto* slicedCh = model.get().findChannel (pad);
+        const size_t afterSlice = slicedCh != nullptr ? slicedCh->layers.size() : 99;
+        app.run ("edit.undo");
+        const auto* unsliced = model.get().findChannel (pad);
+        rep.check (! sliced.ok || (afterSlice == 0 && unsliced != nullptr && unsliced->layers.size() == 2),
+                   "fatiar o canal tira as camadas (fatiado, cada tecla é uma fatia); o Ctrl+Z devolve"_t
+                       + (sliced.ok ? juce::String() : " (o fatiar recusou: " + sliced.error + ")"));
     }
 
     host.setLookAndFeel (nullptr);

@@ -4,6 +4,8 @@
 #include "../Icons.h"
 #include "../Theme.h"
 #include "../../app/AppController.h"
+#include "../../automation/Macros.h"
+#include "../MidiLearnMenu.h"
 #include "../../dsp/FxCatalog.h"
 #include "../../engine/UserMix.h"
 
@@ -30,6 +32,7 @@ namespace
     }
 
     const juce::String arrow (juce::CharPointer_UTF8 (" \xe2\x96\xbe"));
+    const juce::String closedArrow (juce::CharPointer_UTF8 (" \xe2\x96\xb8"));
     const juce::String leftArrow (juce::CharPointer_UTF8 ("\xe2\x86\x90 "));
 
     juce::String roleName (const juce::String& id)
@@ -309,10 +312,85 @@ private:
 };
 
 //==============================================================================
+/** Um dos 8 macros do rack (bloco 4c): knob pequeno com o nome embaixo. Arrastar move os parâmetros ligados (um passo
+    de desfazer por gesto); duplo clique volta a 0; o botão direito abre o menu (renomear, ligar e desligar, zerar).
+    Sem nada ligado, o knob fica apagado. */
+class InsertPanel::MacroKnob : public juce::Component
+{
+public:
+    MacroKnob (InsertPanel& p, int i) : panel (p), index (i)
+    {
+        knob.setRange (0.0, 1.0);
+        knob.setDoubleClickReturnValue (true, 0.0);
+        knob.setRotaryParameters (juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
+        knob.setWantsKeyboardFocus (false);
+        knob.onDragStart = [this] { panel.app.getCommands().beginGesture ("Mexer no macro"_t); inGesture = true; };
+        knob.onDragEnd = [this] { endGesture(); };
+        knob.onValueChange = [this]
+        {
+            panel.run ("mixer.setMacro", args ({ { "track", panel.trackId }, { "macro", index + 1 }, { "value", knob.getValue() } }));
+        };
+        knob.onMenu = [this] { panel.showMacroMenu (index, this); };
+        addAndMakeVisible (knob);
+    }
+
+    ~MacroKnob() override   { endGesture(); }
+
+    void set (const Macro& m)
+    {
+        name = macros::displayName (m, index);
+        links = (int) m.links.size();
+
+        if (! inGesture)
+            knob.setValue (m.value, juce::dontSendNotification);
+
+        knob.setAlpha (links > 0 ? 1.0f : 0.45f);
+        knob.setTooltip (name + ": "
+                         + (links > 0 ? juce::String (juce::roundToInt (m.value * 100.0f)) + "%, move " + juce::String (links)
+                                            + (links == 1 ? " parâmetro."_t : " parâmetros."_t) + " Duplo clique volta a 0."
+                                      : "nada ligado. Botão direito: ligar um parâmetro dos efeitos desta trilha."_t));
+        repaint();
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        using namespace theme;
+        g.setColour (links > 0 ? colour::text : colour::textFaint);
+        g.setFont (font (type::small));
+        g.drawFittedText (name, getLocalBounds().removeFromBottom (16), juce::Justification::centred, 1, 0.75f);
+    }
+
+    void resized() override
+    {
+        knob.setBounds (getLocalBounds().withTrimmedBottom (16).reduced (8, 2));
+    }
+
+private:
+    void endGesture()
+    {
+        if (inGesture)
+        {
+            inGesture = false;
+            panel.app.getCommands().endGesture();
+        }
+    }
+
+    InsertPanel& panel;
+    const int index;
+    juce::String name;
+    int links = 0;
+    bool inGesture = false;
+    MenuSlider knob { juce::Slider::RotaryHorizontalVerticalDrag, juce::Slider::NoTextBox };
+};
+
+//==============================================================================
 InsertPanel::InsertPanel (AppController& a) : app (a)
 {
     for (int i = 0; i < maxInserts; ++i)
         addAndMakeVisible (slots.add (new Slot (*this, i)));
+
+    for (int i = 0; i < maxMacros; ++i)
+        addChildComponent (macroKnobs.add (new MacroKnob (*this, i)));
 
     theme::styleComboBox (roleBox, Icon::none, true);
     roleBox.setTooltip ("Papel da trilha na mixagem: escolhe a cadeia que os estilos aplicam.");
@@ -386,6 +464,28 @@ void InsertPanel::refresh (const Project& p)
         slots[i]->set (ins, p, firstEmpty, ins != nullptr ? problems[ins->id] : juce::String());
     }
 
+    // O rack (bloco 4c): abre sozinho ao chegar numa trilha com macros ligados, ou quando o primeiro link entra.
+    const bool linked = macros::hasLinks (*m);
+
+    if (macrosFor != trackId)
+    {
+        macrosFor = trackId;
+        macrosOpen = linked;
+    }
+    else if (linked && ! macrosHadLinks)
+    {
+        macrosOpen = true;
+    }
+
+    macrosHadLinks = linked;
+    static const Macro none;
+
+    for (int i = 0; i < maxMacros; ++i)
+    {
+        macroKnobs[i]->set (i < (int) m->macros.size() ? m->macros[(size_t) i] : none);
+        macroKnobs[i]->setVisible (macrosOpen);
+    }
+
     // Papel (o master não tem).
     roleBox.setVisible (! isMaster);
     roleBox.clear (juce::dontSendNotification);
@@ -433,9 +533,10 @@ void InsertPanel::refresh (const Project& p)
 int InsertPanel::getIdealHeight() const
 {
     int h = headerHeight + (isMaster ? 0 : roleHeight) + captionHeight + maxInserts * slotHeight;
+    h += captionHeight + (macrosOpen ? (maxMacros / macroColumns) * macroRowHeight : 0);
 
     if (! isMaster)
-        h += captionHeight + sends.size() * sendHeight + 30;
+        h += captionHeight + juce::jmax (1, sends.size()) * sendHeight + 30;   // sem envio, a linha "Nenhum envio." ocupa o lugar de um
 
     return h + 8;
 }
@@ -457,6 +558,22 @@ void InsertPanel::paint (juce::Graphics& g)
     g.setColour (colour::textFaint);
     g.drawText ("EFEITOS (NA ORDEM DO SINAL)", r.removeFromTop (captionHeight), juce::Justification::bottomLeft);
     r.removeFromTop (maxInserts * slotHeight);
+
+    // o rack (bloco 4c): o título abre e fecha
+    auto macroTitle = r.removeFromTop (captionHeight);
+    g.drawText ("MACROS" + (macrosOpen ? arrow : closedArrow), macroTitle, juce::Justification::bottomLeft);
+
+    if (! macrosOpen)
+    {
+        g.setFont (font (type::small));
+        g.drawText (macrosHadLinks ? "abrir os 8 knobs"_t : "8 knobs que movem vários efeitos"_t, macroTitle.withTrimmedLeft (84),
+                    juce::Justification::bottomRight);
+        g.setFont (captionFont());
+    }
+    else
+    {
+        r.removeFromTop ((maxMacros / macroColumns) * macroRowHeight);
+    }
 
     if (! isMaster)
     {
@@ -483,6 +600,18 @@ void InsertPanel::resized()
 
     for (auto* s : slots)
         s->setBounds (r.removeFromTop (slotHeight));
+
+    macroCaption = r.removeFromTop (captionHeight);
+
+    if (macrosOpen)
+    {
+        auto grid = r.removeFromTop ((maxMacros / macroColumns) * macroRowHeight);
+        const int cell = grid.getWidth() / macroColumns;
+
+        for (int i = 0; i < maxMacros; ++i)
+            macroKnobs[i]->setBounds (grid.getX() + (i % macroColumns) * cell, grid.getY() + (i / macroColumns) * macroRowHeight,
+                                      cell, macroRowHeight);
+    }
 
     if (isMaster)
         return;
@@ -886,6 +1015,169 @@ void InsertPanel::showChainMenu()
                                        "Cadeia de "_t + fxui::utf8 (dsp::findStyle (style.toStdString())->name) + " aplicada em "
                                            + safe->trackName + ". Ctrl+Z desfaz.");
                         });
+}
+
+void InsertPanel::mouseUp (const juce::MouseEvent& e)
+{
+    if (e.mouseWasClicked() && ! e.mods.isPopupMenu() && macroCaption.contains (e.getPosition()))
+        setMacrosOpen (! macrosOpen);
+}
+
+void InsertPanel::setMacrosOpen (bool open)
+{
+    macrosOpen = open;
+
+    for (auto* k : macroKnobs)
+        k->setVisible (open);
+
+    resized();
+    repaint();
+
+    if (onLayoutChanged)
+        onLayoutChanged();
+}
+
+juce::PopupMenu InsertPanel::createMacroMenu (int index, std::vector<std::function<void()>>& actions)
+{
+    juce::PopupMenu menu;
+    const auto* m = app.getModel().get().findMixer (trackId);
+
+    if (m == nullptr || ! juce::isPositiveAndBelow (index, maxMacros))
+        return menu;
+
+    static const Macro none;
+    const auto& mac = index < (int) m->macros.size() ? m->macros[(size_t) index] : none;
+    const auto track = trackId;
+    const int number = index + 1;
+    juce::Component::SafePointer<InsertPanel> safe (this);
+    auto add = [&actions] (std::function<void()> f) { actions.push_back (std::move (f)); return (int) actions.size(); };
+    auto linkAction = [safe, track, number] (const juce::String& command, const juce::String& insert, const juce::String& param)
+    {
+        return [safe, track, number, command, insert, param]
+        {
+            if (safe != nullptr)
+                safe->run (command, param.isEmpty() ? args ({ { "track", track }, { "macro", number }, { "insert", insert } })
+                                                    : args ({ { "track", track }, { "macro", number }, { "insert", insert }, { "param", param } }));
+        };
+    };
+
+    menu.addSectionHeader (fxui::caps (macros::displayName (mac, index)));
+    menu.addItem (add ([safe, index] { if (safe != nullptr) safe->askMacroName (index); }), "Renomear..."_t);
+    menu.addItem (add ([safe, track, number]
+                       {
+                           if (safe != nullptr)
+                               safe->run ("mixer.setMacro", args ({ { "track", track }, { "macro", number }, { "value", 0.0 } }));
+                       }),
+                  "Voltar a 0"_t, mac.value > 0.0f);
+
+    // o controlador (bloco 4d): um knob de verdade move o macro
+    midilearn::addItems (menu, app, MidiLink { 0, 0, "macro", track, {}, juce::String (number) }, actions);
+
+    // Ligar: por efeito nativo da trilha, cada parâmetro; o que já está ligado vem marcado (clicar desliga).
+    juce::PopupMenu linkMenu;
+    bool anyNative = false;
+
+    for (size_t slot = 0; slot < m->inserts.size(); ++slot)
+    {
+        const auto& ins = m->inserts[slot];
+        const auto* info = ins.kind == "whynot" ? dsp::findEffect (ins.type.toStdString()) : nullptr;
+
+        if (info == nullptr)
+            continue;
+
+        anyNative = true;
+        juce::PopupMenu fx;
+
+        for (auto& param : info->params)
+        {
+            if (param.hidden)
+                continue;
+
+            const juce::String paramId (param.id);
+            const bool linked = std::any_of (mac.links.begin(), mac.links.end(),
+                                             [&] (const MacroLink& l) { return l.insert == ins.id && l.param == paramId; });
+            fx.addItem (add (linkAction (linked ? "mixer.unmapMacro" : "mixer.mapMacro", ins.id, paramId)),
+                        fxui::utf8 (param.name), true, linked);
+        }
+
+        linkMenu.addSubMenu (juce::String ((int) slot + 1) + ". " + fxui::utf8 (info->name), fx);
+    }
+
+    if (! anyNative)
+        linkMenu.addItem (add ([] {}), "Ponha um efeito nativo nesta trilha primeiro"_t, false);
+
+    menu.addSubMenu ("Ligar um parâmetro"_t, linkMenu);
+
+    if (! mac.links.empty())
+    {
+        menu.addSeparator();
+        menu.addSectionHeader ("MOVE AGORA (CLIQUE DESLIGA)"_t);
+
+        for (auto& link : mac.links)
+        {
+            const auto* param = macros::paramOf (*m, link);
+            const auto* ins = m->findInsert (link.insert);
+            const auto* info = ins != nullptr ? dsp::findEffect (ins->type.toStdString()) : nullptr;
+
+            if (param == nullptr || info == nullptr)
+                continue;
+
+            const auto text = fxui::utf8 (info->shortName) + " · "_t + fxui::utf8 (param->name) + ": "
+                              + fxui::formatValue (*param, macros::valueAt (*param, link, 0.0f)) + " a "
+                              + fxui::formatValue (*param, macros::valueAt (*param, link, 1.0f));
+            menu.addItem (add (linkAction ("mixer.unmapMacro", link.insert, link.param)), text, true, true);
+        }
+
+        menu.addItem (add ([safe, track, number]
+                           {
+                               if (safe != nullptr)
+                                   safe->run ("mixer.unmapMacro", args ({ { "track", track }, { "macro", number } }));
+                           }),
+                      "Desligar tudo"_t);
+    }
+
+    return menu;
+}
+
+void InsertPanel::showMacroMenu (int index, juce::Component* target)
+{
+    auto actions = std::make_shared<std::vector<std::function<void()>>>();
+    auto menu = createMacroMenu (index, *actions);
+
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (target), [actions] (int chosen)
+    {
+        if (chosen > 0 && chosen <= (int) actions->size())
+            (*actions)[(size_t) chosen - 1]();
+    });
+}
+
+void InsertPanel::askMacroName (int index)
+{
+    const auto* m = app.getModel().get().findMixer (trackId);
+    static const Macro none;
+    const auto& mac = m != nullptr && index < (int) m->macros.size() ? m->macros[(size_t) index] : none;
+    const auto track = trackId;
+    const int number = index + 1;
+
+    nameDialog = std::make_unique<juce::AlertWindow> ("Nome do macro"_t,
+                                                      "Um nome curto diz o que o knob faz: \"Brilho\", \"Sujeira\", \"Espaço\"."_t,
+                                                      juce::MessageBoxIconType::NoIcon, this);
+    nameDialog->addTextEditor ("name", macros::displayName (mac, index));
+    nameDialog->addButton ("Ok", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    nameDialog->addButton ("Cancelar", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    juce::Component::SafePointer<InsertPanel> safe (this);
+    nameDialog->enterModalState (true, juce::ModalCallbackFunction::create ([safe, track, number] (int result)
+    {
+        if (safe == nullptr || safe->nameDialog == nullptr)
+            return;
+
+        const auto name = safe->nameDialog->getTextEditorContents ("name").trim();
+        juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->nameDialog.reset(); });
+
+        if (result == 1)
+            safe->run ("mixer.setMacro", args ({ { "track", track }, { "macro", number }, { "name", name } }));
+    }), false);
 }
 
 void InsertPanel::askChainName()

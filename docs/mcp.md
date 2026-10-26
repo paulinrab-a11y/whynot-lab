@@ -68,13 +68,15 @@ Troque `--attach 47830` por `--headless` para o jeito sem janela. Para tirar: `c
 | Tool | O que faz |
 |---|---|
 | `command_list` | Os comandos do app. Sem filtro, a lista curta por domínio. Com `domain`, `query` ou `ids`, o schema dos parâmetros e o risco de cada um |
-| `command_run` | Roda um comando. Os marcados [confirma] pedem o seu ok antes; os [bloqueado] são só pela tela |
+| `command_run` | Roda um comando. Os marcados [confirma] pedem o seu ok antes; os [às vezes confirma] pedem só em alguns casos (o `confirmsWhen` do `command_list` diz quais: gravar por cima, um caminho fora das pastas, perder o que não foi salvo); os [bloqueado] são só pela tela |
 | `command_batch` | Até 200 comandos num passo de desfazer só, tudo ou nada. Comando que pede confirmação recusa o lote |
 | `get_project` | O projeto: `resumo` (texto curto, o padrão) ou `completo` (o JSON do `.wnl`, até 100 KB, com filtros) |
-| `render_preview` | Renderiza o padrão ou a música na pasta da IA e devolve as medidas: pico, true peak, RMS, LUFS, amostras cortadas, silêncio e o RMS de cada compasso |
-| `screenshot` | Uma captura da tela em PNG, até 1600 px. Com `view`, troca de tela antes (com a janela, você vê a troca) |
+| `render_preview` | Renderiza o padrão ou a música na pasta da IA e devolve as medidas: pico, true peak, RMS, LUFS, amostras cortadas, silêncio e o RMS de cada compasso e de cada tempo |
+| `screenshot` | Uma captura da tela em PNG, até 1600 px. Com `view`, troca de tela antes; com `channel` (o id `ch_...`), escolhe o canal do piano roll, e sem `view` mostra o piano roll dele. Com a janela, você vê a troca de tela e de canal |
 
 O `render_preview` mede, mas não ouve: ele diz se algo entrou, cortou ou ficou mudo. Quem ouve é você.
+- Os avisos saem no texto e também no JSON, porque alguns clientes, como o Claude Code, mostram ao modelo só o JSON: `warnings` (a prévia muda, as amostras cortadas, os compassos mudos) e `mutedBars` (os números dos compassos abaixo de -60 dBFS).
+- O render pode sair com uma amostra a mais ou a menos que os compassos exatos. Uma sobra menor que 1% de um compasso não conta como compasso: 2 voltas de 4 compassos dão 8 compassos. Um compasso que fica pela metade de verdade (padrão quebrado, fim da música) entra na conta, com `lastBarPartial`.
 
 ## 5. Segurança
 

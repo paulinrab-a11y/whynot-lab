@@ -10,6 +10,10 @@ if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     # A Tracktion e o JUCE geram unidades de compilação grandes.
     add_compile_options(/bigobj)
+    # O __FILE__ (os textos de log do Tracktion, por exemplo) sai sem a pasta do repositório: o exe não guarda o
+    # usuário do Windows de quem compilou (pedido do código aberto, 23/10). Sem a barra final, que escaparia aspas.
+    file(TO_NATIVE_PATH "${CMAKE_SOURCE_DIR}" whynot_source_native)
+    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:/d1trimfile:${whynot_source_native}>")
 endif()
 
 # JUCE 8.0.13, na versão exata que o Tracktion Engine fixa como submódulo.
@@ -140,6 +144,8 @@ set(WHYNOT_SOURCES
     src/app/selftest/WarpCapture.cpp
     src/commands/AutomationCommands.cpp
     src/commands/BeatCommands.cpp
+    src/commands/AudioMidiCommands.cpp
+    src/commands/BrowserCommands.cpp
     src/commands/CommandRegistry.cpp
     src/commands/CoreCommands.cpp
     src/commands/CompositionCommands.cpp
@@ -149,7 +155,9 @@ set(WHYNOT_SOURCES
     src/commands/PluginCommands.cpp
     src/commands/MixCommands.cpp
     src/commands/IdeasCommands.cpp
+    src/commands/LayerCommands.cpp
     src/commands/LibraryCommands.cpp
+    src/commands/MidiLearnCommands.cpp
     src/commands/SynthCommands.cpp
     src/commands/PerformanceCommands.cpp
     src/commands/PianoCommands.cpp
@@ -195,6 +203,7 @@ set(WHYNOT_SOURCES
     src/library/ProjectLibrary.cpp
     src/library/ProjectsView.cpp
     src/library/SystemMemory.cpp
+    src/engine/AudioToMidi.cpp
     src/engine/BeatKey.cpp
     src/engine/Exporter.cpp
     src/engine/KitGenerator.cpp
@@ -205,6 +214,7 @@ set(WHYNOT_SOURCES
     src/engine/PluginHost.cpp
     src/engine/Projector.cpp
     src/engine/SampleAnalysis.cpp
+    src/engine/SoundInfo.cpp
     src/engine/SynthFavorites.cpp
     src/engine/UserMix.cpp
     src/engine/WhynotFx.cpp
@@ -246,6 +256,7 @@ set(WHYNOT_SOURCES
     src/ui/MainComponent.cpp
     src/ui/MainWindow.cpp
     src/ui/MidiImportDialog.cpp
+    src/ui/MidiLearnMenu.cpp
     src/ui/IdeasPanel.cpp
     src/ui/MixerView.cpp
     src/ui/PianoRoll.cpp

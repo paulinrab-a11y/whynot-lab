@@ -89,6 +89,17 @@ struct PluginRef
 };
 
 /** Toda fonte de som: sampler nativo, instrumento VST3 (padrões) ou canal de áudio (clipes da playlist). */
+/** Uma camada por força de um canal do sampler (bloco 4f, 23/10): outro sample, tocado a partir de uma força. */
+struct SampleLayer
+{
+    juce::String samplePath;      // relativo à pasta do projeto, ou absoluto (como o sample do canal)
+    int minVelocity = 100;        // a partir desta força (2 a 127) toca esta camada
+
+    bool operator== (const SampleLayer&) const = default;
+};
+
+constexpr int maxSampleLayers = 3;   // o sample do canal e mais 3: suave, médio, forte e muito forte
+
 struct Channel
 {
     juce::String id;
@@ -131,6 +142,11 @@ struct Channel
     std::vector<float> slices;    // começo de cada fatia, em fração do sample com 6 casas, em ordem (a primeira é 0; até 128)
     int sliceKey = 60;            // tecla da primeira fatia (C4)
     float sliceBpm = 0.0f;        // andamento do beat fatiado (0 = não se sabe): põe as fatias no piano roll
+
+    // Camadas por força (bloco 4f, como os pads do Drum Rack): até maxSampleLayers samples a mais, cada um a partir de
+    // uma força, em ordem. A nota mais fraca que a primeira camada toca o sample do canal. Num canal fatiado, só o sample
+    // do canal toca. Campo opcional ("layers" no sampler; não sobe o esquema).
+    std::vector<SampleLayer> layers;
 
     bool mute = false;
     juce::String output;          // id da trilha de mixer
@@ -206,6 +222,47 @@ struct Send
 
 constexpr int maxInserts = 10;   // 10 por trilha, como no FL (eram 8 até 22/10)
 
+/** Um parâmetro que um macro move (bloco 4c, 23/10): um efeito nativo da mesma trilha e a faixa, em posição do knob
+    do parâmetro (de 0 a 1, a mesma curva da automação). min maior que max inverte: o macro sobe, o parâmetro desce. */
+struct MacroLink
+{
+    juce::String insert;            // id do efeito ("fx_...") na mesma trilha
+    juce::String param;             // id do parâmetro nativo
+    float min = 0.0f, max = 1.0f;
+
+    bool operator== (const MacroLink&) const = default;
+};
+
+/** Um dos 8 macros do rack da trilha: um knob que move vários parâmetros dos efeitos dela de uma vez
+    (as contas ficam em automation/Macros.h). */
+struct Macro
+{
+    juce::String name;              // vazio = "Macro N"
+    float value = 0.0f;             // 0..1
+    std::vector<MacroLink> links;   // até maxMacroLinks
+
+    bool isDefault() const noexcept   { return name.isEmpty() && value == 0.0f && links.empty(); }
+    bool operator== (const Macro&) const = default;
+};
+
+constexpr int maxMacros = 8, maxMacroLinks = 16;
+
+/** Um knob ou fader do controlador ligado a um controle do app (MIDI learn, bloco 4d, 23/10): o CC, o canal MIDI e o
+    alvo. kind "mixer" (param "volume" ou "pan"), "insert" (o id de um parâmetro de efeito nativo) ou "macro" (param é o
+    número, de "1" a "8"). Um CC move um alvo só, e cada alvo tem um CC só. */
+struct MidiLink
+{
+    int channel = 0;            // 1..16; 0 = qualquer canal
+    int cc = 0;                 // 0..127
+    juce::String kind, track, insert, param;
+
+    bool sameTarget (const MidiLink& o) const noexcept   { return kind == o.kind && track == o.track && insert == o.insert && param == o.param; }
+    bool sameControl (const MidiLink& o) const noexcept  { return cc == o.cc && (channel == o.channel || channel == 0 || o.channel == 0); }
+    bool operator== (const MidiLink&) const = default;
+};
+
+constexpr int maxMidiLinks = 128;
+
 struct MixerTrack
 {
     juce::String id;
@@ -228,6 +285,8 @@ struct MixerTrack
     bool monitorsInput() const noexcept   { return ! isMaster() && (monitor == "on" || (monitor.isEmpty() && armed)); }
     std::vector<Insert> inserts;  // no máximo maxInserts, na ordem do sinal
     std::vector<Send> sends;
+    std::vector<Macro> macros;    // o rack (bloco 4c): até maxMacros, na ordem dos knobs; os do fim sem nada não ficam.
+                                  // Campo opcional no .wnl ("macros")
 
     bool isMaster() const noexcept { return id == masterTrackId; }
 
@@ -277,6 +336,9 @@ struct PlaylistTrack
     juce::String name;
     juce::String recordTrack;   // gravar voz (21/10): a trilha do mixer que grava nesta raia (a entrada escolhida no
                                 // cabeçalho, como o "Audio track" do FL); os takes dela caem aqui. Opcional
+    juce::String colour;        // organizar a playlist (bloco 4, 23/10): a cor da raia, "#RRGGBB"; vazio = sem cor. Opcional
+    bool muted = false;         // a raia inteira muda (o mudo de cada bloco continua valendo). Opcional
+    bool solo = false;          // com alguma raia em solo, só as em solo tocam. Opcional
 
     bool operator== (const PlaylistTrack&) const = default;
 };
@@ -384,6 +446,7 @@ struct Project
     std::vector<PlaylistItem> playlistItems;
     std::vector<Marker> markers;              // na régua da playlist, ordenados por t (campo opcional no .wnl)
     std::vector<AutomationLane> automation;   // (3.5) uma curva por alvo
+    std::vector<MidiLink> midiMap;            // o MIDI learn (bloco 4d): os CCs do controlador; campo opcional no .wnl
 
     bool operator== (const Project&) const = default;
 
@@ -421,6 +484,26 @@ struct Project
     PlaylistItem* findItem (const juce::String& id)                   { return findIn (playlistItems, id); }
     const PlaylistItem* findItem (const juce::String& id) const       { return findIn (playlistItems, id); }
     const PlaylistTrack* findPlaylistTrack (const juce::String& id) const { return findIn (playlistTracks, id); }
+
+    /** A raia toca? A muda nunca; com alguma raia em solo, só as em solo (bloco 4, 23/10). Raia que não existe toca. */
+    bool laneSounds (const juce::String& trackId) const
+    {
+        bool anySolo = false;
+        const PlaylistTrack* lane = nullptr;
+
+        for (auto& t : playlistTracks)
+        {
+            anySolo = anySolo || t.solo;
+
+            if (t.id == trackId)
+                lane = &t;
+        }
+
+        return lane == nullptr || (! lane->muted && (! anySolo || lane->solo));
+    }
+
+    /** O bloco toca: ele não está mudo e a raia dele toca. */
+    bool itemSounds (const PlaylistItem& item) const   { return ! item.muted && laneSounds (item.track); }
 
     Pattern* currentPatternPtr()               { return findPattern (currentPattern); }
     const Pattern* currentPatternPtr() const   { return findPattern (currentPattern); }

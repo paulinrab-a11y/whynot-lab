@@ -170,6 +170,10 @@ juce::Result importInto (Project& dest, const ImportSource& source, const Import
         if (ch.samplePath.isNotEmpty() && ! juce::File::isAbsolutePath (ch.samplePath))
             ch.samplePath = srcFolder.getChildFile (ch.samplePath).getFullPathName().replaceCharacter ('\\', '/');
 
+        for (auto& l : ch.layers)   // as camadas por força (bloco 4f), como o sample
+            if (l.samplePath.isNotEmpty() && ! juce::File::isAbsolutePath (l.samplePath))
+                l.samplePath = srcFolder.getChildFile (l.samplePath).getFullPathName().replaceCharacter ('\\', '/');
+
         // a trilha de mixer do canal: uma cópia (a mesma para os canais que dividiam a trilha)
         const auto* srcTrack = src.findMixer (srcChannel.output);
 

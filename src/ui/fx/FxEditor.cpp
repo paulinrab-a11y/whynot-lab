@@ -1,4 +1,6 @@
 #include "FxEditor.h"
+#include "../../automation/Macros.h"
+#include "../MidiLearnMenu.h"
 #include "../FavoriteStar.h"
 #include "../MainWindow.h"
 #include "../Theme.h"
@@ -124,6 +126,7 @@ FxEditor::FxEditor (AppController& a, WhynotFxPlugin& p)
         c->onChange = [this, index] (float v) { sendParam (index, v); };
         c->onGestureStart = [this, c] { beginGesture (fxui::utf8 (c->getInfo().name)); };
         c->onGestureEnd = [this] { endGesture(); };
+        c->onMenu = [this, index] { showParamMenu (index); };
         addAndMakeVisible (c);
     }
 
@@ -372,6 +375,56 @@ void FxEditor::endGesture()
         --gestureDepth;
         app.getCommands().endGesture();
     }
+}
+
+void FxEditor::showParamMenu (int index)
+{
+    // O rack da trilha (bloco 4c): ligar este parâmetro a um dos 8 macros, ou desligar (o que está marcado).
+    const auto* m = app.getModel().get().findMixer (trackId);
+
+    if (m == nullptr || ! juce::isPositiveAndBelow (index, (int) info.params.size()))
+        return;
+
+    const juce::String paramId (info.params[(size_t) index].id);
+    static const Macro none;
+    auto actions = std::make_shared<std::vector<std::function<void()>>>();
+    auto add = [&actions] (std::function<void()> f) { actions->push_back (std::move (f)); return (int) actions->size(); };
+    juce::Component::SafePointer<FxEditor> safe (this);
+    juce::PopupMenu menu, macroMenu;
+    menu.addSectionHeader (fxui::caps (fxui::utf8 (info.params[(size_t) index].name)));
+
+    for (int i = 0; i < maxMacros; ++i)
+    {
+        const auto& mac = i < (int) m->macros.size() ? m->macros[(size_t) i] : none;
+        const bool linked = std::any_of (mac.links.begin(), mac.links.end(),
+                                         [&] (const MacroLink& l) { return l.insert == insertId && l.param == paramId; });
+        const auto count = (int) mac.links.size();
+        const int number = i + 1;
+        macroMenu.addItem (add ([safe, paramId, number, linked]
+                                {
+                                    if (safe == nullptr)
+                                        return;
+
+                                    const auto result = safe->app.run (linked ? "mixer.unmapMacro" : "mixer.mapMacro",
+                                                                       args ({ { "track", safe->trackId }, { "macro", number },
+                                                                               { "insert", safe->insertId }, { "param", paramId } }));
+                                    jassert (result.ok);
+                                    juce::ignoreUnused (result);
+                                }),
+                           macros::displayName (mac, i) + (count > 0 ? " (" + juce::String (count) + ")" : juce::String()), true, linked);
+    }
+
+    menu.addSubMenu ("Ligar ao macro"_t, macroMenu);
+
+    // o controlador (bloco 4d): aprender, trocar ou esquecer o knob que move este parâmetro
+    menu.addSeparator();
+    midilearn::addItems (menu, app, MidiLink { 0, 0, "insert", trackId, insertId, paramId }, *actions);
+
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (byIndex[(size_t) index]), [actions] (int chosen)
+    {
+        if (chosen > 0 && chosen <= (int) actions->size())
+            (*actions)[(size_t) chosen - 1]();
+    });
 }
 
 void FxEditor::showPresetMenu()

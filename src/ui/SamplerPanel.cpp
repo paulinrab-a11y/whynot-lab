@@ -75,7 +75,12 @@ namespace
         return c == 0 ? juce::String() : (c > 0 ? " +" : " ") + juce::String (c) + " cents";
     }
 
-    constexpr int headerHeight = 64, rootRowHeight = 44, waveHeight = 64, groupTitle = 20;
+    constexpr int headerHeight = 64, rootRowHeight = 44, waveHeight = 64, groupTitle = 20, layersHeight = 40, layersCaption = 150;
+
+    juce::String fileNameOf (const juce::String& path)
+    {
+        return path.replaceCharacter ('\\', '/').fromLastOccurrenceOf ("/", false, false).upToLastOccurrenceOf (".", false, false);
+    }
 }
 
 //==============================================================================
@@ -131,8 +136,16 @@ SamplerPanel::SamplerPanel (AppController& a, const juce::String& id) : app (a),
     int cells = 0;
     for (auto& g : groups) cells += (int) g.controls.size();
 
+    addLayerButton.setButtonText ("+ Camada");
+    addLayerButton.setTooltip ("Camada por força: outro sample que toca quando a nota é mais forte (o kick suave e o kick forte, "
+                               "como os pads de uma bateria eletrônica)."_t);
+    addLayerButton.onClick = [this] { chooseLayerFile(); };
+    addLayerButton.setWantsKeyboardFocus (false);
+    addAndMakeVisible (addLayerButton);
+
     const int width = theme::metric::pad * 2 + cells * ParamControl::cellWidth + ((int) groups.size() - 1) * theme::metric::pad;
-    setSize (width, headerHeight + rootRowHeight + waveHeight + theme::metric::gap + groupTitle + ParamControl::cellHeight + theme::metric::pad);
+    setSize (width, headerHeight + rootRowHeight + waveHeight + theme::metric::gap + groupTitle + ParamControl::cellHeight + theme::metric::pad
+                        + layersHeight);
 
     app.getModel().addListener (this);
     refresh();
@@ -189,6 +202,7 @@ void SamplerPanel::refresh()
 
     wave.setMarks (c->start, c->loop, c->loopStart, c->loopEnd);
     wave.setSlices (c->slices);
+    refreshLayers (*c);
 
     if (! c->slices.empty())
         sampleName << "  " << juce::String (juce::CharPointer_UTF8 ("\xc2\xb7")) << "  " << juce::String ((int) c->slices.size())
@@ -501,6 +515,10 @@ void SamplerPanel::paint (juce::Graphics& g)
     g.setColour (colour::textFaint);
     g.setFont (captionFont());
 
+    // a linha das camadas por força (bloco 4f), embaixo
+    g.drawText (fxui::caps ("Camadas por força"_t), getLocalBounds().reduced (metric::pad, 0).removeFromBottom (layersHeight).removeFromLeft (layersCaption),
+                juce::Justification::centredLeft);
+
     for (auto& grp : groups)
     {
         if (grp.controls.empty())
@@ -542,6 +560,149 @@ void SamplerPanel::resized()
 
         x += metric::pad;
     }
+
+    // as camadas por força (bloco 4f): o sample do canal, cada camada e o "+ Camada", da esquerda para a direita
+    auto row = getLocalBounds().reduced (metric::pad, 0).removeFromBottom (layersHeight).withSizeKeepingCentre (getWidth() - 2 * metric::pad, metric::control);
+    row.removeFromLeft (layersCaption);
+
+    for (auto* b : layerButtons)
+    {
+        b->setBounds (row.removeFromLeft (190));
+        row.removeFromLeft (metric::gap);
+    }
+
+    addLayerButton.setBounds (row.removeFromLeft (110));
+}
+
+//==============================================================================
+void SamplerPanel::refreshLayers (const Channel& c)
+{
+    // os rótulos: o sample do canal vai até a força antes da primeira camada; cada camada, da força dela até a próxima
+    juce::StringArray labels;
+    const auto& layers = c.layers;
+    labels.add (fileNameOf (c.samplePath) + "  " + juce::String (juce::CharPointer_UTF8 ("\xc2\xb7")) + "  "
+                + (layers.empty() ? juce::String ("toda força"_t) : "1 a "_t + juce::String (layers.front().minVelocity - 1)));
+
+    for (size_t i = 0; i < layers.size(); ++i)
+        labels.add (fileNameOf (layers[i].samplePath) + "  " + juce::String (juce::CharPointer_UTF8 ("\xc2\xb7")) + "  "
+                    + juce::String (layers[i].minVelocity) + (i + 1 < layers.size() ? " a " + juce::String (layers[i + 1].minVelocity - 1) : juce::String ("+")));
+
+    const bool sliced = ! c.slices.empty();
+    addLayerButton.setEnabled (! sliced && (int) layers.size() < maxSampleLayers);
+    addLayerButton.setTooltip (sliced ? "Num canal fatiado, cada tecla é uma fatia: as camadas por força não valem."_t
+                                      : "Camada por força: outro sample que toca quando a nota é mais forte (o kick suave e o kick forte, "
+                                        "como os pads de uma bateria eletrônica)."_t);
+
+    const auto key = labels.joinIntoString ("|");
+
+    if (key == layersShown)
+        return;
+
+    layersShown = key;
+    layerButtons.clear();
+
+    for (int i = 0; i < labels.size(); ++i)
+    {
+        auto* b = layerButtons.add (new juce::TextButton (labels[i]));
+        b->setWantsKeyboardFocus (false);
+
+        if (i == 0)
+        {
+            b->setEnabled (false);   // o sample do canal: troca pelo navegador, como sempre
+            b->setTooltip ("O sample do canal: toca abaixo da primeira camada."_t);
+        }
+        else
+        {
+            b->setTooltip ("Clique: a força mínima, trocar o arquivo ou tirar a camada."_t);
+            b->onClick = [this, i] { showLayerMenu (i); };
+        }
+
+        addAndMakeVisible (b);
+    }
+
+    resized();
+}
+
+juce::StringArray SamplerPanel::layerLabels() const
+{
+    juce::StringArray out;
+
+    for (auto* b : layerButtons)
+        out.add (b->getButtonText());
+
+    return out;
+}
+
+void SamplerPanel::addLayerFile (const juce::File& file)
+{
+    const auto result = app.run ("channel.addLayer", args ({ { "channel", channelId }, { "path", file.getFullPathName() } }));
+
+    if (onStatus)
+        onStatus (result.ok ? "Camada por força: \""_t + file.getFileNameWithoutExtension() + "\" toca nas notas mais fortes (Ctrl+Z desfaz)."_t
+                            : result.error,
+                  ! result.ok);
+}
+
+void SamplerPanel::chooseLayerFile()
+{
+    chooser = std::make_unique<juce::FileChooser> ("Sample da camada"_t, juce::File(), "*.wav;*.aif;*.aiff;*.flac;*.ogg;*.mp3");
+    juce::Component::SafePointer<SamplerPanel> safe (this);
+
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [safe] (const juce::FileChooser& fc)
+    {
+        if (safe != nullptr && fc.getResult().existsAsFile())
+            safe->addLayerFile (fc.getResult());
+    });
+}
+
+void SamplerPanel::showLayerMenu (int layer)
+{
+    const auto* c = app.getModel().get().findChannel (channelId);
+
+    if (c == nullptr || layer < 1 || layer > (int) c->layers.size())
+        return;
+
+    const int current = c->layers[(size_t) layer - 1].minVelocity;
+    juce::PopupMenu menu, velocities;
+
+    for (int v : { 40, 64, 80, 96, 100, 110, 120, 127 })
+        velocities.addItem (v, "A partir da força "_t + juce::String (v), true, v == current);
+
+    menu.addSectionHeader (fxui::caps (fileNameOf (c->layers[(size_t) layer - 1].samplePath)));
+    menu.addSubMenu ("Força mínima ("_t + juce::String (current) + ")", velocities);
+    menu.addItem (1000, "Trocar o arquivo..."_t);
+    menu.addItem (1001, "Tirar a camada"_t);
+
+    juce::Component::SafePointer<SamplerPanel> safe (this);
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (layerButtons[layer]), [safe, layer] (int chosen)
+    {
+        if (safe == nullptr || chosen == 0)
+            return;
+
+        CommandResult result;
+
+        if (chosen == 1001)
+        {
+            result = safe->app.run ("channel.removeLayer", args ({ { "channel", safe->channelId }, { "layer", layer } }));
+        }
+        else if (chosen == 1000)
+        {
+            safe->chooser = std::make_unique<juce::FileChooser> ("Outro sample para a camada"_t, juce::File(), "*.wav;*.aif;*.aiff;*.flac;*.ogg;*.mp3");
+            safe->chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [safe, layer] (const juce::FileChooser& fc)
+            {
+                if (safe != nullptr && fc.getResult().existsAsFile())
+                    safe->app.run ("channel.setLayer", args ({ { "channel", safe->channelId }, { "layer", layer }, { "path", fc.getResult().getFullPathName() } }));
+            });
+            return;
+        }
+        else
+        {
+            result = safe->app.run ("channel.setLayer", args ({ { "channel", safe->channelId }, { "layer", layer }, { "minVelocity", chosen } }));
+        }
+
+        if (! result.ok && safe->onStatus)
+            safe->onStatus (result.error, true);
+    });
 }
 
 } // namespace whynot

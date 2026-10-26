@@ -131,6 +131,28 @@ public:
     // AppServices: tom do beat (21/10, noite). Todo beat que entra no projeto é analisado sozinho, em segundo plano.
     BeatKeyAnalyzer* beatKey() override         { return beatKeys.get(); }
 
+    // AppServices: o BPM e o tom dos sons do navegador (bloco 4b, 23/10), com o cache em sons-analise.json
+    SoundInfoCache* soundInfo() override        { return soundInfos.get(); }
+    juce::Array<juce::File> soundFolders() const override;
+
+    // AppServices: MIDI learn (bloco 4d, 23/10). O próximo CC liga ao alvo; aprender de novo troca o alvo; 20 s sem
+    // CC cancela. Os links ficam no projeto (Project::midiMap).
+    void learnMidi (const MidiLink& target) override;
+    void cancelMidiLearn() override;
+    bool isLearningMidi() const override               { return midiLearning; }
+    const MidiLink& midiLearnTarget() const noexcept   { return midiLearnFor; }
+
+    /** Um CC do controlador (thread de mensagem; o autoteste chama direto): aprendendo, liga; senão, move o alvo ligado
+        a ele. Uma rajada de CCs vira um passo de desfazer, fechado 400 ms depois do último. */
+    void handleMidiControl (int channel, int cc, int value);
+    void finishMidiControlGesture();
+
+    /** O alvo em palavras: "EQ · Ganho agudo (Rack)", "Volume (Kick)", "Brilho (Rack)". */
+    juce::String describeMidiTarget (const MidiLink&) const;
+
+    /** O que o MIDI learn diz na tela (aprendendo, ligado, parado). */
+    std::function<void (const juce::String& text, bool isError)> onMidiLearnNotice;
+
     /** Uma análise de beat terminou (thread de mensagem): a tela mostra o aviso e as dicas do piano roll. */
     std::function<void (const juce::File&)> onBeatKey;
 
@@ -277,6 +299,14 @@ private:
 
     void requestBeatKeys();
     std::unique_ptr<BeatKeyAnalyzer> beatKeys;      // tom do beat (21/10, noite): a thread de análise
+    std::unique_ptr<SoundInfoCache> soundInfos;     // BPM e tom do navegador de sons (bloco 4b, 23/10)
+
+    // MIDI learn (bloco 4d): o alvo armado e o gesto aberto pelos CCs (fechado no Housekeeping)
+    void serviceMidiLearn();
+    void midiNotice (const juce::String& text, bool isError = false)   { if (onMidiLearnNotice) onMidiLearnNotice (text, isError); }
+    bool midiLearning = false, midiGestureOpen = false, inMidiControl = false;
+    MidiLink midiLearnFor;
+    double midiLearnUntil = 0.0, midiGestureUntil = 0.0, midiGestureSince = 0.0;
     juce::StringArray requestedBeats;               // arquivos já pedidos (o audio.detectKey pede de novo se o arquivo mudar)
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AppController)

@@ -155,7 +155,7 @@ private:
     juce::String position { "1.1.1" };
     bool countingIn = false;          // gravando com contagem: a POSIÇÃO mostra os tempos que faltam
     bool recMenuClick = false;        // o botão direito no REC abriu o menu: o clique dele não liga o REC
-    juce::StringArray patternIds;
+    juce::StringArray patternIds, patternNames;
     bool refreshing = false;
 };
 

@@ -37,6 +37,12 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
+    /** Camadas por força (bloco 4f): os rótulos da linha ("Kick soft · 1 a 99", "Kick hard · 100+"), para o autoteste. */
+    juce::StringArray layerLabels() const;
+
+    /** Põe uma camada com este arquivo (o "+ Camada" depois de escolher o arquivo). */
+    void addLayerFile (const juce::File&);
+
 private:
     struct Group
     {
@@ -87,6 +93,9 @@ private:
     void sendLoop (float loopStart, float loopEnd);
     void detect();
     void findLoop();
+    void refreshLayers (const Channel&);
+    void showLayerMenu (int layer);   // de 1 a 3
+    void chooseLayerFile();
 
     AppController& app;
     const juce::String channelId;
@@ -99,6 +108,12 @@ private:
     Wave wave { *this };
     juce::OwnedArray<ParamControl> controls;   // na ordem de samplerParams()
     std::vector<Group> groups;
+
+    // camadas por força (bloco 4f): o sample do canal, cada camada e o "+ Camada"
+    juce::OwnedArray<juce::TextButton> layerButtons;
+    juce::TextButton addLayerButton;
+    juce::String layersShown;                   // os rótulos de agora: só refaz os botões quando mudam
+    std::unique_ptr<juce::FileChooser> chooser;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SamplerPanel)
 };

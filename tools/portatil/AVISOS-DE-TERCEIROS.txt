@@ -1,0 +1,28 @@
+WHYNOT LAB: avisos de terceiros
+===============================
+
+A WHYNOT LAB é distribuída sob a GNU Affero General Public License, versão 3 ou posterior
+(LICENCA.txt). O código-fonte completo: https://github.com/paulinrab-a11y/whynot-lab (o commit desta versão está em
+versao.txt).
+Copyright (C) 2026 WHYNOT. Sem nenhuma garantia.
+
+O app usa estes componentes de terceiros. Os avisos de cada um ficam valendo.
+
+- JUCE 8.0.13: GNU AGPL-3.0. https://github.com/juce-framework/JUCE
+  Os terceiros embutidos no JUCE estão no SBOM oficial (JUCE.spdx.json, no mesmo repositório).
+- Tracktion Engine (commit 38d5a27): GNU GPL-3.0 ou posterior. https://github.com/Tracktion/tracktion_engine
+  Embutidos nele: rpmalloc (domínio público), moodycamel ConcurrentQueue (BSD/BSL-1.0), choc (ISC),
+  crill (BSL-1.0), expected (CC0), libsamplerate (BSD-2-Clause), MPMCQueue (MIT), magic_enum (MIT),
+  farbot (MIT), doctest (MIT) e signalsmith-stretch (MIT, Geraint Luff / Signalsmith Audio).
+- SDK VST3 (dentro do JUCE): MIT, Steinberg Media Technologies. VST é marca da Steinberg.
+- SDK ASIO 2.3.4: usado sob a GNU GPL-3.0. https://www.steinberg.net/developers/
+  ASIO é marca da Steinberg.
+- LAME 3.100 (exportar MP3): GNU LGPL-2.0 ou posterior, sem mudanças no código do LAME.
+  Código: https://lame.sourceforge.io (lame-3.100.tar.gz). Ele entra estático; o código da WHYNOT LAB
+  está aberto, então dá para compilar de novo com outro LAME.
+- Montserrat (fonte da interface): SIL Open Font License 1.1. https://github.com/JulietaUla/Montserrat
+- WHYNOT Piano: Salamander Grand Piano V3, gravado por Alexander Holm, CC BY 3.0.
+  Modificado para a WHYNOT LAB (8 das 16 camadas de força, sem o ruído do pedal).
+  Créditos em app\Bibliotecas\Salamander\CREDITOS.txt.
+
+A lista com as versões, os hashes e o papel de cada componente está em docs/licencas.md, no repositório.

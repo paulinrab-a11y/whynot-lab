@@ -46,6 +46,32 @@ namespace
 
     juce::String fromUtf8 (std::string_view s)    { return juce::String::fromUTF8 (s.data(), (int) s.size()); }
 
+    /** Quando um comando livre pede a confirmação da pessoa mesmo assim (vai no command.list): a IA sabe antes
+        que um project.save ou um export pode parar numa pergunta (teste 6.5 da Fase 4). Vazio = nunca. */
+    juce::String confirmsWhen (const CommandRule& rule)
+    {
+        if (rule.risk != Risk::free)
+            return {};
+
+        juce::StringArray when;
+
+        if (rule.confirmIfUnsaved)
+            when.add ("com alterações não salvas no projeto aberto"_t);
+
+        if (rule.savesProject)
+            when.add ("sem path, porque grava por cima do projeto aberto"_t);
+
+        if (! rule.path.name.empty())
+        {
+            if (rule.path.access == Access::write)
+                when.add (rule.writesIntoFolder ? juce::String ("numa pasta que já tem arquivos"_t) : juce::String ("por cima de um arquivo que já existe"_t));
+
+            when.add ("com um caminho fora das pastas permitidas"_t);
+        }
+
+        return when.joinIntoString ("; ");
+    }
+
     juce::var describeResult (const CommandResult& result, AppController& app)
     {
         auto out = object ({ { "ok", result.ok } });
@@ -1057,12 +1083,13 @@ juce::var ControlServer::screenshot (const juce::var& p)
 
     const auto view = p["view"].toString();
     const int width = juce::jlimit (320, 1600, p.hasProperty ("width") ? (int) p["width"] : 1280);
+    auto channel = p["channel"].toString();   // o canal do piano roll (teste 6.5: sem isto, a IA via só o escolhido)
 
     cleanScratch();
     const auto file = scratch.getChildFile ("tela-" + juce::Time::getCurrentTime().formatted ("%Y%m%d-%H%M%S")
                                             + "-" + juce::String (++scratchSerial) + ".png");
     juce::String error;
-    const auto size = options.capture (view, width, file, error);
+    const auto size = options.capture (view, channel, width, file, error);
 
     if (size.isEmpty() || ! file.existsAsFile())
     {
@@ -1070,9 +1097,11 @@ juce::var ControlServer::screenshot (const juce::var& p)
         return failure (error.isNotEmpty() ? error : juce::String ("A captura da tela não saiu."_t));
     }
 
+    const auto* shown = app.getModel().get().findChannel (channel);
     outcome = "ok: "_t + juce::String (size.getWidth()) + "x" + juce::String (size.getHeight());
     return object ({ { "ok", true }, { "path", file.getFullPathName() }, { "width", size.getWidth() }, { "height", size.getHeight() },
-                     { "bytes", (juce::int64) file.getSize() }, { "view", view } });
+                     { "bytes", (juce::int64) file.getSize() }, { "view", view }, { "channel", channel },
+                     { "channelName", shown != nullptr ? shown->name : juce::String() } });
 }
 
 juce::var ControlServer::hello() const
@@ -1141,6 +1170,9 @@ juce::var ControlServer::commandList (const juce::var& p) const
 
             if (! rule.path.name.empty())
                 o->setProperty ("paths", juce::Array<juce::var> { fromUtf8 (rule.path.name) });
+
+            if (const auto when = confirmsWhen (rule); when.isNotEmpty())
+                o->setProperty ("confirmsWhen", when);
 
             out.add (entry);
         }

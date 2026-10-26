@@ -177,6 +177,10 @@ public:
         (ms). Thread de mensagem, no service(). */
     std::function<void (int key, int velocity, bool on, double ageMs)> onLiveNote;
 
+    /** MIDI learn (bloco 4d, 23/10): cada knob ou fader do controlador (CC), logo que chega (thread de mensagem, sem
+        esperar o service). Numa rajada, só o último valor de cada CC. */
+    std::function<void (int channel, int cc, int value)> onLiveControl;
+
     /** A entrada de áudio: a placa (com janela) ou o autoteste chamam pushInput. */
     record::InputRecorder& input() noexcept          { return recorder; }
 
@@ -187,6 +191,7 @@ public:
 private:
     struct DeviceInput;
     struct MidiTap;
+    struct ControlWake;
 
     struct Session
     {
@@ -216,6 +221,7 @@ private:
     void trySync (Session&);
     void syncMidiTaps();
     void drainMidiTaps();
+    void drainControls();
     juce::File settingsFile() const       { return dataFolder.getChildFile ("gravacao.json"); }
     void loadSettings();
     void saveSettings() const;
@@ -228,6 +234,7 @@ private:
     Settings config;
     record::InputRecorder recorder;
     std::unique_ptr<DeviceInput> deviceInput;   // só com janela
+    std::unique_ptr<ControlWake> controlWake;    // acorda a thread de mensagem quando um CC chega (antes dos taps)
     std::vector<std::unique_ptr<MidiTap>> midiTaps;   // um por controlador MIDI ligado
     juce::String liveChannelId;                 // o canal que os controladores tocam (vem do service)
     int midiDroppedTotal = 0;                   // desde que o app abriu (record.state)

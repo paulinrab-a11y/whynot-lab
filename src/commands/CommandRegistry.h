@@ -12,6 +12,7 @@ namespace whynot
 class KeyMap;
 class RecordEngine;
 class BeatKeyAnalyzer;
+class SoundInfoCache;
 namespace library { class ProjectLibrary; }
 
 struct CommandResult
@@ -215,6 +216,16 @@ struct AppServices
     // Projetos (pedidos de 21/10, item 3.3): os projetos, as prévias em áudio e o deck.
     // nullptr = sem a tela Projetos; os comandos library.* recusam.
     virtual library::ProjectLibrary* library()   { return nullptr; }
+
+    // Navegador de sons com BPM e tom (bloco 4b, 23/10): o cache com a thread que lê os sons, e as pastas do navegador
+    // (o Kit WHYNOT, a Biblioteca e as extras). nullptr = o browser.info e o browser.find recusam.
+    virtual SoundInfoCache* soundInfo()                 { return nullptr; }
+    virtual juce::Array<juce::File> soundFolders() const   { return {}; }
+
+    // MIDI learn (bloco 4d, 23/10): o próximo CC do controlador liga ao alvo (o cc e o canal do link são ignorados).
+    virtual void learnMidi (const MidiLink&) {}
+    virtual void cancelMidiLearn() {}
+    virtual bool isLearningMidi() const   { return false; }
 };
 
 struct CommandContext
@@ -251,6 +262,10 @@ public:
 
     CommandResult run (const juce::String& id, const juce::var& params = {});
 
+    /** Chamado antes de cada comando, gesto, lote, desfazer, refazer e limpar o histórico. O AppController fecha
+        ali o gesto aberto pelos knobs do controlador MIDI (bloco 4d): nada de outra origem entra no passo dele. */
+    std::function<void()> beforeAnything;
+
     /** Vários comandos num passo de desfazer só, tudo ou nada (Fase 4: o command_batch da IA).
         steps = [{ id, params }]. Recusa o lote inteiro, sem rodar nada, se um id não existe, não muda o
         modelo ou é project.new/open (limpam o desfazer). Cada passo é um run() normal (normaliza e projeta
@@ -265,7 +280,7 @@ public:
     bool canRedo() const               { return undoManager.canRedo(); }
     juce::String undoDescription() const   { return undoManager.getUndoDescription(); }
     juce::String redoDescription() const   { return undoManager.getRedoDescription(); }
-    void clearHistory()                { undoManager.clearUndoHistory(); }
+    void clearHistory()                { if (beforeAnything) beforeAnything(); undoManager.clearUndoHistory(); }
 
     void beginGesture (const juce::String& name);
     void endGesture();
@@ -338,6 +353,14 @@ void registerBeatCommands (CommandRegistry&);
 void registerLibraryCommands (CommandRegistry&);
 /** Favoritos (as estrelas): listar, marcar e alternar. Preferência do usuário, fora do projeto e do desfazer. */
 void registerFavoritesCommands (CommandRegistry&);
+/** Navegador de sons com BPM e tom (bloco 4b): browser.info e browser.find. */
+void registerBrowserCommands (CommandRegistry&);
+/** MIDI learn (bloco 4d): midi.learn, midi.cancelLearn, midi.map, midi.unmap e midi.mappings. */
+void registerMidiLearnCommands (CommandRegistry&);
+/** Áudio para MIDI (bloco 4e): audio.toMidi (o beatbox vira o kit; a melodia vira notas). */
+void registerAudioMidiCommands (CommandRegistry&);
+/** Camadas por força no sampler (bloco 4f): channel.layers, addLayer, setLayer e removeLayer. */
+void registerLayerCommands (CommandRegistry&);
 
 //==============================================================================
 // Ajudas para ler parâmetros com mensagens de erro claras.

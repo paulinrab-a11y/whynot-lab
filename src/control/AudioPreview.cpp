@@ -14,6 +14,10 @@ namespace
     float toDb (double energy)   { return energy > 1.0e-12 ? (float) (10.0 * std::log10 (energy)) : -100.0f; }
 
     double tenth (double v)      { return std::round (v * 10.0) / 10.0; }
+
+    // o RMS por compasso e por tempo vai com duas casas: a diferença de um clap a mais num compasso inteiro é de
+    // centésimos, e com uma casa o número saía igual (teste 6.5 da Fase 4)
+    double hundredth (double v)  { return std::round (v * 100.0) / 100.0; }
 }
 
 AudioMeasures measureAudio (const juce::File& file, double bpm, int beatsPerBar)
@@ -38,12 +42,26 @@ AudioMeasures measureAudio (const juce::File& file, double bpm, int beatsPerBar)
     m.seconds = (double) total / rate;
     m.barSeconds = 60.0 / juce::jmax (1.0, bpm) * juce::jmax (1, beatsPerBar);
 
+    // o render sai com 1 quadro a mais ou a menos que os compassos exatos (8 compassos a 140 BPM são 658.285,7
+    // quadros, e o WAV tem 658.286): perto de um número inteiro, conta o inteiro. Com o ceil, sobrava um 9º
+    // compasso de 1 amostra, que saía mudo (teste 6.5 da Fase 4)
     const double barSamples = m.barSeconds * rate;
-    const auto bars = (juce::int64) std::ceil ((double) total / barSamples);
+    const double exactBars = (double) total / barSamples;
+    const bool whole = std::abs (exactBars - std::round (exactBars)) < AudioMeasures::barTolerance;
+    const auto bars = (juce::int64) (whole ? std::round (exactBars) : std::ceil (exactBars));
     const int keptBars = (int) juce::jlimit<juce::int64> (0, AudioMeasures::maxBars, bars);
     m.barsCut = bars > AudioMeasures::maxBars;
+    m.lastBarPartial = ! whole && ! m.barsCut;
 
     std::vector<double> barEnergy ((size_t) keptBars, 0.0), barCount ((size_t) keptBars, 0.0);
+
+    // os tempos dos compassos contados (a sobra de arredondamento do fim fica de fora, como nos compassos)
+    const int perBar = juce::jmax (1, beatsPerBar);
+    const double beatSamples = barSamples / perBar;
+    const auto beats = (juce::int64) keptBars * perBar;
+    const int keptBeats = (int) juce::jmin<juce::int64> (AudioMeasures::maxBeats, beats);
+    m.beatsCut = m.barsCut || beats > AudioMeasures::maxBeats;
+    std::vector<double> beatEnergy ((size_t) keptBeats, 0.0), beatCount ((size_t) keptBeats, 0.0);
 
     dsp::LoudnessMeter meter;
     meter.prepare (rate);
@@ -87,6 +105,12 @@ AudioMeasures measureAudio (const juce::File& file, double bpm, int beatsPerBar)
                 barEnergy[(size_t) bar] += square;
                 barCount[(size_t) bar] += 1.0;
             }
+
+            if (const auto beat = (juce::int64) ((double) (pos + i) / beatSamples); beat < keptBeats)
+            {
+                beatEnergy[(size_t) beat] += square;
+                beatCount[(size_t) beat] += 1.0;
+            }
         }
     }
 
@@ -99,6 +123,9 @@ AudioMeasures measureAudio (const juce::File& file, double bpm, int beatsPerBar)
 
     for (size_t b = 0; b < barEnergy.size(); ++b)
         m.barsRmsDb.push_back (barCount[b] > 0.0 ? toDb (barEnergy[b] / barCount[b]) : -100.0f);
+
+    for (size_t b = 0; b < beatEnergy.size(); ++b)
+        m.beatsRmsDb.push_back (beatCount[b] > 0.0 ? toDb (beatEnergy[b] / beatCount[b]) : -100.0f);
 
     m.ok = true;
     return m;
@@ -122,10 +149,18 @@ juce::var toVar (const AudioMeasures& m)
     juce::Array<juce::var> bars;
 
     for (auto db : m.barsRmsDb)
-        bars.add (tenth (db));
+        bars.add (hundredth (db));
+
+    juce::Array<juce::var> beats;
+
+    for (auto db : m.beatsRmsDb)
+        beats.add (hundredth (db));
 
     o->setProperty ("barsRmsDb", bars);
     o->setProperty ("barsCut", m.barsCut);
+    o->setProperty ("beatsRmsDb", beats);
+    o->setProperty ("beatsCut", m.beatsCut);
+    o->setProperty ("lastBarPartial", m.lastBarPartial);
     return juce::var (o);
 }
 

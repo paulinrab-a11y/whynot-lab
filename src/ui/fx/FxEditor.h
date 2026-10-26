@@ -43,6 +43,7 @@ private:
     void beginGesture (const juce::String& name);
     void endGesture();
     void showPresetMenu();
+    void showParamMenu (int index);
     void askPresetName();
     void buildGroups();
     void updateWindowTitle();

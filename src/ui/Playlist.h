@@ -162,7 +162,13 @@ private:
     void beginEdit (const juce::String&);
     void endEdit();
     void renameTrack (int index);
-    void showLaneMenu (int index);   // botão direito no cabeçalho da raia: gravar nela (a entrada da placa)
+    void showLaneMenu (int index);   // botão direito no cabeçalho da raia: mudo, solo, cor, ordem e gravar nela
+
+    // organizar a playlist (bloco 4, 23/10): o ponto do mudo no cabeçalho (clique = mudo, Ctrl+clique = solo)
+    juce::Rectangle<float> laneLed (int index) const;
+    void toggleLane (int index, bool solo);
+    void laneMenuChoice (const juce::String& laneId, int index, int choice);
+    juce::String laneSilence (const juce::String& laneId) const;   // "raia muda", "fora do solo" ou vazio (toca)
 
     // edição de vários blocos (um gesto, um passo de desfazer)
     std::vector<PlaylistItem> selectedItems() const;

@@ -110,6 +110,9 @@ MainComponent::MainComponent (AppController& a)
     };
     app.onBeatKey = [this] (const juce::File&) { beatKeyAnalysed(); };
 
+    // MIDI learn (bloco 4d): "mexa um knob...", "CC 21 ligado a...", no pé
+    app.onMidiLearnNotice = [this] (const juce::String& text, bool isError) { showStatus (text, isError); };
+
     // a IA (Fase 4): o aviso no pé só aparece com a ponte ligada (--control), pelo setAiHooks
     addChildComponent (aiNotice);
     aiNotice.onToggle = [this]
@@ -328,6 +331,7 @@ MainComponent::~MainComponent()
     app.onTogglePanel = nullptr;
     app.onShortcutsChanged = nullptr;
     app.onBeatKey = nullptr;
+    app.onMidiLearnNotice = nullptr;
     app.onPluginsChanged = nullptr;
     app.onScanProgress = nullptr;
     PluginWindow::onClosed = nullptr;
@@ -491,23 +495,44 @@ void MainComponent::askAi (const juce::String& title, const juce::String& comman
     updateAiNotice();
 }
 
-juce::Rectangle<int> MainComponent::capturePng (const juce::String& view, int maxWidth, const juce::File& png, juce::String& error)
+juce::Rectangle<int> MainComponent::capturePng (const juce::String& screenName, juce::String& channel, int maxWidth, const juce::File& png, juce::String& error)
 {
     static const std::map<juce::String, View> views { { "playlist", View::playlist }, { "channelRack", View::channelRack },
                                                       { "pianoRoll", View::pianoRoll }, { "projects", View::projects } };
+    const auto found = views.find (screenName.isEmpty() && channel.isNotEmpty() ? juce::String ("pianoRoll") : screenName);
 
-    if (view.isNotEmpty())
+    if (screenName.isNotEmpty() && found == views.end())
     {
-        const auto found = views.find (view);
+        error = "Tela desconhecida: "_t + screenName + ". Use playlist, channelRack, pianoRoll ou projects."_t;
+        return {};
+    }
 
-        if (found == views.end())
+    // o canal do piano roll (teste 6.5 da Fase 4: a IA só via o canal que estava escolhido)
+    if (channel.isNotEmpty())
+    {
+        const auto& p = app.getModel().get();
+        const auto* wanted = p.findChannel (channel);
+
+        if (wanted == nullptr || wanted->isAudio())
         {
-            error = "Tela desconhecida: "_t + view + ". Use playlist, channelRack, pianoRoll ou projects."_t;
+            juce::StringArray choices;
+
+            for (auto& c : p.channels)
+                if (! c.isAudio() && choices.size() < 24)
+                    choices.add (c.name + " (" + c.id + ")");
+
+            error = (wanted == nullptr ? "Canal desconhecido: "_t + channel : "O canal "_t + wanted->name + " é de áudio e não tem piano roll"_t)
+                  + ". Os canais com piano roll: "_t + (choices.isEmpty() ? juce::String ("nenhum") : choices.joinIntoString (", ")) + ".";
             return {};
         }
 
-        showView (found->second);
+        selectChannel (wanted->id);
     }
+
+    if (found != views.end())
+        showView (found->second);
+
+    channel = pianoRoll.getChannel();
 
     if (getWidth() <= 0 || getHeight() <= 0)
     {
@@ -534,12 +559,12 @@ juce::Rectangle<int> MainComponent::capturePng (const juce::String& view, int ma
     return image.getBounds();
 }
 
-juce::Rectangle<int> MainComponent::captureOffscreen (AppController& app, const juce::String& view, int maxWidth,
+juce::Rectangle<int> MainComponent::captureOffscreen (AppController& app, const juce::String& view, juce::String& channel, int maxWidth,
                                                       const juce::File& png, juce::String& error)
 {
     MainComponent screen (app);
     screen.setSize (1440, 900);
-    return screen.capturePng (view, maxWidth, png, error);
+    return screen.capturePng (view, channel, maxWidth, png, error);
 }
 
 void MainComponent::cancelAiQuestion()

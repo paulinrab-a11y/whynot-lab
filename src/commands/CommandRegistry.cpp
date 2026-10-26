@@ -78,6 +78,9 @@ juce::var CommandRegistry::describe() const
 
 CommandResult CommandRegistry::run (const juce::String& id, const juce::var& p)
 {
+    if (beforeAnything)
+        beforeAnything();
+
     auto* cmd = find (id);
 
     if (cmd == nullptr)
@@ -154,6 +157,9 @@ CommandResult CommandRegistry::run (const juce::String& id, const juce::var& p)
 
 CommandResult CommandRegistry::runBatch (const juce::Array<juce::var>& steps, const juce::String& title)
 {
+    if (beforeAnything)
+        beforeAnything();
+
     if (gestureDepth > 0)
         return CommandResult::fail ("Há um gesto aberto: o lote espera ele acabar."_t);
 
@@ -227,11 +233,27 @@ void CommandRegistry::applySnapshot (const juce::String& json)
         model.replace (std::move (p));
 }
 
-bool CommandRegistry::undo()   { return undoManager.undo(); }
-bool CommandRegistry::redo()   { return undoManager.redo(); }
+bool CommandRegistry::undo()
+{
+    if (beforeAnything)
+        beforeAnything();
+
+    return undoManager.undo();
+}
+
+bool CommandRegistry::redo()
+{
+    if (beforeAnything)
+        beforeAnything();
+
+    return undoManager.redo();
+}
 
 void CommandRegistry::beginGesture (const juce::String& name)
 {
+    if (beforeAnything)
+        beforeAnything();
+
     if (gestureDepth++ == 0)
         undoManager.beginNewTransaction (name);
 }

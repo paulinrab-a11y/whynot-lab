@@ -19,6 +19,7 @@ const COMMANDS: CommandInfo[] = [
   { id: 'audio.setDevice', title: 'Escolher placa de som', domain: 'audio', risk: 'blocked', why: 'muda o computador', undoable: false,
     params: { type: 'object', properties: {}, required: [] } },
   { id: 'project.exportWav', title: 'Exportar WAV', domain: 'project', risk: 'free', undoable: false,
+    confirmsWhen: 'por cima de um arquivo que já existe; com um caminho fora das pastas permitidas',
     params: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } },
 ];
 
@@ -48,6 +49,10 @@ test('command_list sem filtro: compacto, por domínio, com as marcas de risco', 
   assert.match(textOf(r), /transport: setBpm, play/);
   assert.match(textOf(r), /channel: addPlugin \[confirma\]/);
   assert.match(textOf(r), /audio: setDevice \[bloqueado\]/);
+  assert.match(textOf(r), /project: exportWav \[às vezes confirma\]/);
+
+  const detail = await commandList(new FakeBridge(), { ids: ['project.exportWav'] });
+  assert.match((detail.structuredContent as any).commands[0].confirmsWhen, /por cima de um arquivo/);
 });
 
 test('command_list com domínio ou busca traz o schema; filtro sem resultado diz os domínios', async () => {
@@ -179,11 +184,43 @@ test('render_preview: as medidas em texto curto, com os compassos mudos, e o JSO
   assert.match(textOf(r), /não é ouvir de verdade/);
   assert.equal((r.structuredContent as any).lufs, -11.8);
 
-  assert.match(describePreview({ ...measures, clipped: 12 }), /CORTOU: 12 amostras em 0 dBFS/);
+  // o Claude Code mostra ao modelo só o structuredContent: os avisos do texto vão nele também (teste 6.5)
+  assert.deepEqual((r.structuredContent as any).mutedBars, [2, 3]);
+  assert.deepEqual((r.structuredContent as any).warnings, ['Compassos mudos (abaixo de -60 dBFS): 2, 3.']);
+  assert.equal((r.structuredContent as any).ok, undefined);
+
+  bridge.replies['render.preview'] = { ...measures, clipped: 12 };
+  const clipped = await renderPreview(bridge, {});
+  assert.match(textOf(clipped), /CORTOU: 12 amostras em 0 dBFS/);
+  assert.doesNotMatch(textOf(clipped), /Nada cortou/);
+  assert.deepEqual((clipped.structuredContent as any).warnings, ['CORTOU: 12 amostras em 0 dBFS.', 'Compassos mudos (abaixo de -60 dBFS): 2, 3.']);
 
   bridge.replies['render.preview'] = { ok: false, error: 'what é "pattern" ou "song".' };
   const bad = await renderPreview(bridge, {});
   assert.ok(bad.isError);
+});
+
+test('render_preview: 8 compassos sem o fantasma não têm aviso; o parcial, a prévia muda e o corte da lista avisam', async () => {
+  const bridge = new FakeBridge();
+  const eight = { ...measures, loops: 2, seconds: 13.71, barSeconds: 1.71, lastBarPartial: false,
+                  barsRmsDb: [-13.3, -13.4, -13.3, -13.5, -13.3, -13.4, -13.3, -14.5] };
+  bridge.replies['render.preview'] = eight;
+  const r = await renderPreview(bridge, {});
+  assert.doesNotMatch(textOf(r), /mudo|parcial/);
+  assert.match(textOf(r), /8: -14,5\nArquivo:/);
+  assert.deepEqual((r.structuredContent as any).mutedBars, []);
+  assert.deepEqual((r.structuredContent as any).warnings, []);
+
+  assert.match(describePreview({ ...eight, lastBarPartial: true, barsRmsDb: [...eight.barsRmsDb, -13.2] }), /8: -14,5 · 9 \(parcial\): -13,2/);
+
+  const silent = { ...eight, peakDb: -100, barsRmsDb: [-100, -100] };
+  bridge.replies['render.preview'] = silent;
+  const quiet = await renderPreview(bridge, {});
+  assert.deepEqual((quiet.structuredContent as any).warnings,
+                   ['A prévia saiu muda: o pico ficou abaixo de -60 dBFS.', 'Compassos mudos (abaixo de -60 dBFS): 1, 2.']);
+
+  bridge.replies['render.preview'] = { ...eight, barsCut: true };
+  assert.deepEqual(((await renderPreview(bridge, {})).structuredContent as any).warnings, ['Só os 8 primeiros compassos têm RMS.']);
 });
 
 test('screenshot: a imagem em PNG vai para o modelo; acima de 1 MB, pede menor', async () => {
@@ -204,6 +241,26 @@ test('screenshot: a imagem em PNG vai para o modelo; acima de 1 MB, pede menor',
   const bad = await screenshot(bridge, {}, () => Buffer.alloc(1));
   assert.ok(bad.isError);
   assert.match(textOf(bad), /Tela desconhecida/);
+});
+
+test('screenshot { channel }: escolhe o canal do piano roll; sem view, é o piano roll dele', async () => {
+  const bridge = new FakeBridge();
+  bridge.replies['ui.screenshot'] = (p: any) => ({ ok: true, path: 'tela.png', width: p.width, height: 800, view: p.view ?? '',
+                                                   channel: p.channel ?? 'ch_1', channelName: p.channel === 'ch_6' ? '808' : 'Kick' });
+  const r = await screenshot(bridge, { channel: 'ch_6' }, () => Buffer.alloc(10, 1));
+
+  assert.ok(!r.isError);
+  assert.deepEqual(bridge.calls[0].params, { view: 'pianoRoll', channel: 'ch_6', width: 1280 });
+  assert.match((r.content[1] as any).text, /^Tela "pianoRoll", canal "808" \(ch_6\): 1280x800 px/);
+
+  const rack = await screenshot(bridge, { view: 'channelRack' }, () => Buffer.alloc(10, 1));
+  assert.deepEqual(bridge.calls[1].params, { view: 'channelRack', width: 1280 });
+  assert.match((rack.content[1] as any).text, /^Tela "channelRack": 1280x800 px/, 'fora do piano roll, o texto não fala do canal');
+
+  bridge.replies['ui.screenshot'] = { ok: false, error: 'Canal desconhecido: ch_9. Os canais com piano roll: Kick (ch_1), 808 (ch_6).' };
+  const bad = await screenshot(bridge, { channel: 'ch_9' }, () => Buffer.alloc(1));
+  assert.ok(bad.isError);
+  assert.match(textOf(bad), /Canal desconhecido: ch_9\. Os canais com piano roll: Kick \(ch_1\)/);
 });
 
 test('stableJson: as mesmas chaves em outra ordem dão o mesmo texto', () => {

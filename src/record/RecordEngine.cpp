@@ -68,7 +68,18 @@ struct RecordEngine::MidiTap : te::InputDeviceInstance::Consumer
         bool on;
     };
 
-    explicit MidiTap (te::InputDeviceInstance& i) : instance (&i)   { i.addConsumer (this); }
+    /** Um knob ou fader (CC) para o MIDI learn (bloco 4d). */
+    struct Control
+    {
+        int channel, cc, value;
+    };
+
+    /** O último valor de cada canal e CC, com a marca de novo (valor + 128): a thread de mensagem travada um
+        instante não perde o valor final de um knob girado (uma fila cheia perderia). */
+    std::array<std::atomic<int>, 16 * 120> latest {};
+    std::atomic<bool> anyControl { false };
+
+    MidiTap (te::InputDeviceInstance& i, std::function<void()> wakeUp) : instance (&i), wake (std::move (wakeUp))   { i.addConsumer (this); }
 
     ~MidiTap() override
     {
@@ -80,17 +91,37 @@ struct RecordEngine::MidiTap : te::InputDeviceInstance::Consumer
     {
         if (m.isNoteOnOrOff() && ! events.push ({ m.getTimeStamp(), m.getNoteNumber(), m.getVelocity(), m.isNoteOn() }))
             dropped.fetch_add (1, std::memory_order_relaxed);   // fila cheia: conta, para o aviso
+
+        // o CC vai para o MIDI learn; os de modo (120 a 127: all notes off, reset...) não são knobs
+        if (m.isController() && m.getControllerNumber() < 120 && m.getChannel() >= 1 && m.getChannel() <= 16)
+        {
+            latest[(size_t) ((m.getChannel() - 1) * 120 + m.getControllerNumber())].store (128 + m.getControllerValue(), std::memory_order_relaxed);
+            anyControl.store (true, std::memory_order_release);
+
+            if (wake)
+                wake();
+        }
     }
 
     juce::WeakReference<te::InputDeviceInstance> instance;
+    std::function<void()> wake;   // fixo desde o construtor: a thread do MIDI só chama
     audio::SpscQueue<Event, 512> events;
     std::atomic<int> dropped { 0 };
+};
+
+/** Leva os CCs para a thread de mensagem logo que chegam (o service roda a cada 100 ms: lento para um knob). */
+struct RecordEngine::ControlWake : juce::AsyncUpdater
+{
+    explicit ControlWake (RecordEngine& o) : owner (o) {}
+    void handleAsyncUpdate() override   { owner.drainControls(); }
+    RecordEngine& owner;
 };
 
 //==============================================================================
 RecordEngine::RecordEngine (te::Engine& e, te::Edit& ed, const juce::File& folder, bool isHeadless)
     : engine (e), edit (ed), dataFolder (folder), headless (isHeadless)
 {
+    controlWake = std::make_unique<ControlWake> (*this);
     loadSettings();
     recorder.setMeteredInput (config.firstInput, config.stereo ? 2 : 1);
 
@@ -105,6 +136,7 @@ RecordEngine::~RecordEngine()
 {
     abort();
     midiTaps.clear();   // sai dos aparelhos MIDI antes do Edit
+    controlWake = nullptr;
 
     if (deviceInput != nullptr)
         engine.getDeviceManager().deviceManager.removeAudioCallback (deviceInput.get());
@@ -653,7 +685,7 @@ void RecordEngine::syncMidiTaps()
 
     for (auto* in : physical)
         if (std::none_of (midiTaps.begin(), midiTaps.end(), [in] (const std::unique_ptr<MidiTap>& t) { return t->instance.get() == in; }))
-            midiTaps.push_back (std::make_unique<MidiTap> (*in));
+            midiTaps.push_back (std::make_unique<MidiTap> (*in, [wake = controlWake.get()] { wake->triggerAsyncUpdate(); }));
 }
 
 void RecordEngine::drainMidiTaps()
@@ -683,6 +715,33 @@ void RecordEngine::drainMidiTaps()
                 session->midiDropped += dropped;
         }
     }
+}
+
+void RecordEngine::drainControls()
+{
+    // numa rajada, só o último valor de cada CC: a tabela do tap guarda o mais novo, com a marca de novo
+    std::vector<MidiTap::Control> latest;
+
+    for (auto& tap : midiTaps)
+    {
+        if (! tap->anyControl.exchange (false, std::memory_order_acquire))
+            continue;
+
+        for (size_t i = 0; i < tap->latest.size(); ++i)
+        {
+            int v = tap->latest[i].load (std::memory_order_relaxed);
+
+            // tira a marca só se ninguém escreveu de novo no meio (senão o mais novo fica para a próxima rodada)
+            while (v >= 128 && ! tap->latest[i].compare_exchange_weak (v, v - 128, std::memory_order_relaxed)) {}
+
+            if (v >= 128)
+                latest.push_back ({ (int) i / 120 + 1, (int) i % 120, v - 128 });
+        }
+    }
+
+    if (onLiveControl)
+        for (auto& c : latest)
+            onLiveControl (c.channel, c.cc, c.value);
 }
 
 int RecordEngine::deviceRestartCount() const noexcept

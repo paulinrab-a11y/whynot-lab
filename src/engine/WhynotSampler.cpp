@@ -28,10 +28,17 @@ void WhynotSamplerPlugin::initialise (const te::PluginInitialisationInfo& info)
 
 void WhynotSamplerPlugin::deinitialise() {}
 
-void WhynotSamplerPlugin::setSample (std::shared_ptr<const audio::SampleData> data)
+void WhynotSamplerPlugin::setSample (std::shared_ptr<const audio::SampleData> data, std::vector<Layer> layers)
 {
-    pendingSample = std::make_unique<const SampleRef> (SampleRef { std::move (data) });
-    sampleLoaded = pendingSample->data != nullptr;
+    auto ref = std::make_unique<SampleRef>();
+    ref->data = std::move (data);
+
+    for (auto& l : layers)
+        if (l.data != nullptr && ref->numLayers < maxLayers)
+            ref->layers[(size_t) ref->numLayers++] = { std::move (l.data), juce::jlimit (0.0f, 1.0f, l.minVelocity) };
+
+    sampleLoaded = ref->data != nullptr;
+    pendingSample = std::move (ref);
     tryPublishPending();
 }
 
@@ -176,6 +183,18 @@ void WhynotSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         lastRef = ref;
         fadeForSwap.store (false);
         swapFading = false;
+        // uma voz que sobrou (a troca sem fade, com o áudio recomeçando) continua na camada se ela está no conjunto novo
+        // (o cache devolve o mesmo sample para o arquivo que não mudou); senão, lê o sample do canal. Só compara o endereço.
+        for (auto& own : voiceData)
+        {
+            bool kept = false;
+
+            for (int k = 0; ref != nullptr && k < ref->numLayers && ! kept; ++k)
+                kept = own != nullptr && ref->layers[(size_t) k].data.get() == own;
+
+            if (! kept)
+                own = nullptr;
+        }
     }
 
     if (data == nullptr || numChannels == 0)
@@ -213,10 +232,10 @@ void WhynotSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             if (m.isNoteOn())
             {
                 if (! swapping)
-                    noteOn (m.getNoteNumber(), m.getFloatVelocity(), *data);
+                    noteOn (m.getNoteNumber(), m.getFloatVelocity(), *ref);
             }
             else if (m.isNoteOff())
-                noteOff (m.getNoteNumber(), *data);
+                noteOff (m.getNoteNumber(), *ref);
             else if (m.isAllSoundOff())
                 chokeAll();   // choke (outro canal do grupo tocou) ou parada total: corte de 3 ms
             else if (m.isAllNotesOff())
@@ -247,7 +266,8 @@ void WhynotSamplerPlugin::renderVoices (const audio::SampleData& data, float* co
         if (! voices[(size_t) i].isActive())
             continue;
 
-        voices[(size_t) i].render (data, offset, numChannels, num);
+        const auto* own = voiceData[(size_t) i];
+        voices[(size_t) i].render (own != nullptr ? *own : data, offset, numChannels, num);
 
         if (! voices[(size_t) i].isActive())
             voiceKey[(size_t) i] = -1;
@@ -316,9 +336,10 @@ void WhynotSamplerPlugin::removeHeld (int key) noexcept
     }
 }
 
-void WhynotSamplerPlugin::noteOn (int key, float velocity, const audio::SampleData& data) noexcept
+void WhynotSamplerPlugin::noteOn (int key, float velocity, const SampleRef& ref) noexcept
 {
     const auto params = voiceParams();
+    const auto& data = *ref.data;
 
     // Fatiador: cada tecla toca uma fatia, no tom original do sample, até a fatia seguinte.
     // Sem mono nem glide; "cortar a si mesmo" continua valendo.
@@ -341,12 +362,15 @@ void WhynotSamplerPlugin::noteOn (int key, float velocity, const audio::SampleDa
         const int chosen = allocateVoice();
         voices[(size_t) chosen].noteOn (data.rootKey, velocity, false, sliceParams);
         voiceKey[(size_t) chosen] = key;
+        voiceData[(size_t) chosen] = nullptr;   // fatiado: só o sample do canal
         voiceStart[(size_t) chosen] = ++voiceCounter;
         return;
     }
 
-    // A nota de raiz do canal soa no tom original do sample.
-    const int sampleKey = key - rootKey.load() + data.rootKey;
+    // A camada da força (bloco 4f), e a nota de raiz do canal soa no tom original dela.
+    const auto& layer = ref.forVelocity (velocity);
+    const auto* own = &layer == &data ? nullptr : &layer;
+    const int sampleKey = key - rootKey.load() + layer.rootKey;
 
     if (mono.load())
     {
@@ -356,7 +380,12 @@ void WhynotSamplerPlugin::noteOn (int key, float velocity, const audio::SampleDa
 
         if (legato)
         {
-            voices[(size_t) monoVoice].noteOn (sampleKey, velocity, true, params);
+            // deslizando, a voz continua na camada em que começou; sem glide (0 ms) a nota recomeça, já na camada da força dela
+            if (params.glideMs <= 0.0f)
+                voiceData[(size_t) monoVoice] = own;
+
+            const auto* current = voiceData[(size_t) monoVoice];
+            voices[(size_t) monoVoice].noteOn (key - rootKey.load() + (current != nullptr ? current : &data)->rootKey, velocity, true, params);
             voiceKey[(size_t) monoVoice] = key;
             monoKey = key;
             return;
@@ -369,6 +398,7 @@ void WhynotSamplerPlugin::noteOn (int key, float velocity, const audio::SampleDa
         const int v = allocateVoice();
         voices[(size_t) v].noteOn (sampleKey, velocity, false, params);
         voiceKey[(size_t) v] = key;
+        voiceData[(size_t) v] = own;
         voiceStart[(size_t) v] = ++voiceCounter;
         monoVoice = v;
         monoKey = key;
@@ -385,11 +415,14 @@ void WhynotSamplerPlugin::noteOn (int key, float velocity, const audio::SampleDa
     const int chosen = allocateVoice();
     voices[(size_t) chosen].noteOn (sampleKey, velocity, false, params);
     voiceKey[(size_t) chosen] = key;
+    voiceData[(size_t) chosen] = own;
     voiceStart[(size_t) chosen] = ++voiceCounter;
 }
 
-void WhynotSamplerPlugin::noteOff (int key, const audio::SampleData& data) noexcept
+void WhynotSamplerPlugin::noteOff (int key, const SampleRef& ref) noexcept
 {
+    const auto& data = *ref.data;
+
     if (mono.load() && numSlices.load (std::memory_order_relaxed) == 0)
     {
         removeHeld (key);
@@ -402,7 +435,16 @@ void WhynotSamplerPlugin::noteOff (int key, const audio::SampleData& data) noexc
             // ainda há tecla segurada: volta deslizando para ela
             const auto params = voiceParams();
             const int back = held[(size_t) numHeld - 1];
-            voices[(size_t) monoVoice].noteOn (back - rootKey.load() + data.rootKey, heldVelocity[(size_t) numHeld - 1], true, params);
+
+            if (params.glideMs <= 0.0f)   // sem glide a nota de volta recomeça: na camada da força dela
+            {
+                const auto& layer = ref.forVelocity (heldVelocity[(size_t) numHeld - 1]);
+                voiceData[(size_t) monoVoice] = &layer == &data ? nullptr : &layer;
+            }
+
+            const auto* current = voiceData[(size_t) monoVoice];
+            voices[(size_t) monoVoice].noteOn (back - rootKey.load() + (current != nullptr ? current : &data)->rootKey,
+                                               heldVelocity[(size_t) numHeld - 1], true, params);
             voiceKey[(size_t) monoVoice] = back;
             monoKey = back;
         }

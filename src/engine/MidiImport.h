@@ -56,6 +56,7 @@ juce::Result readMidiInfo (const juce::File&, MidiFileInfo&);
     Os compassos vazios do começo do arquivo saem (contados em compassos inteiros do compasso do arquivo,
     pela primeira nota do arquivo inteiro, para trilhas importadas uma a uma continuarem alinhadas) e o
     primeiro compasso com notas entra em `at`. Duas notas iguais (tecla e início) viram uma, a mais longa.
+    O pitch bend e o CC1 (mod wheel) da trilha voltam como as curvas das notas (26/10), no alcance do RPN 0 dela.
 */
 juce::Result readMidiNotes (const juce::File&, const MidiImportOptions&, MidiImportResult&);
 

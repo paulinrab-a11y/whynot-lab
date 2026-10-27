@@ -9,6 +9,7 @@
 // curto (edges). Tudo aqui mexe só no modelo: quem chama é o comando, um passo de desfazer.
 
 #include "../model/Project.h"
+#include "../model/PlaylistEdit.h"
 
 #include <set>
 
@@ -29,17 +30,8 @@ inline juce::String split (Project& p, const juce::String& itemId, int at)
     if (item == nullptr || at - item->start < ticksPerStep || item->end() - at < ticksPerStep)
         return {};
 
-    PlaylistItem right = *item;
+    auto right = playlistedit::splitAt (p, *item, at);   // os fades ficam nas pontas de fora
     right.id = makeId ("it");
-    right.start = at;
-    right.length = item->end() - at;
-
-    if (item->kind == "audio")   // esticado, o arquivo anda 1 / stretch por segundo da playlist
-        right.offsetSeconds = roundToMicroseconds (item->offsetSeconds + item->fileSeconds (ticksToSeconds (at - item->start, p.bpm)));
-    else
-        right.patternOffset = item->patternOffset + (at - item->start);
-
-    item->length = at - item->start;
     p.playlistItems.push_back (right);   // `item` pode mudar de endereço daqui em diante
     return right.id;
 }
@@ -243,7 +235,7 @@ inline juce::String adopt (Project& p, const juce::StringArray& newItems)
 /** Duas pontas de takes que se encostam sem o áudio continuar (outro take, ou outro ponto do arquivo). */
 inline bool continuous (const Project& p, const PlaylistItem& left, const PlaylistItem& right)
 {
-    return left.ref == right.ref && left.stretch == right.stretch
+    return left.ref == right.ref && left.stretch == right.stretch && left.reversed == right.reversed && left.pitch == right.pitch
            && std::abs (right.offsetSeconds - (left.offsetSeconds + left.fileSeconds (ticksToSeconds (left.length, p.bpm)))) < 1.0e-4;
 }
 

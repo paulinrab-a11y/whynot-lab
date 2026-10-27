@@ -41,7 +41,7 @@ Como ler a tabela:
 ## Limitações conhecidas
 
 - **Stem de trilha com sidechain**: no stem do 808, o kick que dispara o compressor dele fica mudo, então o 808 sai sem o ducking. É a mesma regra do solo.
-- **MIDI**: o glide do 808 sai como notas sobrepostas (legato), não como pitch bend.
+- **MIDI**: ~~o glide do 808 sai como notas sobrepostas (legato), não como pitch bend.~~ Corrigido em 26/10 (frente Pitch bend): o glide sai como uma nota só com pitch bend, com o alcance no RPN 0 quando passa de 2 semitons.
 - **MP3 decodificado pelo JUCE**: tem 45 ms a mais no começo, que é o atraso do codificador. Players que leem o quadro do LAME descontam. O MP3 também não limita o pico real a -1 dBTP.
 - **Clipe de áudio na playlist**: corrigido depois do checklist. O corte do começo agora fica em segundos do arquivo, no esquema 3 do `.wnl`, e mudar o BPM não muda mais o trecho que toca. O clipe não estica: em BPM mais lento, ele toca mais do arquivo no mesmo compasso.
 - **Gravação de áudio e de MIDI, e automação**: ficaram fora das quatro entregas e vieram depois, na 3.5 (`docs/gravacao.md`), já no `main`.

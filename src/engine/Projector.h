@@ -11,6 +11,7 @@
 #include "WhynotSynth.h"
 
 #include <map>
+#include <optional>
 #include <set>
 
 namespace whynot
@@ -59,6 +60,19 @@ public:
     double lengthSeconds() const noexcept    { return currentLengthSeconds; }
 
     bool isSongMode() const noexcept         { return songMode; }
+
+    /** Gravar automação (26/10): enquanto a pessoa mexe num controle com a gravação ligada, a curva dele fica de
+        fora e o controle manda no som (chaves de AutomationTarget::key()). Refaz as curvas na hora. */
+    void setAutomationHold (const std::set<juce::String>& keys, const Project&);
+    const std::set<juce::String>& automationHold() const noexcept   { return automationHeld; }
+
+    /** O valor (0 a 1) que um parâmetro VST3 tinha antes da curva, e que ele volta a ter quando a curva sai
+        (26/10: sem a "automação fantasma"). Não troca um valor já guardado: a primeira curva vence. */
+    void rememberPluginBase (const AutomationTarget&, float value);
+    std::optional<float> pluginBaseFor (const AutomationTarget&) const;
+
+    /** O Projector está pondo valores nos parâmetros (o sync, a curva que sai): não é a pessoa mexendo. */
+    bool isApplyingParameters() const noexcept   { return applyingParameters; }
 
     /** O app manda no loop do transporte (gravar voz, 21/10: a seleção de tempo e a contagem, que
         começa antes do loop): o sync() deixa a faixa e o liga-desliga do loop como estão. */
@@ -143,10 +157,24 @@ public:
 
     /** Notas que um padrão toca num canal ao longo de `length` ticks (passos + piano roll, repetidos,
         com as regras de mono/slide aplicadas). Público para o autoteste e a interface. */
-    static std::vector<Note> notesFor (const Project&, const Pattern&, const Channel&, int lengthTicks);
-    /** O mesmo, a partir de `offsetTicks` dentro do padrão (o bloco cortado ou deslizado na playlist):
-        as notas que começam antes do deslocamento ficam de fora. */
-    static std::vector<Note> notesFor (const Project&, const Pattern&, const Channel&, int lengthTicks, int offsetTicks);
+    static std::vector<Note> notesFor (const Project&, const Pattern&, const Channel&, int lengthTicks, int offsetTicks = 0,
+                                       int seed = 0);
+
+    /** Passos com chance (26/10): cada volta do padrão sorteia de novo, sempre igual para a mesma `seed`
+        (na playlist, o começo do bloco; no PAT, 0). */
+    static bool usesChance (const Pattern&, const juce::String& channelId);
+    static bool usesChance (const Pattern&);
+
+    /** No modo PAT ao vivo e com o loop ligado, um padrão com chance toca 8 voltas antes de repetir o sorteio. */
+    static constexpr int chanceLoops = 8;
+    int patternLoops (const Project& p, const Pattern& pattern) const noexcept
+    {
+        // só com o loop ligado: sem ele, o padrão toca uma volta e para, como antes
+        return mode == Mode::followProject && p.loop && usesChance (pattern) ? loops * chanceLoops : loops;
+    }
+
+    /** A decisão de um passo com chance: o mesmo sorteio para os mesmos números. */
+    static bool chanceHits (int chance, int seed, const juce::String& channelId, int stepIndex, int rollIndex, int loopIndex);
 
 private:
     struct MidiSpec
@@ -154,6 +182,7 @@ private:
         int start = 0, length = 0;
         std::vector<Note> notes;   // relativas ao início do clipe
         std::vector<int> cuts;     // choke: CC 120 nestes ticks, relativos ao início do clipe
+        float bendRange = 2.0f;    // pitch bend (26/10): o alcance do instrumento, para as curvas das notas virarem pitch wheel
         bool operator== (const MidiSpec&) const = default;
     };
 
@@ -169,6 +198,11 @@ private:
         float gainDb = 0.0f;         // o ganho do bloco (PlaylistItem::gainDb)
         double userFadeIn = 0.0;     // os fades das alças do bloco (PlaylistItem::fadeIn e fadeOut), em segundos
         double userFadeOut = 0.0;
+        // voz na playlist (27/10): a curva dos fades das alças (FadeCurve), o crossfade automático quando dois
+        // áudios se sobrepõem na raia (playlistedit::autoCrossfade, em segundos) e o tom do bloco em semitons
+        int userFadeInCurve = 0, userFadeOutCurve = 0;
+        double autoFadeIn = 0.0, autoFadeOut = 0.0;
+        float pitch = 0.0f;
         bool operator== (const AudioSpec&) const = default;
     };
 
@@ -291,6 +325,18 @@ private:
     };
 
     std::map<te::AutomatableParameter*, AppliedCurve> automated;
+
+    // (26/10) O valor de cada parâmetro VST3 antes da primeira curva: quando a curva sai, ele volta a ele.
+    struct PluginBase
+    {
+        te::AutomatableParameter::Ptr param;
+        te::Plugin::Ptr owner;
+        float value = 0.0f;
+    };
+
+    std::map<te::AutomatableParameter*, PluginBase> pluginBases;
+    std::set<juce::String> automationHeld;   // gravando: as curvas que a pessoa está segurando na mão
+    bool applyingParameters = false;
 
     /** As curvas do volume e do pan de uma trilha do mixer, pela lei de pan (as duas andam juntas). */
     void faderCurves (const MixerTrack&, const AutomationLane* volumeLane, const AutomationLane* panLane,

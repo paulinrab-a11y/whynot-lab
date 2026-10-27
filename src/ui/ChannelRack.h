@@ -109,6 +109,8 @@ private:
 
     void setStep (int row, int step, bool on);
     void showTapeMenu (int row);
+    void showStepMenu (int row, int step);   // Shift+botão direito num passo: chance, tom e pan (26/10)
+    bool stepPanWorks (int row) const;        // o pan do passo só vale no sampler
     void showSamplerPanel (int row);
     void showOutputMenu (int row);
     void showLengthMenu();

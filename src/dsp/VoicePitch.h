@@ -54,12 +54,18 @@ class PsolaCore
 public:
     static constexpr int maxReads = 2;
 
-    void prepare (double sampleRate, int numReads);
+    /** `maxGrainPeriods`: a meia largura do grão de saída cabe até esse número de períodos (1,5 = formante até -7 st;
+        2 = até -12 st, com mais meio período de 60 Hz de latência). */
+    void prepare (double sampleRate, int numReads, float maxGrainPeriods = 1.5f);
     void reset() noexcept;
     void setRange (double lowHz, double highHz) noexcept   { yin.setRange (lowHz, highHz); }
 
     /** Tom (razão de frequência) e formante (razão) de uma leitura, a partir da próxima marca. */
     void setShift (int read, float ratio, float formantRatio, bool voicedOnly) noexcept;
+
+    /** Liga ou desliga uma leitura (desligada, ela não monta grãos e sai em silêncio; economiza CPU). Ao religar,
+        ela recomeça no grão que acabou de ficar pronto. Todas começam ligadas. */
+    void setEnabled (int read, bool enabled) noexcept;
 
     /** Uma amostra entra. `wetL/wetR[k]` recebe a leitura k, e `dryL/dryR` a entrada, as duas atrasadas `latency()`. */
     void process (float l, float r, float* wetL, float* wetR, float& dryL, float& dryR) noexcept;
@@ -79,7 +85,8 @@ private:
     struct Read
     {
         std::vector<float> accL, accR;
-        double nextSynthesis = 0.0;
+        double nextSynthesis = 0.0, lastGrain = -1.0e30;
+        bool enabled = true;
         float ratio = 1.0f, formant = 1.0f;
         bool voicedOnly = false;
     };
@@ -99,7 +106,7 @@ private:
     int numReads = 1;
     std::int64_t mask = 0, now = -1;   // `now` = índice absoluto da última amostra que entrou
     int latencySamples = 0;
-    float maxPeriod = 800.0f, unvoicedPeriod = 240.0f;
+    float maxPeriod = 800.0f, unvoicedPeriod = 240.0f, maxHalfOut = 1200.0f;
 
     std::array<Mark, maxMarks> marks {};
     int markCount = 0, markHead = 0;   // anel: markHead = a próxima posição livre

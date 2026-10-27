@@ -3,6 +3,7 @@
 #include "Theme.h"
 #include "../app/AppController.h"
 #include "../ideas/Theory.h"
+#include "../model/NoteCurves.h"
 #include "../model/NoteTools.h"
 
 #include <limits>
@@ -20,6 +21,21 @@ namespace
         return juce::var (o);
     }
 
+    juce::var curveVar (const std::vector<CurvePoint>& pts)
+    {
+        juce::Array<juce::var> list;
+
+        for (auto& p : pts)
+        {
+            auto o = new juce::DynamicObject();
+            o->setProperty ("t", p.t);
+            o->setProperty ("v", (double) p.v);
+            list.add (juce::var (o));
+        }
+
+        return list;
+    }
+
     juce::var noteVar (const Note& n, bool withId)
     {
         auto o = new juce::DynamicObject();
@@ -32,6 +48,10 @@ namespace
 
         if (n.muted)   // copiar, colar e duplicar levam o mudo junto
             o->setProperty ("muted", true);
+
+        // e as curvas de pitch bend e mod wheel (26/10)
+        if (! n.pitch.empty()) o->setProperty ("pitch", curveVar (n.pitch));
+        if (! n.mod.empty())   o->setProperty ("mod", curveVar (n.mod));
 
         return juce::var (o);
     }
@@ -130,6 +150,8 @@ void PianoRollGrid::refresh (const Project& p, const juce::String& newChannel)
     stepsPerBar = stepsPerBeat * juce::jmax (1, p.timeSigNum);
     notifyGridChange();   // a fórmula de compasso muda o nome da grade automática
     glideTicks = ch != nullptr ? ch->glideMs / 1000.0 * p.bpm / 60.0 * ticksPerBeat : 0.0;
+    bendRange = ch != nullptr ? curves::bendRangeFor (*ch) : 2.0f;
+    channelBends = ch != nullptr && (ch->isSynth() || ch->isPlugin());
 
     notes.clear();
     stepNotes.clear();
@@ -158,7 +180,7 @@ void PianoRollGrid::refresh (const Project& p, const juce::String& newChannel)
                     n.id = -(int) stepNotes.size() - 1;
                     n.start = (int) i * ticksPerStep + k * (ticksPerStep / roll);
                     n.length = ticksPerStep / roll;
-                    n.key = ch->rootKey;
+                    n.key = juce::jlimit (0, 127, ch->rootKey + s.pitch);
                     n.velocity = s.velocity;
                     stepNotes.push_back (n);
                 }
@@ -226,6 +248,13 @@ juce::Rectangle<int> PianoRollGrid::gridArea() const
 juce::Rectangle<int> PianoRollGrid::keyboardArea() const   { return { 0, rulerHeight, keyboardWidth, gridArea().getHeight() }; }
 juce::Rectangle<int> PianoRollGrid::rulerArea() const      { return { keyboardWidth, 0, gridArea().getWidth(), rulerHeight }; }
 juce::Rectangle<int> PianoRollGrid::velocityArea() const   { return { keyboardWidth, gridArea().getBottom(), gridArea().getWidth(), velocityHeight }; }
+juce::Rectangle<int> PianoRollGrid::laneLabelArea() const  { return { 0, gridArea().getBottom(), keyboardWidth, velocityHeight }; }
+
+void PianoRollGrid::setLaneMode (LaneMode m)
+{
+    laneMode = m;
+    repaint (velocityArea().withX (0).withWidth (getWidth()));
+}
 
 float PianoRollGrid::tickToX (double tick) const   { return (float) (keyboardWidth + (tick - scrollTicks) * pxPerTick); }
 double PianoRollGrid::xToTick (float x) const      { return scrollTicks + (x - (float) keyboardWidth) / pxPerTick; }
@@ -945,12 +974,43 @@ void PianoRollGrid::paintVelocity (juce::Graphics& g)
     g.setColour (colour::line);
     g.fillRect (0, v.getY(), getWidth(), 1);
 
-    g.setColour (colour::textDim);
-    g.setFont (font (13.0f));
-    g.drawText ("Força"_t, juce::Rectangle<int> (8, v.getY() + 6, keyboardWidth - 12, 18), juce::Justification::centredLeft);
+    // as abas da raia (26/10): Força, Pitch e Mod, uma embaixo da outra; no Pitch, o alcance embaixo delas
+    {
+        const juce::String names[] = { "Força"_t, "Pitch", "Mod" };
+
+        for (int i = 0; i < 3; ++i)
+        {
+            const bool on = (int) laneMode == i;
+            const juce::Rectangle<int> tab (8, v.getY() + 6 + i * 20, keyboardWidth - 12, 18);
+
+            if (on)
+            {
+                g.setColour (colour::signal);
+                g.fillRect (tab.getX() - 6, tab.getY() + 3, 2, tab.getHeight() - 6);
+            }
+
+            g.setColour (on ? colour::text : colour::textFaint);
+            g.setFont (font (13.0f, on ? Weight::semibold : Weight::regular));
+            g.drawText (names[i], tab, juce::Justification::centredLeft);
+        }
+
+        if (laneMode == LaneMode::pitch)
+        {
+            g.setColour (colour::textDim);
+            g.setFont (font (12.0f));
+            g.drawText ("±"_t + juce::String (juce::roundToInt (bendRange)) + " st",
+                        juce::Rectangle<int> (8, v.getY() + 70, keyboardWidth - 12, 18), juce::Justification::centredLeft);
+        }
+    }
 
     juce::Graphics::ScopedSaveState state (g);
     g.reduceClipRegion (v);
+
+    if (laneMode != LaneMode::velocity)
+    {
+        paintCurves (g, v);
+        return;
+    }
 
     const float usable = (float) v.getHeight() - 16.0f;
 
@@ -971,6 +1031,234 @@ void PianoRollGrid::paintVelocity (juce::Graphics& g)
     for (auto& n : stepNotes) stem (n, colour::signal.withAlpha (0.7f));
     for (auto& n : notes) if (selected.count (n.id) == 0) stem (n, colour::signal);
     for (auto& n : notes) if (selected.count (n.id) != 0) stem (n, colour::text);
+}
+
+//==============================================================================
+// A raia Pitch e Mod (26/10): a curva de cada nota, do começo ao fim dela. No Pitch, o meio da raia é o tom da nota
+// e as bordas são o alcance do instrumento; no Mod, embaixo é 0 e em cima é a roda toda.
+float PianoRollGrid::laneY (float value) const
+{
+    const auto v = velocityArea().toFloat().reduced (0.0f, 8.0f);
+
+    if (laneMode == LaneMode::pitch)
+        return v.getCentreY() - juce::jlimit (-1.0f, 1.0f, value / juce::jmax (1.0f, bendRange)) * v.getHeight() * 0.5f;
+
+    return v.getBottom() - juce::jlimit (0.0f, 1.0f, value) * v.getHeight();
+}
+
+float PianoRollGrid::laneValue (float y, bool free) const
+{
+    const auto v = velocityArea().toFloat().reduced (0.0f, 8.0f);
+
+    if (laneMode == LaneMode::pitch)
+    {
+        const float range = juce::jmax (1.0f, bendRange);
+        const float st = juce::jlimit (-range, range, (v.getCentreY() - y) / (v.getHeight() * 0.5f) * range);
+        return free ? st : std::round (st);   // em semitons inteiros; com Alt, livre
+    }
+
+    return juce::jlimit (0.0f, 1.0f, (v.getBottom() - y) / v.getHeight());
+}
+
+void PianoRollGrid::paintCurves (juce::Graphics& g, juce::Rectangle<int> lane)
+{
+    using namespace theme;
+    const bool pitch = laneMode == LaneMode::pitch;
+    const auto kind = pitch ? curves::Kind::pitch : curves::Kind::mod;
+    const auto v = lane.toFloat();
+
+    // as linhas de referência: o tom da nota (0) e meio alcance para cada lado; no Mod, metade da roda
+    g.setColour (colour::line);
+
+    if (pitch)
+    {
+        g.fillRect (v.getX(), laneY (bendRange * 0.5f), v.getWidth(), 1.0f);
+        g.fillRect (v.getX(), laneY (-bendRange * 0.5f), v.getWidth(), 1.0f);
+        g.setColour (colour::textFaint.withAlpha (0.5f));
+        g.fillRect (v.getX(), laneY (0.0f), v.getWidth(), 1.0f);
+    }
+    else
+    {
+        g.fillRect (v.getX(), laneY (0.5f), v.getWidth(), 1.0f);
+    }
+
+    auto drawNote = [&] (const Note& n, juce::Colour c)
+    {
+        const float x0 = tickToX (n.start), x1 = tickToX (n.end());
+
+        if (x1 < v.getX() || x0 > v.getRight())
+            return;
+
+        const auto& pts = curves::of (n, kind);
+
+        // a faixa da nota, fraquinha: mostra onde dá para desenhar
+        g.setColour (c.withAlpha (0.08f));
+        g.fillRect (juce::Rectangle<float> (x0, v.getY() + 2.0f, juce::jmax (1.0f, x1 - x0 - 1.0f), v.getHeight() - 4.0f));   // 1 px entre notas coladas
+
+        if (pts.empty())
+        {
+            g.setColour (c.withAlpha (0.35f));
+            g.fillRect (x0, laneY (0.0f) - 0.5f, juce::jmax (1.0f, x1 - x0), 1.0f);
+            return;
+        }
+
+        // a curva, um ponto a cada 2 px, só dentro da nota
+        juce::Path path;
+        const float from = juce::jmax (x0, v.getX() - 2.0f), to = juce::jmin (x1, v.getRight() + 2.0f);
+
+        // (o Path::isEmpty continua true numa linha reta sem altura: o primeiro ponto vai por esta conta)
+        for (float x = from;; x = juce::jmin (to, x + 2.0f))
+        {
+            const float y = laneY (curves::valueAt (pts, xToTick (x) - n.start));
+
+            if (x == from)
+                path.startNewSubPath (x, y);
+            else
+                path.lineTo (x, y);
+
+            if (x >= to)
+                break;
+        }
+
+        g.setColour (c);
+        g.strokePath (path, juce::PathStrokeType (1.6f));
+
+        for (auto& p : pts)
+            if (p.t <= n.length)
+                g.fillEllipse (tickToX (n.start + p.t) - 3.0f, laneY (p.v) - 3.0f, 6.0f, 6.0f);
+    };
+
+    for (auto& n : notes) if (selected.count (n.id) == 0) drawNote (n, colour::signal);
+    for (auto& n : notes) if (selected.count (n.id) != 0) drawNote (n, colour::text);
+
+    // o sampler ainda não dobra o tom nem lê o CC1: a curva fica guardada e sai no MIDI
+    if (! channelBends && ! notes.empty())
+    {
+        g.setColour (colour::textFaint);
+        g.setFont (font (12.0f));
+        g.drawText (pitch ? "Este instrumento ainda não toca o pitch bend; a curva sai no MIDI exportado."_t
+                          : "Este instrumento ainda não usa o mod wheel; a curva sai no MIDI exportado."_t,
+                    lane.reduced (8, 4), juce::Justification::topRight);
+    }
+}
+
+void PianoRollGrid::clickLaneLabel (juce::Point<float> pos)
+{
+    const auto label = laneLabelArea();
+    const int row = (int) std::floor ((pos.y - (float) label.getY() - 6.0f) / 20.0f);
+
+    if (row >= 0 && row < 3)
+    {
+        setLaneMode ((LaneMode) row);
+        return;
+    }
+
+    // o alcance, no Pitch: 2, 7, 12 e 24 semitons, em volta
+    if (laneMode == LaneMode::pitch && row == 3)
+    {
+        const int steps[] = { 2, 7, 12, 24 };
+        int next = steps[0];
+
+        for (int s : steps)
+            if (s > juce::roundToInt (bendRange))
+            {
+                next = s;
+                break;
+            }
+
+        const auto result = app.run ("channel.setBendRange", args ({ { "channel", channel }, { "semitones", next } }));
+
+        if (onStatus)
+            onStatus (result.ok ? "Pitch bend: o instrumento dobra até "_t + juce::String (next) + " semitons."_t : result.error, ! result.ok);
+    }
+}
+
+void PianoRollGrid::applyCurve (float fromX, float toX, float y, bool erase, bool free)
+{
+    const auto kind = laneMode == LaneMode::pitch ? curves::Kind::pitch : curves::Kind::mod;
+    const double lo = xToTick (juce::jmin (fromX, toX)), hi = xToTick (juce::jmax (fromX, toX));
+    const double slack = erase ? 5.0 / pxPerTick : 0.0;   // apagar pega 5 px em volta
+    const float value = laneValue (y, free);
+    const int at = juce::roundToInt (xToTick (toX) / (free ? 1.0 : curves::stepTicks)) * (free ? 1 : curves::stepTicks);
+    std::vector<std::pair<int, std::vector<CurvePoint>>> changed;   // os comandos rodam depois: eles refazem `notes`
+
+    for (auto& n : notes)
+    {
+        if (! selected.empty() && selected.count (n.id) == 0)
+            continue;   // com seleção, só as selecionadas
+
+        if (n.end() <= lo - slack || n.start > hi + slack)
+            continue;
+
+        auto pts = curves::of (n, kind);
+        const double a = lo - n.start - slack, b = hi - n.start + slack;
+
+        if (erase)
+        {
+            std::erase_if (pts, [a, b] (const CurvePoint& p) { return p.t >= a && p.t <= b; });
+
+            // sem o ponto do começo, o primeiro valeria desde o começo e mudaria a nota inteira: ela volta a sair do tom
+            if (! pts.empty() && pts.front().t > 0)
+                pts.insert (pts.begin(), { 0, 0.0f });
+        }
+        else
+        {
+            const int t = juce::jlimit (0, n.length, at - n.start);
+
+            // Desenhar numa nota sem curva sai do tom dela (ou da roda em 0) e segura até onde o arrasto começou:
+            // clicar no fim da nota e puxar faz o bend só no fim, não uma rampa desde o começo.
+            const bool fresh = pts.empty();
+
+            // à mão livre: o que estava entre o ponto de antes e este sai
+            std::erase_if (pts, [a, b, t] (const CurvePoint& p) { return (p.t > a && p.t < b) || p.t == t; });
+
+            if (fresh && t > 0)
+            {
+                pts.push_back ({ 0, 0.0f });
+                const int down = juce::jlimit (0, n.length, juce::roundToInt (xToTick (dragStart.x)) - n.start);
+
+                if (down > 0 && down < t)
+                    pts.push_back ({ down, 0.0f });
+            }
+
+            pts.push_back ({ t, value });
+            curves::tidy (pts, kind);
+
+            if (pts.size() > 200)   // um arrasto longo não passa do teto de pontos
+                pts = curves::simplify (pts, kind == curves::Kind::pitch ? 0.02f : 0.005f);
+        }
+
+        curves::tidy (pts, kind);
+
+        if (pts != curves::of (n, kind))
+            changed.push_back ({ n.id, std::move (pts) });
+    }
+
+    for (auto& [id, pts] : changed)
+    {
+        const auto result = app.run ("pianoroll.setNoteCurve", args ({ { "channel", channel }, { "id", id },
+                                                                       { "curve", kind == curves::Kind::pitch ? "pitch" : "mod" },
+                                                                       { "points", curveVar (pts) } }));
+
+        if (! result.ok && onStatus)
+            onStatus (result.error, true);
+    }
+}
+
+void PianoRollGrid::clearCurveAt (float x)
+{
+    const auto kind = laneMode == LaneMode::pitch ? curves::Kind::pitch : curves::Kind::mod;
+    const double tick = xToTick (x);
+    std::vector<int> ids;
+
+    for (auto& n : notes)
+        if ((selected.empty() || selected.count (n.id) != 0) && n.start <= tick && n.end() > tick && ! curves::of (n, kind).empty())
+            ids.push_back (n.id);
+
+    for (int id : ids)
+        app.run ("pianoroll.setNoteCurve", args ({ { "channel", channel }, { "id", id },
+                                                   { "curve", kind == curves::Kind::pitch ? "pitch" : "mod" },
+                                                   { "points", juce::Array<juce::var>() } }));
 }
 
 //==============================================================================
@@ -1472,6 +1760,8 @@ void PianoRollGrid::sliceNoteAt (juce::Point<float> pos, bool free)
     right.start = at;
     right.length = n.end() - at;
     right.slide = false;
+    right.pitch = curves::from (n.pitch, at - n.start);   // o pedaço da direita segue a curva de onde foi cortado (26/10)
+    right.mod = curves::from (n.mod, at - n.start);
 
     updateNotes ({ left });
     const auto ids = addNoteList ({ right });
@@ -1520,7 +1810,11 @@ void PianoRollGrid::mouseMove (const juce::MouseEvent& e)
     }
     else if (velocityArea().toFloat().contains (e.position))
     {
-        newCursor = juce::MouseCursor::UpDownResizeCursor;
+        newCursor = laneMode == LaneMode::velocity ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::CrosshairCursor;
+    }
+    else if (laneLabelArea().toFloat().contains (e.position))
+    {
+        newCursor = juce::MouseCursor::PointingHandCursor;
     }
 
     setMouseCursor (newCursor);
@@ -1553,6 +1847,30 @@ void PianoRollGrid::mouseDown (const juce::MouseEvent& e)
     {
         drag = Drag::keys;
         preview (yToKey (pos.y), 100, true);
+        return;
+    }
+
+    if (laneLabelArea().toFloat().contains (pos))
+    {
+        clickLaneLabel (pos);   // as abas Força, Pitch e Mod e o alcance do pitch bend (26/10)
+        return;
+    }
+
+    if (velocityArea().toFloat().contains (pos) && laneMode != LaneMode::velocity)
+    {
+        // a raia Pitch ou Mod (26/10): desenhar com o botão esquerdo, apagar pontos com o direito; duplo clique tira a
+        // curva da nota
+        beginEdit (laneMode == LaneMode::pitch ? "Pitch bend"_t : "Mod wheel"_t);
+        convertSteps();
+
+        if (e.getNumberOfClicks() >= 2 && ! e.mods.isPopupMenu())
+        {
+            clearCurveAt (pos.x);
+            return;
+        }
+
+        drag = e.mods.isPopupMenu() ? Drag::curveErase : Drag::curve;
+        applyCurve (pos.x, pos.x, pos.y, drag == Drag::curveErase, e.mods.isAltDown());
         return;
     }
 
@@ -1742,6 +2060,11 @@ void PianoRollGrid::mouseDrag (const juce::MouseEvent& e)
         {
             o.start = stretchFrom + juce::roundToInt ((o.start - stretchFrom) * k);
             o.length = juce::jmax (1, juce::roundToInt (o.length * k));
+
+            for (auto* pts : { &o.pitch, &o.mod })   // a curva estica junto (26/10): o dive do fim continua no fim
+                for (auto& p : *pts)
+                    p.t = juce::roundToInt (p.t * k);
+
             stretched.push_back (o);
         }
 
@@ -1772,6 +2095,8 @@ void PianoRollGrid::mouseDrag (const juce::MouseEvent& e)
         }
 
         case Drag::velocity:   applyVelocity (lastDragPos.x, pos.x, pos.y); break;
+        case Drag::curve:      applyCurve (lastDragPos.x, pos.x, pos.y, false, e.mods.isAltDown()); break;
+        case Drag::curveErase: applyCurve (lastDragPos.x, pos.x, pos.y, true, false); break;
         case Drag::erase:      eraseAt (pos); break;
         case Drag::paint:      paintAt (pos); break;
 
@@ -2005,6 +2330,18 @@ juce::String PianoRollGrid::getTooltip()
 
     if (keyboardArea().toFloat().contains (hoverPos))
         return "Clique para ouvir " + noteNamePt (yToKey (hoverPos.y)) + " (" + Project::keyName (yToKey (hoverPos.y)) + ")";
+
+    if (laneLabelArea().toFloat().contains (hoverPos))
+        return laneMode == LaneMode::pitch
+                   ? "Força, Pitch (pitch bend) ou Mod (mod wheel): o que a raia desenha. Clique no alcance para dobrar mais (2, 7, 12 ou 24 semitons)"_t
+                   : "Força, Pitch (pitch bend) ou Mod (mod wheel): o que a raia desenha"_t;
+
+    if (velocityArea().toFloat().contains (hoverPos) && laneMode == LaneMode::pitch)
+        return "Desenhe o pitch bend da nota (em semitons; com Alt, livre). Botão direito apaga pontos, duplo clique tira a curva. "
+               "Com seleção, só nas selecionadas"_t;
+
+    if (velocityArea().toFloat().contains (hoverPos) && laneMode == LaneMode::mod)
+        return "Desenhe o mod wheel (CC1) da nota. Botão direito apaga pontos, duplo clique tira a curva. Com seleção, só nas selecionadas"_t;
 
     if (velocityArea().toFloat().contains (hoverPos))
         return "Arraste para mudar a força das notas (com seleção, só das selecionadas)"_t;

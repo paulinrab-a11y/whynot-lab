@@ -1,6 +1,7 @@
 // Comandos da gravação (entrega 3.5): armar, REC, punch, latência, notas com tempo e o take.
 
 #include "CommandRegistry.h"
+#include "../record/ReversedAudio.h"
 #include "../engine/SampleAnalysis.h"
 #include "../record/BeatTempo.h"
 #include "../record/RecordEngine.h"
@@ -107,42 +108,6 @@ namespace
         }
 
         return peak;
-    }
-
-    /** Escreve o arquivo de trás para frente, em WAV 32 bits float (igual à entrada, amostra por amostra). */
-    juce::Result writeReversed (const juce::File& source, const juce::File& target, double& seconds)
-    {
-        juce::AudioFormatManager formats;
-        formats.registerBasicFormats();
-        std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (source));
-
-        if (reader == nullptr || reader->lengthInSamples <= 0 || reader->lengthInSamples > (juce::int64) 48000 * 60 * 60)
-            return juce::Result::fail ("Não consegui ler o áudio do bloco: "_t + source.getFullPathName());
-
-        const int channels = (int) juce::jlimit (1u, 2u, reader->numChannels);
-        juce::AudioBuffer<float> all (channels, (int) reader->lengthInSamples);
-        reader->read (&all, 0, all.getNumSamples(), 0, true, channels > 1);
-        all.reverse (0, all.getNumSamples());
-        seconds = all.getNumSamples() / reader->sampleRate;
-
-        target.getParentDirectory().createDirectory();
-        target.deleteFile();
-        std::unique_ptr<juce::OutputStream> stream (target.createOutputStream().release());
-
-        if (stream == nullptr)
-            return juce::Result::fail ("Não consegui criar "_t + target.getFullPathName());
-
-        juce::WavAudioFormat wav;
-        auto writer = wav.createWriterFor (stream, juce::AudioFormatWriterOptions{}
-                                                     .withSampleRate (reader->sampleRate)
-                                                     .withNumChannels (channels)
-                                                     .withBitsPerSample (32)
-                                                     .withSampleFormat (juce::AudioFormatWriterOptions::SampleFormat::floatingPoint));
-
-        if (writer == nullptr || ! writer->writeFromAudioSampleBuffer (all, 0, all.getNumSamples()))
-            return juce::Result::fail ("Não consegui escrever "_t + target.getFullPathName());
-
-        return juce::Result::ok();
     }
 
     /** O andamento de um áudio (o beat em um gesto, fatia 6): pelo nome do arquivo ou do canal, senão pela
@@ -647,7 +612,9 @@ void registerRecordCommands (CommandRegistry& r)
     r.add ({ "audio.setFades", "Fades do bloco"_t,
              schema ({ { "item", "string", true, "Id do bloco de áudio"_t },
                        { "in", "number", false, "Fade de entrada, em segundos (0 = nenhum)"_t },
-                       { "out", "number", false, "Fade de saída, em segundos (0 = nenhum)"_t } }), true,
+                       { "out", "number", false, "Fade de saída, em segundos (0 = nenhum)"_t },
+                       { "inCurve", "string", false, "Curva do fade de entrada: linear (reta), convex (rápida), concave (lenta) ou s"_t },
+                       { "outCurve", "string", false, "Curva do fade de saída: linear, convex, concave ou s"_t } }), true,
              [] (CommandContext& c, const juce::var& a)
              {
                  auto& p = c.model.data();
@@ -665,45 +632,119 @@ void registerRecordCommands (CommandRegistry& r)
                  if (params::has (a, "out"))
                      item->fadeOut = roundToMicroseconds (juce::jlimit (0.0, juce::jmax (0.0, length - item->fadeIn), params::number (a, "out", 0.0)));
 
+                 // a curva de cada fade (voz na playlist, 27/10): arrastar a alça para cima deixa rápida, para baixo lenta
+                 for (auto [key, curve] : { std::pair<const char*, int*> { "inCurve", &item->fadeInCurve }, std::pair<const char*, int*> { "outCurve", &item->fadeOutCurve } })
+                 {
+                     if (! params::has (a, key))
+                         continue;
+
+                     const auto name = params::string (a, key);
+
+                     if (name != "linear" && fadeCurveFromName (name) == fadeCurveLinear)
+                         return CommandResult::fail ("Curva desconhecida: use linear, convex, concave ou s."_t);
+
+                     *curve = fadeCurveFromName (name);
+                 }
+
                  auto o = new juce::DynamicObject();
                  o->setProperty ("in", item->fadeIn);
                  o->setProperty ("out", item->fadeOut);
+                 o->setProperty ("inCurve", fadeCurveName (item->fadeInCurve));
+                 o->setProperty ("outCurve", fadeCurveName (item->fadeOutCurve));
+                 return CommandResult::success (juce::var (o));
+             } });
+
+    // O tom do bloco (voz na playlist, 27/10): transpor só este pedaço, sem mudar o tempo e sem canal novo.
+    r.add ({ "audio.setPitch", "Tom do bloco"_t,
+             schema ({ { "item", "string", true, "Id do bloco de áudio"_t },
+                       { "semitones", "number", true, "Semitons, de -24 a +24 (0 = o tom do arquivo; aceita centésimos)"_t } }), true,
+             [] (CommandContext& c, const juce::var& a)
+             {
+                 auto* item = c.model.data().findItem (params::string (a, "item"));
+
+                 if (item == nullptr || item->kind != "audio")
+                     return CommandResult::fail ("Bloco de áudio não encontrado."_t);
+
+                 const double st = params::number (a, "semitones", 0.0);
+
+                 if (! std::isfinite (st) || std::abs (st) > maxClipPitch)
+                     return CommandResult::fail ("O tom vai de -24 a +24 semitons."_t);
+
+                 item->pitch = (float) (std::round (st * 100.0) / 100.0);
+                 auto o = new juce::DynamicObject();
+                 o->setProperty ("semitones", item->pitch);
                  return CommandResult::success (juce::var (o));
              } });
 
     r.add ({ "audio.normalize", "Normalizar"_t,
-             schema ({ { "item", "string", true, "Id do bloco de áudio"_t },
+             schema ({ { "item", "string", false, "Id do bloco de áudio (ou items, para um grupo)"_t },
+                       { "items", "array", false, "Voz na playlist (27/10): ids de vários blocos de áudio, normalizados juntos"_t },
+                       { "together", "boolean", false, "Com items: true (padrão) = o mesmo ganho em todos, o pico mais alto do grupo no alvo "
+                                                          "(o equilíbrio entre eles fica); false = cada um no alvo"_t },
                        { "peakDb", "number", false, "Onde o pico do trecho fica, em dBFS (padrão -1)"_t } }), true,
              [] (CommandContext& c, const juce::var& a)
              {
                  auto& p = c.model.data();
-                 auto* item = p.findItem (params::string (a, "item"));
-                 const auto* channel = item != nullptr ? p.findChannel (item->ref) : nullptr;
+                 juce::StringArray ids;
 
-                 if (item == nullptr || item->kind != "audio" || channel == nullptr)
-                     return CommandResult::fail ("Bloco de áudio não encontrado."_t);
+                 if (auto* list = a["items"].getArray())
+                     for (auto& id : *list)
+                         ids.addIfNotAlreadyThere (id.toString());
+                 else if (params::has (a, "item"))
+                     ids.add (params::string (a, "item"));
 
-                 // o pico só do trecho que o bloco toca, no arquivo (o ganho é do bloco: o arquivo não muda)
-                 const float peak = peakOf (c.model.resolveSample (channel->samplePath), item->offsetSeconds,
-                                            item->fileSeconds (ticksToSeconds (item->length, p.bpm)));
+                 if (ids.isEmpty())
+                     return CommandResult::fail ("Diga o bloco (item) ou os blocos (items) de áudio."_t);
 
-                 if (peak < 0.0f)
-                     return CommandResult::fail ("Não consegui ler o áudio do bloco."_t);
+                 // o pico só do trecho que cada bloco toca, no arquivo (o ganho é do bloco: o arquivo não muda)
+                 std::vector<float> peaks;
 
-                 if (peak < 1.0e-6f)
-                     return CommandResult::fail ("O trecho do bloco está em silêncio."_t);
+                 for (auto& id : ids)
+                 {
+                     const auto* item = p.findItem (id);
+                     const auto* channel = item != nullptr ? p.findChannel (item->ref) : nullptr;
+
+                     if (item == nullptr || item->kind != "audio" || channel == nullptr)
+                         return CommandResult::fail ("Bloco de áudio não encontrado."_t);
+
+                     const float peak = peakOf (reversed::playedFile (c.model.resolveSample (channel->samplePath), item->reversed), item->offsetSeconds,
+                                                item->fileSeconds (ticksToSeconds (item->length, p.bpm)));
+
+                     if (peak < 0.0f)
+                         return CommandResult::fail ("Não consegui ler o áudio do bloco."_t);
+
+                     peaks.push_back (peak);
+                 }
+
+                 const bool together = params::boolean (a, "together", true);
+                 const float loudest = *std::max_element (peaks.begin(), peaks.end());
+
+                 if (loudest < 1.0e-6f)
+                     return CommandResult::fail (ids.size() > 1 ? "Os blocos estão em silêncio."_t : "O trecho do bloco está em silêncio."_t);
 
                  const double target = juce::jlimit (-30.0, 0.0, params::number (a, "peakDb", -1.0));
-                 item->gainDb = clampClipGain ((float) (target - 20.0 * std::log10 ((double) peak)));
+                 juce::Array<juce::var> gains;
+
+                 for (int k = 0; k < ids.size(); ++k)
+                 {
+                     auto* item = p.findItem (ids[k]);
+                     const float peak = together ? loudest : peaks[(size_t) k];
+
+                     if (peak >= 1.0e-6f)   // separado, um bloco em silêncio fica como está
+                         item->gainDb = clampClipGain ((float) (target - 20.0 * std::log10 ((double) peak)));
+
+                     gains.add (item->gainDb);
+                 }
 
                  auto o = new juce::DynamicObject();
-                 o->setProperty ("db", item->gainDb);
-                 o->setProperty ("peakDb", std::round (200.0 * std::log10 ((double) peak)) / 10.0);
+                 o->setProperty ("db", gains[0]);
+                 o->setProperty ("gains", gains);
+                 o->setProperty ("peakDb", std::round (200.0 * std::log10 ((double) loudest)) / 10.0);
                  return CommandResult::success (juce::var (o));
              } });
 
     r.add ({ "audio.reverse", "Inverter o áudio"_t,
-             schema ({ { "item", "string", true, "Id do bloco de áudio: ele passa a tocar o mesmo trecho, de trás para frente"_t } }), true,
+             schema ({ { "item", "string", true, "Id do bloco de áudio: ele passa a tocar o mesmo trecho, de trás para frente (de novo = volta)"_t } }), true,
              [] (CommandContext& c, const juce::var& a)
              {
                  auto& p = c.model.data();
@@ -713,50 +754,34 @@ void registerRecordCommands (CommandRegistry& r)
                  if (item == nullptr || item->kind != "audio" || channel == nullptr)
                      return CommandResult::fail ("Bloco de áudio não encontrado."_t);
 
-                 // O arquivo invertido fica ao lado do original ("Voz_take03_invertido.wav"); inverter de novo
-                 // volta para o original. Outro canal toca ele, pela mesma trilha do mixer.
+                 // Voz na playlist (27/10): o bloco vira, sem canal novo (antes cada inverter criava um canal). O
+                 // arquivo invertido fica ao lado do original ("Voz_take03_invertido.wav") e o bloco toca ele com
+                 // PlaylistItem::reversed; o offsetSeconds passa a contar nele. Inverter de novo volta.
                  const auto source = c.model.resolveSample (channel->samplePath);
-                 const auto name = source.getFileNameWithoutExtension();
-                 const bool back = name.endsWith ("_invertido") && source.getSiblingFile (name.dropLastCharacters (10) + ".wav").existsAsFile();
-                 const auto target = back ? source.getSiblingFile (name.dropLastCharacters (10) + ".wav")
-                                          : source.getSiblingFile (name + "_invertido.wav");
+                 const auto target = reversed::fileFor (source);
                  double seconds = fileSecondsOf (source);
 
-                 if (! back && ! target.existsAsFile())
-                     if (const auto written = writeReversed (source, target, seconds); written.failed())
+                 if (! target.existsAsFile())
+                     if (const auto written = reversed::write (source, target, seconds); written.failed())
                          return CommandResult::fail (written.getErrorMessage());
 
                  if (seconds <= 0.0)
                      return CommandResult::fail ("Não consegui ler o áudio do bloco."_t);
 
-                 const auto targetPath = target.getFullPathName().replaceCharacter ('\\', '/');
-                 juce::String channelId;
-
-                 for (auto& ch : p.channels)
-                     if (ch.isAudio() && ch.output == channel->output && c.model.resolveSample (ch.samplePath) == target)
-                         channelId = ch.id;
-
-                 if (channelId.isEmpty())
-                 {
-                     Channel reversed = *channel;
-                     reversed.id = makeId ("ch");
-                     reversed.name = back ? channel->name.upToLastOccurrenceOf (" (invertido)", false, false) : channel->name + " (invertido)";
-                     reversed.samplePath = targetPath;
-                     reversed.originalPath = {};
-                     channelId = reversed.id;
-                     p.channels.push_back (reversed);
-                     item = p.findItem (params::string (a, "item"));   // o vetor de canais cresceu; o bloco continua no mesmo lugar
-                 }
-
-                 // o trecho espelha: o que começava em offset agora começa em (duração - fim do trecho)
+                 // o trecho espelha: o que começava em offset agora começa em (duração - fim do trecho). No MP3, o
+                 // motor pula o atraso do codificador no começo do original; no invertido ele fica no fim, então
+                 // sai da conta nos dois sentidos
+                 const double priming = mp3EncoderDelaySeconds (source);
                  const double segment = item->fileSeconds (ticksToSeconds (item->length, p.bpm));
-                 item->offsetSeconds = roundToMicroseconds (juce::jmax (0.0, seconds - (item->offsetSeconds + segment)));
-                 item->ref = channelId;
+                 item->offsetSeconds = roundToMicroseconds (juce::jmax (0.0, seconds - priming - (item->offsetSeconds + segment)));
+                 item->reversed = ! item->reversed;
                  std::swap (item->fadeIn, item->fadeOut);
+                 std::swap (item->fadeInCurve, item->fadeOutCurve);
 
                  auto o = new juce::DynamicObject();
-                 o->setProperty ("channel", channelId);
-                 o->setProperty ("path", targetPath);
+                 o->setProperty ("reversed", item->reversed);
+                 o->setProperty ("channel", item->ref);
+                 o->setProperty ("path", target.getFullPathName().replaceCharacter ('\\', '/'));
                  return CommandResult::success (juce::var (o));
              } });
 
@@ -1088,7 +1113,7 @@ void registerRecordCommands (CommandRegistry& r)
 
                  // os ataques no trecho que o bloco toca, em segundos do arquivo, levados para ticks do bloco
                  const double blockSeconds = ticksToSeconds (item->length, p.bpm);
-                 const auto onsets = onsetsIn (c.model.resolveSample (channel->samplePath), item->offsetSeconds,
+                 const auto onsets = onsetsIn (reversed::playedFile (c.model.resolveSample (channel->samplePath), item->reversed), item->offsetSeconds,
                                                item->offsetSeconds + item->fileSeconds (blockSeconds), audio::Sensitivity::medium);
                  const double third = ticksPerStep / 3.0;   // 100% de swing = o contratempo atrasado um terço de passo
                  double sum = 0.0, onSum = 0.0;

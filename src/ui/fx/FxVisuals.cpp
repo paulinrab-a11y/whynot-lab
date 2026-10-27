@@ -1,5 +1,6 @@
 #include "FxVisuals.h"
 #include "FxWidgets.h"
+#include "../NoteNames.h"
 #include "../Theme.h"
 #include "../../dsp/Color.h"
 #include "../../dsp/Console.h"
@@ -702,88 +703,267 @@ namespace
 
     //==========================================================================
     /** De-esser, transiente, estéreo, filtro, delay e reverb: um medidor ou um desenho simples. */
-    /** Afinação: a nota que está saindo, onde a voz está em relação a ela e quanto a correção puxa. */
+    /** Afinação (27/10): a nota que sai e quanto foi corrigido, o tom da voz e o da saída nos últimos 3 s sobre as
+        linhas das notas, e as 12 notas para ligar e desligar (clicar numa nota passa a escala para Personalizada). */
     class TuneVisual : public FxVisual
     {
     public:
-        explicit TuneVisual (WhynotFxPlugin& p) : FxVisual (p) {}
+        explicit TuneVisual (WhynotFxPlugin& p) : FxVisual (p)
+        {
+            history.fill ({});
+        }
 
         void tick() override
         {
             const auto& proc = plugin.getHost().processor();
-            const float detected = proc.meter (dsp::TuneProcessor::detectedNote);
-            const float target = proc.meter (dsp::TuneProcessor::targetNote);
-            const float corr = proc.meter (dsp::TuneProcessor::correctionCents);
-            const bool on = proc.meter (dsp::TuneProcessor::voicedMeter) > 0.5f;
+            using T = dsp::TuneProcessor;
+            Point now;
+            now.voiced = proc.meter (T::voicedMeter) > 0.5f;
+            now.voice = proc.meter (T::detectedNote);
+            now.target = proc.meter (T::targetNote);
+            now.out = now.voice + proc.meter (T::correctionCents) * 0.01f;
+            guiding = proc.meter (T::guideMeter) > 0.5f;
+            harmonyNote = proc.meter (T::harmonyNote);
+            history[(size_t) head] = now;
+            head = (head + 1) % (int) history.size();
 
-            if (on != voiced || std::abs (detected - detectedNote) > 0.01f || std::abs (target - targetNote) > 0.01f
-                || std::abs (corr - correction) > 0.5f)
-            {
-                voiced = on;
-                detectedNote = detected;
-                targetNote = target;
-                correction = corr;
+            if (now.voiced && now.target >= 0.0f)
+                centre += (now.target - centre) * (std::abs (now.target - centre) > 3.0f ? 1.0f : 0.15f);
+
+            // Só redesenha enquanto há voz no gráfico (3 s depois da última, ele fica parado).
+            framesWithVoice = now.voiced ? (int) history.size() : std::max (0, framesWithVoice - 1);
+
+            if (framesWithVoice > 0 || now.voiced != wasVoiced)
                 repaint();
+
+            wasVoiced = now.voiced;
+        }
+
+        void mouseMove (const juce::MouseEvent& e) override
+        {
+            const int k = keyAt (e.position);
+
+            if (k != hoverKey)
+            {
+                hoverKey = k;
+                repaint (keysArea().toNearestInt());
             }
+
+            setMouseCursor (k >= 0 ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
+        }
+
+        void mouseExit (const juce::MouseEvent&) override
+        {
+            hoverKey = -1;
+            repaint (keysArea().toNearestInt());
+        }
+
+        void mouseUp (const juce::MouseEvent& e) override
+        {
+            const int k = keyAt (e.position);
+
+            if (k < 0 || e.mods.isPopupMenu() || ! onParam || (int) values.size() < dsp::TuneProcessor::count)
+                return;
+
+            // A escala atual vira a Personalizada, com a nota clicada trocada; o tom do projeto deixa de mandar.
+            using T = dsp::TuneProcessor;
+            const int mask = T::activeNotes (values.data()) ^ (1 << k);
+
+            if (onGestureStart) onGestureStart();
+
+            for (int n = 0; n < 12; ++n)
+                onParam (T::noteC + n, (mask >> n) & 1 ? 1.0f : 0.0f);
+
+            onParam (T::scale, (float) T::customScale);
+            onParam (T::follow, 0.0f);
+
+            if (onGestureEnd) onGestureEnd();
         }
 
         void paint (juce::Graphics& g) override
         {
-            static const char* names[] = { "Dó", "Dó#", "Ré", "Ré#", "Mi", "Fá", "Fá#", "Sol", "Sol#", "Lá", "Lá#", "Si" };
             auto r = getLocalBounds().toFloat().reduced (16.0f, 8.0f);
+            const auto& latest = history[(size_t) ((head - 1 + (int) history.size()) % (int) history.size())];
+            const bool on = latest.voiced;
 
-            // Nota de saída, grande, à esquerda
-            auto noteArea = r.removeFromLeft (120.0f);
+            // Coluna da esquerda: a nota que sai (grande), a voz e a correção
+            auto left = r.removeFromLeft (150.0f);
             g.setFont (captionFont());
             g.setColour (colour::textFaint);
-            g.drawText ("NOTA", noteArea.removeFromTop (16.0f), juce::Justification::centredLeft);
+            g.drawText (guiding ? "NOTA (DA GUIA)"_t : juce::String ("NOTA"), left.removeFromTop (16.0f), juce::Justification::centredLeft);
 
-            const int note = (int) std::lround (targetNote);
-            const auto noteText = voiced && note >= 0
-                                      ? juce::String::fromUTF8 (names[note % 12]) + " " + juce::String (note / 12 - 1)
-                                      : juce::String ("-");
+            const int target = (int) std::lround (latest.target);
             g.setFont (displayFont (30.0f));
-            g.setColour (voiced ? colour::text : colour::textFaint);
-            g.drawText (noteText, noteArea.removeFromTop (40.0f), juce::Justification::centredLeft);
-
-            // Régua de -50 a +50 cents: onde a voz está (bolinha) e a correção agindo (trecho laranja)
-            r.removeFromLeft (16.0f);
-            g.setFont (captionFont());
-            g.setColour (colour::textFaint);
-            g.drawText (voiced ? "DESVIO DA VOZ E CORREÇÃO: "_t + juce::String (juce::roundToInt (correction)) + " CENTS"
-                               : "SEM VOZ AGORA"_t,
-                        r.removeFromTop (16.0f), juce::Justification::centredLeft);
-
-            const auto bar = r.withSizeKeepingCentre (r.getWidth(), 12.0f).withY (r.getY() + 14.0f);
-            g.setColour (colour::raised);
-            g.fillRoundedRectangle (bar, 6.0f);
-            const float cx = bar.getCentreX();
-            g.setColour (colour::line.brighter (0.4f));
-            g.fillRect (juce::Rectangle<float> (cx - 0.5f, bar.getY() - 4.0f, 1.0f, bar.getHeight() + 8.0f));
-
-            if (voiced && detectedNote >= 0.0f)
-            {
-                auto toX = [&bar] (float cents) { return bar.getX() + bar.getWidth() * (0.5f + juce::jlimit (-50.0f, 50.0f, cents) / 100.0f); };
-                const float off = (detectedNote - targetNote) * 100.0f;
-                const float xVoice = toX (off), xOut = toX (off + correction);
-
-                g.setColour (colour::signal);   // a correção agindo agora, como a redução de um compressor
-                g.fillRoundedRectangle (juce::Rectangle<float> (juce::jmin (xVoice, xOut), bar.getY(),
-                                                                std::abs (xOut - xVoice), bar.getHeight()), 6.0f);
-                g.setColour (colour::text);
-                g.fillEllipse (juce::Rectangle<float> (10.0f, 10.0f).withCentre ({ xVoice, bar.getCentreY() }));
-            }
+            g.setColour (on && target >= 0 ? colour::text : colour::textFaint);
+            g.drawText (on && target >= 0 ? noteNamePt (target) : juce::String ("-"), left.removeFromTop (38.0f),
+                        juce::Justification::centredLeft);
 
             g.setFont (font (type::small));
+            g.setColour (colour::textDim);
+            const float voiceOff = (latest.voice - (float) target) * 100.0f;
+            g.drawText (on ? "Voz: " + noteNamePt ((int) std::lround (latest.voice)) + " " + signedCents (latest.voice - std::round (latest.voice))
+                           : "Sem voz agora"_t,
+                        left.removeFromTop (18.0f), juce::Justification::centredLeft);
+
+            left.removeFromTop (8.0f);
+            g.setFont (captionFont());
             g.setColour (colour::textFaint);
-            auto legend = r.withY (bar.getBottom() + 6.0f).withHeight (16.0f);
-            g.drawText ("-50", legend, juce::Justification::centredLeft);
-            g.drawText ("+50", legend, juce::Justification::centredRight);
+            g.drawText ("CORRIGIDO"_t, left.removeFromTop (14.0f), juce::Justification::centredLeft);
+            g.setFont (numberFont (17.0f));
+            g.setColour (on && target >= 0 ? colour::text : colour::textFaint);
+            g.drawText (on && target >= 0 ? signedCents ((latest.out - latest.voice)) : juce::String ("-"), left.removeFromTop (22.0f),
+                        juce::Justification::centredLeft);
+
+            // A régua de -50 a +50 cents: onde a voz está (bolinha) e a correção agindo (trecho laranja)
+            const auto bar = left.removeFromTop (14.0f).withSizeKeepingCentre (left.getWidth() - 12.0f, 8.0f).withX (left.getX());
+            g.setColour (colour::raised);
+            g.fillRoundedRectangle (bar, 4.0f);
+            g.setColour (colour::line.brighter (0.4f));
+            g.fillRect (juce::Rectangle<float> (bar.getCentreX() - 0.5f, bar.getY() - 3.0f, 1.0f, bar.getHeight() + 6.0f));
+
+            if (on && target >= 0)
+            {
+                auto toX = [&bar] (float cents) { return bar.getX() + bar.getWidth() * (0.5f + juce::jlimit (-50.0f, 50.0f, cents) / 100.0f); };
+                const float xVoice = toX (voiceOff), xOut = toX ((latest.out - (float) target) * 100.0f);
+                g.setColour (colour::signal);
+                g.fillRoundedRectangle (juce::Rectangle<float> (juce::jmin (xVoice, xOut), bar.getY(), std::abs (xOut - xVoice), bar.getHeight()), 4.0f);
+                g.setColour (colour::text);
+                g.fillEllipse (juce::Rectangle<float> (8.0f, 8.0f).withCentre ({ xVoice, bar.getCentreY() }));
+            }
+
+            if (harmonyNote >= 0.0f && on)
+            {
+                left.removeFromTop (6.0f);
+                g.setFont (font (type::small));
+                g.setColour (colour::textDim);
+                g.drawText ("Harmonia: "_t + noteNamePt ((int) harmonyNote), left.removeFromTop (16.0f), juce::Justification::centredLeft);
+            }
+
+            // As 12 notas, embaixo do gráfico
+            r.removeFromLeft (16.0f);
+            drawKeys (g, (int) latest.target, on);
+
+            // Gráfico: as linhas das notas em volta da nota atual, a voz (cinza) e a saída (laranja)
+            auto graph = r.withTrimmedBottom (keysArea().getHeight() + 8.0f);
+            drawGraph (g, graph);
         }
 
     private:
-        float detectedNote = -1.0f, targetNote = -1.0f, correction = 0.0f;
-        bool voiced = false;
+        struct Point { float voice = -1.0f, target = -1.0f, out = -1.0f; bool voiced = false; };
+
+        static juce::String signedCents (float semitones)
+        {
+            const int c = juce::roundToInt (semitones * 100.0f);
+            return (c > 0 ? "+" : "") + juce::String (c) + " cents";
+        }
+
+        juce::Rectangle<float> keysArea() const
+        {
+            auto r = getLocalBounds().toFloat().reduced (16.0f, 8.0f);
+            r.removeFromLeft (166.0f);
+            return r.removeFromBottom (26.0f);
+        }
+
+        int keyAt (juce::Point<float> p) const
+        {
+            const auto area = keysArea();
+
+            if (! area.contains (p))
+                return -1;
+
+            return juce::jlimit (0, 11, (int) ((p.x - area.getX()) / (area.getWidth() / 12.0f)));
+        }
+
+        void drawKeys (juce::Graphics& g, int sounding, bool on) const
+        {
+            const auto area = keysArea();
+            const int mask = (int) values.size() >= dsp::TuneProcessor::count ? dsp::TuneProcessor::activeNotes (values.data()) : 0xFFF;
+            const float w = area.getWidth() / 12.0f;
+            g.setFont (font (type::small, Weight::medium));
+
+            for (int k = 0; k < 12; ++k)
+            {
+                const auto cell = juce::Rectangle<float> (area.getX() + w * (float) k, area.getY(), w, area.getHeight()).reduced (1.0f, 0.0f);
+                const bool active = ((mask >> k) & 1) != 0;
+                const bool now = on && sounding >= 0 && ((sounding % 12) + 12) % 12 == k;
+
+                g.setColour (now ? colour::signalTint : active ? (k == hoverKey ? colour::raisedHigh : colour::raised)
+                                                               : (k == hoverKey ? colour::raised : colour::background.withAlpha (0.55f)));
+                g.fillRoundedRectangle (cell, 4.0f);
+                g.setColour (now ? colour::signal : active ? colour::text : colour::textFaint);
+                g.drawText (noteNamePt (k, false), cell, juce::Justification::centred);
+            }
+        }
+
+        void drawGraph (juce::Graphics& g, juce::Rectangle<float> r) const
+        {
+            g.setColour (colour::background.withAlpha (0.55f));
+            g.fillRoundedRectangle (r, metric::radius);
+
+            const int mask = (int) values.size() >= dsp::TuneProcessor::count ? dsp::TuneProcessor::activeNotes (values.data()) : 0xFFF;
+            const float span = 4.0f;   // ±4 semitons em volta da nota atual
+            const float mid = std::round (centre);
+            auto yFor = [&] (float note) { return r.getCentreY() - (note - mid) / (2.0f * span) * r.getHeight(); };
+
+            g.setFont (font (type::small));
+
+            for (int n = (int) (mid - span); n <= (int) (mid + span); ++n)
+            {
+                const float y = yFor ((float) n);
+                const bool active = ((mask >> (((n % 12) + 12) % 12)) & 1) != 0;
+                if (y < r.getY() + 7.0f || y > r.getBottom() - 7.0f)
+                    continue;   // o nome não caberia inteiro
+
+                g.setColour (active ? colour::line.brighter (0.3f) : colour::line.withAlpha (0.5f));
+                g.drawHorizontalLine ((int) y, r.getX() + 40.0f, r.getRight() - 4.0f);
+                g.setColour (active ? colour::textDim : colour::textFaint.withAlpha (0.6f));
+                g.drawText (noteNamePt (n), juce::Rectangle<float> (r.getX() + 6.0f, y - 8.0f, 34.0f, 16.0f), juce::Justification::centredLeft);
+            }
+
+            const auto plot = r.withTrimmedLeft (44.0f).reduced (0.0f, 2.0f);
+            const int count = (int) history.size();
+
+            auto path = [&] (bool output)
+            {
+                juce::Path p;
+                bool started = false;
+
+                for (int i = 0; i < count; ++i)
+                {
+                    const auto& pt = history[(size_t) ((head + i) % count)];
+                    const float v = output ? pt.out : pt.voice;
+
+                    if (! pt.voiced || v < 0.0f || std::abs (v - mid) > span + 0.5f)
+                    {
+                        started = false;
+                        continue;
+                    }
+
+                    const float x = plot.getX() + plot.getWidth() * (float) i / (float) (count - 1);
+                    started ? p.lineTo (x, yFor (v)) : p.startNewSubPath (x, yFor (v));
+                    started = true;
+                }
+
+                return p;
+            };
+
+            g.saveState();
+            g.reduceClipRegion (r.toNearestInt());
+            g.setColour (colour::textDim);
+            g.strokePath (path (false), juce::PathStrokeType (1.4f));
+            g.setColour (colour::signal);
+            g.strokePath (path (true), juce::PathStrokeType (2.0f));
+            g.restoreState();
+
+            g.setFont (captionFont());
+            g.setColour (colour::textFaint);
+            g.drawText ("VOZ (CINZA) E SAÍDA (LARANJA), ÚLTIMOS 3 S"_t, r.reduced (8.0f, 4.0f), juce::Justification::topRight);
+        }
+
+        std::array<Point, 90> history;   // 3 s a 30 Hz
+        int head = 0, hoverKey = -1, framesWithVoice = 0;
+        float centre = 69.0f, harmonyNote = -1.0f;
+        bool guiding = false, wasVoiced = false;
     };
 
     class SimpleVisual : public FxVisual
@@ -1413,7 +1593,7 @@ namespace
 int FxVisual::heightFor (const juce::String& type)
 {
     if (type == "eq")                               return 230;
-    if (type == "tune")                             return 96;
+    if (type == "tune")                             return 176;
     if (type == "limiter" || type == "meter")       return 196;
     if (type == "comp" || type == "sat")            return 150;
     if (type == "filter" || type == "reverb" || type == "delay")   return 120;

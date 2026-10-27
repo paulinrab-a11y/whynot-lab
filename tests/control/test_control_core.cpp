@@ -801,7 +801,19 @@ static void testCommandPolicy()
 {
     std::printf ("Tabela de risco dos comandos\n");
 
-    CHECK (ruleCount() == 240, "240 comandos classificados: os 220 do main d27a974 (23/10), os 18 do bloco 4 e as 2 das raias sem teto (26/10) (%zu)", ruleCount());
+    CHECK (ruleCount() == 258, "258 comandos classificados: os 220 do main d27a974 (23/10), os 18 do bloco 4, as 2 das raias sem teto, as 2 do pitch bend, os 3 da "
+                               "automação completa (26/10), os 6 da voz na playlist e os 7 da afinação nota a nota (27/10) (%zu)", ruleCount());
+    CHECK (ruleFor ("audio.analyzeNotes").risk == Risk::free && ruleFor ("audio.setNoteTune").risk == Risk::free
+           && ruleFor ("audio.editNotes").risk == Risk::free && ruleFor ("audio.splitNote").risk == Risk::free
+           && ruleFor ("audio.mergeNotes").risk == Risk::free && ruleFor ("audio.tuneToScale").risk == Risk::free
+           && ruleFor ("audio.clearNoteTune").risk == Risk::free,
+           "afinação nota a nota: os 7 comandos mexem só no projeto, com desfazer");
+    CHECK (ruleFor ("playlist.cutAt").risk == Risk::free && ruleFor ("playlist.removeSpace").risk == Risk::free
+           && ruleFor ("playlist.insertSpace").risk == Risk::free && ruleFor ("audio.setPitch").risk == Risk::free
+           && ruleFor ("audio.findSilence").risk == Risk::free && ruleFor ("audio.removeSilence").risk == Risk::free,
+           "voz na playlist: cortar, apagar o trecho, abrir espaço, o tom e o silêncio são livres (só mexem no projeto, com desfazer)");
+    CHECK (ruleFor ("automation.recordPass").risk == Risk::free && ruleFor ("automation.setTension").risk == Risk::free
+           && ruleFor ("automation.setRecording").risk == Risk::free, "gravar uma passada, curvar e o modo de gravar automação: livres");
     CHECK (ruleFor ("record.captureMidi").risk == Risk::free && ruleFor ("record.voice").risk == Risk::blocked
            && ruleFor ("record.setMic").risk == Risk::blocked && ruleFor ("favorites.toggle").risk == Risk::confirm,
            "o Capture MIDI é livre; gravar voz e o microfone ficam com a pessoa; os favoritos confirmam");

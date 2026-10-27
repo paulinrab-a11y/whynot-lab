@@ -6,6 +6,8 @@
 // fica no esquema 4. O som sai do WhynotSampler, que toca cada fatia no tom original até a seguinte.
 
 #include "CommandRegistry.h"
+#include "../model/PlaylistEdit.h"
+#include "../record/ReversedAudio.h"
 #include "../engine/SampleAnalysis.h"
 
 namespace whynot
@@ -439,7 +441,7 @@ void registerSliceCommands (CommandRegistry& r)
                      const double clipSeconds = ticksToSeconds (item->length, p.bpm);
                      const double from = item->offsetSeconds, to = from + item->fileSeconds (clipSeconds);
 
-                     for (double at : onsetsIn (c.model.resolveSample (ch->samplePath), from, to, sensitivityOf (a)))
+                     for (double at : onsetsIn (reversed::playedFile (c.model.resolveSample (ch->samplePath), item->reversed), from, to, sensitivityOf (a)))
                          cuts.push_back (item->start + juce::roundToInt (secondsToTicks ((at - from) * item->stretch, p.bpm)));
                  }
                  else if (mode == "beat" || mode == "bar")
@@ -466,12 +468,8 @@ void registerSliceCommands (CommandRegistry& r)
                      if (cur == nullptr || at - previous < ticksPerStep / 2 || at >= cur->end() - ticksPerStep / 2)
                          continue;
 
-                     PlaylistItem right = *cur;
+                     auto right = playlistedit::splitAt (p, *cur, at);   // os fades ficam nas pontas de fora
                      right.id = makeId ("it");
-                     right.start = at;
-                     right.length = cur->end() - at;
-                     right.offsetSeconds = roundToMicroseconds (cur->offsetSeconds + cur->fileSeconds (ticksToSeconds (at - cur->start, p.bpm)));
-                     cur->length = at - cur->start;
                      p.playlistItems.push_back (right);   // cur pode mudar de endereço daqui em diante
                      currentId = right.id;
                      ids.add (right.id);

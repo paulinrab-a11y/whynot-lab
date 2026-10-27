@@ -29,6 +29,7 @@
 #include <random>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 using namespace whynot::dsp;
@@ -1159,7 +1160,9 @@ static void testTune()
         const double w = worstCents (out.left, 440.0, 0.4, 1.5, 0.1);
         CHECK (w < 8.0, "Lá + 40 cents vira Lá (pior janela: %.1f cents)", w);
         CHECK (out.left == out.right, "entrada igual nos dois lados sai igual nos dois lados");
-        CHECK (out.latency > 0 && out.latency < (int) (0.02 * rate), "latência fixa de %.1f ms", 1000.0 * out.latency / rate);
+        // PSOLA (27/10): 3,5 períodos de 60 Hz e uma folga, informados ao host para a compensação.
+        CHECK (out.latency == (int) std::ceil (3.5 * rate / 60.0) + 8, "latência fixa de %d amostras (%.1f ms)", out.latency,
+               1000.0 * out.latency / rate);
     }
 
     {
@@ -1258,7 +1261,9 @@ static void testTune()
         for (size_t i = (size_t) (1.6 * rate); i < in.size(); ++i)
             d = std::max (d, (double) std::abs (out.left[i] - in[i - (size_t) out.latency]));
 
-        CHECK (d < 1.0e-3, "mistura 50%%: sem correção, volta a alinhar com o seco (diferença %.1e)", d);
+        // PSOLA (27/10): os grãos voltam para cima das marcas, em fase com a entrada; sobra a ondulação das janelas.
+        const double below = 20.0 * std::log10 (peak (in) / std::max (d, 1.0e-12));
+        CHECK (below > 40.0, "mistura 50%%: sem correção, volta a alinhar com o seco (diferença %.1e, %.0f dB abaixo da voz)", d, below);
     }
 
     {
@@ -2124,6 +2129,134 @@ static void testTuneHumanize()
     CHECK (human > 25.0, "humanizar 100%%: na nota longa o vibrato passa (±%.1f cents)", human);
 }
 
+//==============================================================================
+// Afinação (27/10): escala personalizada nota a nota, Lá de referência e ajuste fino.
+
+static double steadyHz = 440.0;
+static double hzSteady (double)   { return steadyHz; }
+
+using TuneParams = std::vector<std::pair<int, float>>;
+
+/** O tom de saída da afinação (Hz, mediana de janelas de 100 ms entre 0,5 s e o fim) para uma voz parada em `hz`. */
+static double tunedHz (double hz, const TuneParams& params, double seconds = 1.2)
+{
+    steadyHz = hz;
+    const auto x = syntheticVoice (hzSteady, seconds);
+    TuneProcessor t;
+    t.prepare (rate, block);
+
+    for (auto [index, value] : params)
+        t.setParam (index, value);
+
+    t.snapToTargets();
+    auto l = x, r = x;
+
+    for (size_t pos = 0; pos < x.size(); pos += block)
+    {
+        AudioBlock b { l.data() + pos, r.data() + pos, (int) std::min<size_t> (block, x.size() - pos) };
+        t.process (b);
+    }
+
+    std::vector<double> got;
+
+    for (double t0 = 0.5; t0 + 0.1 <= seconds - 0.05; t0 += 0.1)
+        if (const double f = measurePitch (l, t0, t0 + 0.1); f > 0.0)
+            got.push_back (f);
+
+    if (got.empty())
+        return 0.0;
+
+    std::sort (got.begin(), got.end());
+    return got[got.size() / 2];
+}
+
+static double midiHz (double midi, double reference = 440.0)   { return reference * std::pow (2.0, (midi - 69.0) / 12.0); }
+
+static void testTuneScale()
+{
+    std::printf ("Afinação: escala nota a nota, Lá de referência e ajuste fino\n");
+    using P = TuneProcessor;
+
+    // As 12 notas, uma de cada vez: só ela ligada puxa a voz (+80 cents, que na cromática iria para a vizinha de cima)
+    // para ela; com só ela desligada, a voz (+20 cents) vai para a vizinha de cima (a 80 cents), não para ela.
+    {
+        double worstOn = 0.0, worstOff = 0.0;
+        int wrong = 0;
+
+        for (int n = 0; n < 12; ++n)
+        {
+            const int midi = 60 + n;
+            TuneParams only { { P::scale, (float) P::customScale }, { P::speed, 0.0f } }, without = only;
+
+            for (int k = 0; k < 12; ++k)
+            {
+                only.push_back ({ P::noteC + k, k == n ? 1.0f : 0.0f });
+                without.push_back ({ P::noteC + k, k == n ? 0.0f : 1.0f });
+            }
+
+            const double on = cents (tunedHz (midiHz (midi + 0.80), only), midiHz (midi));
+            const double off = cents (tunedHz (midiHz (midi + 0.20), without), midiHz (midi + 1));
+            worstOn = std::max (worstOn, std::abs (on));
+            worstOff = std::max (worstOff, std::abs (off));
+            wrong += std::abs (on) > 8.0 || std::abs (off) > 8.0 ? 1 : 0;
+        }
+
+        CHECK (wrong == 0, "12 notas ligadas e desligadas uma a uma: pior erro %.1f cents (só ela) e %.1f cents (sem ela)", worstOn, worstOff);
+    }
+
+    // Nenhuma nota ligada: não corrige.
+    {
+        TuneParams none { { P::scale, (float) P::customScale }, { P::speed, 0.0f } };
+
+        for (int k = 0; k < 12; ++k)
+            none.push_back ({ P::noteC + k, 0.0f });
+
+        const double in = hzSharpA (0.0), hz = tunedHz (in, none);
+        CHECK (std::abs (cents (hz, in)) < 3.0, "nenhuma nota ligada: a voz passa como está (%.1f cents do original)", cents (hz, in));
+    }
+
+    // Lá de referência: a grade inteira acompanha (430, 432, 443 e 450 Hz).
+    for (float ref : { 430.0f, 432.0f, 443.0f, 450.0f })
+    {
+        const double in = midiHz (69.0, ref) * std::pow (2.0, 25.0 / 1200.0);
+        const double hz = tunedHz (in, { { P::scale, 6.0f }, { P::speed, 0.0f }, { P::reference, ref } });
+        const double expected = midiHz (69.0, ref);
+        CHECK (std::abs (cents (hz, expected)) < 5.0, "Lá em %.0f Hz: a voz a +25 cents vai para %.1f Hz (esperado %.1f, erro %.1f cents)",
+               ref, hz, expected, cents (hz, expected));
+    }
+
+    {
+        // 440 Hz com o Lá em 432: a voz está 32 cents acima do Lá da grade e desce para ele.
+        const double hz = tunedHz (440.0, { { P::scale, 6.0f }, { P::speed, 0.0f }, { P::reference, 432.0f } });
+        CHECK (std::abs (cents (hz, 432.0)) < 5.0, "Lá em 432 Hz: uma voz em 440 Hz vai para %.1f Hz", hz);
+    }
+
+    // Ajuste fino: +30 cents e -45 cents deslocam a nota alvo.
+    for (float fineCents : { 30.0f, -45.0f })
+    {
+        const double expected = 440.0 * std::pow (2.0, fineCents / 1200.0);
+        const double hz = tunedHz (440.0, { { P::scale, 6.0f }, { P::speed, 0.0f }, { P::fine, fineCents } });
+        CHECK (std::abs (cents (hz, expected)) < 5.0, "ajuste fino %+.0f cents: Lá 440 sai em %.1f Hz (esperado %.1f, erro %.1f cents)",
+               fineCents, hz, expected, cents (hz, expected));
+    }
+
+    // A máscara das escalas gira com a tônica; a personalizada usa as notas absolutas.
+    {
+        std::array<float, P::count> v {};
+
+        for (int i = 0; i < P::count; ++i)
+            v[(size_t) i] = P::staticInfo().params[(size_t) i].def;
+
+        v[P::key] = 2.0f;   // Ré maior: Ré Mi Fá# Sol Lá Si Dó#
+        v[P::scale] = 1.0f;
+        const int dMajor = P::activeNotes (v.data());
+        v[P::scale] = (float) P::customScale;
+        v[P::noteE] = 0.0f;
+        const int custom = P::activeNotes (v.data());
+        CHECK (dMajor == 0xAD6 && custom == (0xFFF & ~(1 << 4)), "máscaras: Ré maior = %03X, personalizada sem Mi = %03X", dMajor, custom);
+    }
+}
+
 /** Todo efeito, com os padrões: silêncio vira silêncio exato, sinal enorme e impulso não dão NaN, infinito
     nem número desnormal, e o impulso sai na latência informada (nos efeitos que têm latência e não mexem
     no som com os padrões). */
@@ -2162,6 +2295,210 @@ static std::vector<float> pulseVoice (double f0, double formantHz, double second
     return x;
 }
 
+static double hzGuideMelody (double t)   { return t < 0.8 ? 246.94 : 261.63; }   // Si 3, depois Dó 4 (a guia, uma oitava abaixo)
+
+/** Afinação (27/10): a nota guia (sidechain) manda na nota, na oitava da voz; sem guia, volta para a escala. */
+static void testTuneGuide()
+{
+    std::printf ("Afinação: nota guia pelo sidechain\n");
+    using P = TuneProcessor;
+    steadyHz = 440.0 * std::pow (2.0, 20.0 / 1200.0);   // Lá 4 + 20 cents, parado
+    const auto voice = syntheticVoice (hzSteady, 1.6);
+    const auto melody = syntheticVoice (hzGuideMelody, 1.6, 0.2);
+
+    auto runGuided = [&voice] (const std::vector<float>* side, float guideOn)
+    {
+        TuneProcessor t;
+        t.prepare (rate, block);
+        t.setParam (P::key, 9.0f);
+        t.setParam (P::scale, 0.0f);   // Lá menor: nem Si nem Dó estão longe, mas a guia escolhe
+        t.setParam (P::speed, 0.0f);
+        t.setParam (P::guide, guideOn);
+        t.snapToTargets();
+        auto l = voice, r = voice;
+        float guided = 0.0f;
+
+        for (size_t pos = 0; pos < voice.size(); pos += block)
+        {
+            AudioBlock b { l.data() + pos, r.data() + pos, (int) std::min<size_t> (block, voice.size() - pos),
+                           side != nullptr ? side->data() + pos : nullptr, side != nullptr ? side->data() + pos : nullptr };
+            t.process (b);
+            guided = std::max (guided, t.meter (P::guideMeter));
+        }
+
+        return std::tuple<std::vector<float>, int, float> (l, t.latencySamples(), guided);
+    };
+
+    {
+        const auto [y, lat, guided] = runGuided (&melody, 1.0f);
+        const double shift = lat / rate;
+        const double first = measurePitch (y, 0.45 + shift, 0.7 + shift), second = measurePitch (y, 1.1 + shift, 1.5 + shift);
+        CHECK (std::abs (cents (first, 493.88)) < 8.0 && std::abs (cents (second, 523.25)) < 8.0 && guided > 0.5f,
+               "a voz (Lá 4 + 20 cents) segue a guia uma oitava abaixo: Si 4 (%.1f Hz, %.1f cents) e depois Dó 5 (%.1f Hz, %.1f cents)",
+               first, cents (first, 493.88), second, cents (second, 523.25));
+    }
+
+    {
+        const auto [y, lat, guided] = runGuided (&melody, 0.0f);
+        const double hz = measurePitch (y, 0.5, 1.5);
+        CHECK (std::abs (cents (hz, 440.0)) < 8.0 && guided < 0.5f, "\"Seguir a guia\" desligado: a escala manda (%.1f Hz)", hz);
+    }
+
+    {
+        const std::vector<float> silence (voice.size(), 0.0f);
+        const auto [y, lat, guided] = runGuided (&silence, 1.0f);
+        const auto [y2, lat2, guided2] = runGuided (nullptr, 1.0f);
+        const double hz = measurePitch (y, 0.5, 1.5), hz2 = measurePitch (y2, 0.5, 1.5);
+        CHECK (std::abs (cents (hz, 440.0)) < 8.0 && std::abs (cents (hz2, 440.0)) < 8.0 && guided < 0.5f && guided2 < 0.5f,
+               "guia calada ou sem trilha ligada: volta para a escala (%.1f e %.1f Hz)", hz, hz2);
+        (void) lat; (void) lat2;
+    }
+
+    {
+        // Escala Personalizada com as 12 notas desligadas: a guia continua mandando (o efeito não fica neutro).
+        TuneProcessor t;
+        t.prepare (rate, block);
+        t.setParam (P::scale, (float) P::customScale);
+        t.setParam (P::speed, 0.0f);
+        t.setParam (P::guide, 1.0f);
+
+        for (int k = 0; k < 12; ++k)
+            t.setParam (P::noteC + k, 0.0f);
+
+        t.snapToTargets();
+        auto l = voice, r = voice;
+
+        for (size_t pos = 0; pos < voice.size(); pos += block)
+        {
+            AudioBlock b { l.data() + pos, r.data() + pos, (int) std::min<size_t> (block, voice.size() - pos),
+                           melody.data() + pos, melody.data() + pos };
+            t.process (b);
+        }
+
+        const double shift = t.latencySamples() / rate;
+        const double hz = measurePitch (l, 0.45 + shift, 0.7 + shift);
+        CHECK (std::abs (cents (hz, 493.88)) < 8.0, "Personalizada sem nenhuma nota e a guia ligada: a guia manda (%.1f Hz, Si 4)", hz);
+    }
+
+    {
+        // Voz parada perto do trítono da guia (Lá 4 + 45 cents com vibrato de ±20 cents, guia em Ré#): a oitava não pula.
+        static double guideHz = 0.0;
+        guideHz = 311.13;   // Ré# 4
+        auto hzGuide = [] (double) { return guideHz; };
+        auto hzWobble = [] (double t) { return 440.0 * std::pow (2.0, (45.0 + 20.0 * std::sin (2.0 * pi * 5.5 * t)) / 1200.0); };
+        const auto v = syntheticVoice (hzWobble, 1.6), side = syntheticVoice (hzGuide, 1.6, 0.2);
+        TuneProcessor t;
+        t.prepare (rate, block);
+        t.setParam (P::speed, 0.0f);
+        t.setParam (P::guide, 1.0f);
+        t.snapToTargets();
+        auto l = v, r = v;
+        float lowest = 1000.0f, highest = 0.0f;
+
+        for (size_t pos = 0; pos < v.size(); pos += block)
+        {
+            AudioBlock b { l.data() + pos, r.data() + pos, (int) std::min<size_t> (block, v.size() - pos), side.data() + pos, side.data() + pos };
+            t.process (b);
+
+            if (pos > (size_t) (0.4 * rate))
+            {
+                lowest = std::min (lowest, t.meter (P::targetNote));
+                highest = std::max (highest, t.meter (P::targetNote));
+            }
+        }
+
+        CHECK (lowest == highest && (lowest == 63.0f || lowest == 75.0f),
+               "voz no trítono da guia com vibrato: a nota alvo fica numa oitava só (%.0f a %.0f)", lowest, highest);
+    }
+
+    CHECK (P::staticInfo().sidechain, "a afinação aceita uma trilha no sidechain (a guia)");
+}
+
+/** Afinação (27/10): os presets do pedido (natural, pop, trap robótico e harmonia) e a voz de harmonia. */
+static void testTunePresets()
+{
+    std::printf ("Afinação: presets e harmonia\n");
+    using P = TuneProcessor;
+    steadyHz = 440.0 * std::pow (2.0, 20.0 / 1200.0);   // Lá 4 + 20 cents
+    const auto voice = syntheticVoice (hzSteady, 1.6);
+
+    auto runPreset = [&voice] (const char* preset)
+    {
+        auto h = makeHost ("tune", preset);
+        setByName (*h, "key", 9.0f);     // Lá menor (o tom não vem do preset)
+        setByName (*h, "scale", 0.0f);
+        h->prepare (rate, block);        // os valores entram sem rampa
+        auto l = voice, r = voice;
+        run (*h, l, r);
+        return std::pair<std::vector<float>, int> (l, h->latencySamples());
+    };
+
+    for (const char* id : { "natural", "pop", "hard", "harmony" })
+    {
+        const auto* preset = findPreset ("tune", id);
+        const auto [y, lat] = runPreset (id);
+        const double hz = measurePitch (y, 1.0 + lat / rate, 1.5);
+        CHECK (preset != nullptr && std::abs (cents (hz, 440.0)) < 10.0, "preset \"%s\": a voz chega no Lá (%.1f Hz, %.1f cents)",
+               preset != nullptr ? preset->name : id, hz, cents (hz, 440.0));
+    }
+
+    // Harmonia: com o preset, a terça de Lá menor (Dó 5) aparece; sem ele, não.
+    {
+        const auto [with, lat] = runPreset ("harmony");
+        const auto [without, lat2] = runPreset ("pop");
+        const size_t a = (size_t) (0.8 * rate) + (size_t) lat, b = with.size();
+        const double c5 = db (toneAmplitude (with, 523.25, a, b) / toneAmplitude (with, 440.0, a, b));
+        const double none = db (toneAmplitude (without, 523.25, a, b) / toneAmplitude (without, 440.0, a, b));
+        CHECK (c5 > -12.0 && none < -30.0, "harmonia: o Dó 5 (terça de Lá menor) aparece a %.1f dB do Lá 4 (sem harmonia: %.1f dB)", c5, none);
+        (void) lat2;
+    }
+
+    {
+        // 660 Hz é harmônico do Lá 3 e não do Lá 4: só aparece com a voz uma oitava abaixo (a formante fica no lugar,
+        // então o próprio Lá 3 sai fraco nesta voz sintética, que tem pouca energia em 220 Hz).
+        const auto [y, lat] = runPreset ("octave-down");
+        const auto [plain, lat2] = runPreset ("pop");
+        const size_t a = (size_t) (0.8 * rate) + (size_t) lat, b = y.size();
+        const double with = db (toneAmplitude (y, 660.0, a, b) / toneAmplitude (y, 440.0, a, b));
+        const double without = db (toneAmplitude (plain, 660.0, a, b) / toneAmplitude (plain, 440.0, a, b));
+        CHECK (with > -15.0 && with - without > 20.0, "oitava abaixo: 660 Hz (3º harmônico do Lá 3) a %.1f dB do Lá 4 (sem: %.1f dB)",
+               with, without);
+        (void) lat2;
+    }
+
+    // Sem voz, a harmonia não entra; com o preset harmonia e ruído, o nível fica.
+    {
+        auto h = makeHost ("tune", "harmony");
+        h->prepare (rate, block);
+        auto x = whiteNoise (48000, 0.1, 41);
+        auto l = x, r = x;
+        run (*h, l, r);
+        const int lat = h->latencySamples();
+        const double level = db (rms (l, 12000 + (size_t) lat, 40000 + (size_t) lat) / rms (x, 12000, 40000));
+        CHECK (std::abs (level) < 1.0, "harmonia com ruído (sem tom): o nível fica (%.2f dB)", level);
+    }
+
+    {
+        // Harmonia ligada sem nenhuma nota alvo (Personalizada vazia): a voz de harmonia cala; a saída é a voz como entrou.
+        auto h = makeHost ("tune", "harmony");
+        setByName (*h, "scale", (float) TuneProcessor::customScale);
+
+        for (const char* id : { "note_c", "note_cs", "note_d", "note_ds", "note_e", "note_f", "note_fs", "note_g", "note_gs", "note_a",
+                                "note_as", "note_b" })
+            setByName (*h, id, 0.0f);
+
+        h->prepare (rate, block);
+        auto l = voice, r = voice;
+        run (*h, l, r);
+        const int lat = h->latencySamples();
+        const double level = db (rms (l, (size_t) (0.6 * rate) + (size_t) lat, l.size()) / rms (voice, (size_t) (0.6 * rate), voice.size() - (size_t) lat));
+        CHECK (std::abs (level) < 0.5, "harmonia sem nota alvo: não dobra a voz (nível %+.2f dB)", level);
+    }
+
+    CHECK (findPreset ("tune", "trap-funk") != nullptr && findPreset ("tune", "robot") != nullptr,
+           "os presets antigos continuam (projetos salvos e o autoteste usam os ids)");
+}
+
 /** O harmônico mais forte de f0 (k = 1 a 30), em Hz. */
 static double strongestHarmonic (const std::vector<float>& x, double f0, size_t from, size_t to)
 {
@@ -2175,6 +2512,216 @@ static double strongestHarmonic (const std::vector<float>& x, double f0, size_t 
         }
 
     return at;
+}
+
+/** Lá 4 afinado até 0,6 s, desliza em 30 ms para o Dó 5 + 45 cents e fica: a correção vai de 0 a -45 cents. */
+static double hzNoteChange (double t)
+{
+    const double from = 440.0, to = 523.2511 * std::pow (2.0, 45.0 / 1200.0);
+    const double k = std::clamp ((t - 0.6) / 0.03, 0.0, 1.0);
+    return from * std::pow (to / from, k);
+}
+
+/** Afinação (27/10): a velocidade vai do robô ao natural, o humanizar não atrasa a troca de nota e a troca não estala. */
+static void testTuneSpeed()
+{
+    std::printf ("Afinação: velocidade, humanizar e troca de nota\n");
+    using P = TuneProcessor;
+    const auto in = syntheticVoice (hzNoteChange, 1.5);
+    const double target = 523.2511;
+
+    auto process = [&in] (const TuneParams& params)
+    {
+        TuneProcessor t;
+        t.prepare (rate, block);
+
+        for (auto [index, value] : params)
+            t.setParam (index, value);
+
+        t.snapToTargets();
+        auto l = in, r = in;
+
+        for (size_t pos = 0; pos < in.size(); pos += block)
+        {
+            AudioBlock b { l.data() + pos, r.data() + pos, (int) std::min<size_t> (block, in.size() - pos) };
+            t.process (b);
+        }
+
+        return std::pair<std::vector<float>, int> (l, t.latencySamples());
+    };
+
+    // Quanto tempo depois do fim do deslize (0,63 s, no tempo da entrada) a saída fica a menos de 10 cents do Dó 5.
+    auto settle = [&] (const std::vector<float>& y, int lat)
+    {
+        const double shift = lat / rate;
+
+        for (double t = 0.63; t < 1.4; t += 0.005)
+        {
+            bool steady = true;
+
+            for (double u = t; u < t + 0.06 && steady; u += 0.02)
+            {
+                const double hz = measurePitch (y, u + shift, u + shift + 0.025);
+                steady = hz > 0.0 && std::abs (cents (hz, target)) < 10.0;
+            }
+
+            if (steady)
+                return 1000.0 * (t - 0.63);
+        }
+
+        return 9999.0;
+    };
+
+    // Do robô ao natural: o tempo para chegar na nota cresce com a velocidade.
+    double previous = -1.0;
+    bool growing = true;
+    std::string line;
+
+    for (float ms : { 0.0f, 25.0f, 60.0f, 120.0f, 250.0f })
+    {
+        const auto [y, lat] = process ({ { P::key, 0.0f }, { P::scale, 6.0f }, { P::speed, ms } });
+        const double took = settle (y, lat);
+        growing = growing && took > previous;
+        previous = took;
+        line += std::to_string ((int) ms) + " ms → " + std::to_string ((int) std::lround (took)) + " ms; ";
+
+        if (ms == 0.0f)
+            CHECK (took < 40.0, "velocidade 0 (robô): chega no Dó 5 em %.0f ms depois da troca", took);
+    }
+
+    CHECK (growing && previous > 150.0, "velocidade do robô ao natural, tempo até a nota: %s", line.c_str());
+
+    // Humanizar 100% deixa as notas longas soltas, mas a troca de nota continua rápida.
+    {
+        const auto [y, lat] = process ({ { P::key, 0.0f }, { P::scale, 6.0f }, { P::speed, 0.0f }, { P::humanize, 100.0f } });
+        const double took = settle (y, lat);
+        CHECK (took < 40.0, "humanizar 100%% com velocidade 0: a troca de nota chega em %.0f ms", took);
+    }
+
+    // A troca de nota não estala: a energia acima de 7 kHz (a voz sintética não tem nada lá) fica baixa em todo trecho
+    // de 5 ms, no robô e no natural.
+    for (float ms : { 0.0f, 60.0f })
+    {
+        const auto [y, lat] = process ({ { P::key, 0.0f }, { P::scale, 6.0f }, { P::speed, ms } });
+        const auto hp = SvfCoeffs::make (FilterType::highpass, 7000.0, 0.7071, 0.0, rate);
+        Svf h1, h2, i1, i2;
+        std::vector<float> high (y.size()), inHigh (in.size());
+
+        for (size_t i = 0; i < y.size(); ++i)
+        {
+            high[i] = h2.process (h1.process (y[i], hp), hp);
+            inHigh[i] = i2.process (i1.process (in[i], hp), hp);
+        }
+
+        const size_t win = (size_t) (0.005 * rate);
+        double worst = 0.0, worstIn = 0.0;
+
+        for (size_t a = (size_t) (0.2 * rate); a + win < in.size() - (size_t) lat; a += win)
+        {
+            worst = std::max (worst, rms (high, a + (size_t) lat, a + (size_t) lat + win));
+            worstIn = std::max (worstIn, rms (inHigh, a, a + win));
+        }
+
+        const double voice = rms (in, (size_t) (0.2 * rate), in.size() - (size_t) lat);
+        CHECK (db (worst / worstIn) < 3.0, "velocidade %.0f ms: o pior trecho de 5 ms acima de 7 kHz fica em %.1f dB da voz (entrada: %.1f dB)",
+               ms, db (worst / voice), db (worstIn / voice));
+    }
+}
+
+/** Afinação (27/10): o núcleo PSOLA mantém o timbre ao corrigir, e a Formante muda o timbre à parte. */
+static void testTuneFormant()
+{
+    std::printf ("Afinação: formante (PSOLA)\n");
+    using P = TuneProcessor;
+
+    auto runOn = [] (const std::vector<float>& x, const TuneParams& params)
+    {
+        TuneProcessor t;
+        t.prepare (rate, block);
+
+        for (auto [index, value] : params)
+            t.setParam (index, value);
+
+        t.snapToTargets();
+        auto l = x, r = x;
+
+        for (size_t pos = 0; pos < x.size(); pos += block)
+        {
+            AudioBlock b { l.data() + pos, r.data() + pos, (int) std::min<size_t> (block, x.size() - pos) };
+            t.process (b);
+        }
+
+        return std::pair<std::vector<float>, int> (l, t.latencySamples());
+    };
+
+    // Lá 3 (220 Hz) com a formante em 1 kHz; só o Si ligado: a correção sobe 2 semitons (246,9 Hz).
+    TuneParams toB { { P::scale, (float) P::customScale }, { P::speed, 0.0f } };
+
+    for (int k = 0; k < 12; ++k)
+        toB.push_back ({ P::noteC + k, k == 11 ? 1.0f : 0.0f });
+
+    const auto pv = pulseVoice (220.0, 1000.0, 2.0);
+    const double f0 = 220.0 * std::pow (2.0, 2.0 / 12.0);
+
+    {
+        const auto [y, lat] = runOn (pv, toB);
+        const size_t a = (size_t) (0.6 * rate) + (size_t) lat, b = (size_t) (1.6 * rate);
+        const double hz = measurePitch (y, a / rate, b / rate), peakAt = strongestHarmonic (y, f0, a, b);
+        CHECK (std::abs (cents (hz, f0)) < 5.0 && std::abs (peakAt - 1000.0) < f0 * 0.6,
+               "corrige 2 semitons (%.1f Hz, erro %.1f cents) e a formante fica em %.0f Hz (perto de 1 kHz: timbre mantido)",
+               hz, cents (hz, f0), peakAt);
+    }
+
+    {
+        auto withFormant = toB;
+        withFormant.push_back ({ P::formant, 5.0f });
+        const auto [y, lat] = runOn (pv, withFormant);
+        const size_t a = (size_t) (0.6 * rate) + (size_t) lat, b = (size_t) (1.6 * rate);
+        const double hz = measurePitch (y, a / rate, b / rate), peakAt = strongestHarmonic (y, f0, a, b);
+        const double expected = 1000.0 * std::pow (2.0, 5.0 / 12.0);
+        CHECK (std::abs (cents (hz, f0)) < 5.0 && std::abs (peakAt - expected) < f0 * 0.6,
+               "formante +5 st: a nota continua (%.1f Hz) e a formante vai para %.0f Hz (esperado ~%.0f)", hz, peakAt, expected);
+    }
+
+    {
+        // Só a formante (força 0): a nota fica como estava.
+        const auto [y, lat] = runOn (pv, { { P::amount, 0.0f }, { P::formant, -4.0f } });
+        const size_t a = (size_t) (0.6 * rate) + (size_t) lat, b = (size_t) (1.6 * rate);
+        const double hz = measurePitch (y, a / rate, b / rate), peakAt = strongestHarmonic (y, 220.0, a, b);
+        const double expected = 1000.0 * std::pow (2.0, -4.0 / 12.0);
+        CHECK (std::abs (cents (hz, 220.0)) < 5.0 && std::abs (peakAt - expected) < 220.0 * 0.6,
+               "só a formante -4 st: a nota fica (%.1f Hz) e a formante desce para %.0f Hz (esperado ~%.0f)", hz, peakAt, expected);
+    }
+
+    {
+        // Os extremos: voz grave (65 Hz) com a formante em -12 e em +12: o grão cabe na latência, sem estalo nem NaN.
+        steadyHz = 65.0;
+        const auto low = syntheticVoice (hzSteady, 1.5);
+
+        for (float fm : { -12.0f, 12.0f })
+        {
+            const auto [y, lat] = runOn (low, { { P::scale, 6.0f }, { P::formant, fm } });
+            bool finite = true;
+
+            for (auto v : y)
+                finite = finite && std::isfinite (v);
+
+            double rIn = 0.0, rOut = 0.0;
+
+            for (size_t i = 4802; i < low.size(); ++i)
+                rIn = std::max (rIn, (double) std::abs (low[i] - 2.0f * low[i - 1] + low[i - 2]));
+
+            for (size_t i = 4802 + (size_t) lat; i < y.size(); ++i)
+                rOut = std::max (rOut, (double) std::abs (y[i] - 2.0f * y[i - 1] + y[i - 2]));
+
+            const double level = db (rms (y, (size_t) (0.5 * rate) + (size_t) lat, y.size())
+                                     / rms (low, (size_t) (0.5 * rate), low.size() - (size_t) lat));
+            // A segunda diferença cresce com o quadrado da frequência: com a formante +12 todo o timbre sobe uma oitava (×4).
+            const double scale = std::max (1.0, std::pow (2.0, fm / 6.0));
+            CHECK (finite && rOut < rIn * 2.5 * scale && std::abs (level) < 4.0,
+                   "voz de 65 Hz com a formante %+.0f st: sem estalo (aspereza %.3f contra %.3f), nível %+.1f dB", fm, rOut, rIn, level);
+        }
+    }
 }
 
 static void testVoicePitch()
@@ -2835,6 +3382,11 @@ int main()
     testDenoise();
     testConsole();
     testTuneHumanize();
+    testTuneScale();
+    testTuneFormant();
+    testTuneSpeed();
+    testTuneGuide();
+    testTunePresets();
     testVoicePitch();
     testHarmony();
     testEffects2610();

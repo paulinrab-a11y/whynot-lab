@@ -1,4 +1,5 @@
 #include "AppController.h"
+#include "AutomationRecording.h"
 #include "../automation/Macros.h"
 #include "../dsp/FxCatalog.h"
 #include "../dsp/Master.h"
@@ -432,6 +433,9 @@ AppController::AppController (bool isHeadless, const juce::File& requestedDataFo
     registry.beforeAnything = [this] { if (! inMidiControl) finishMidiControlGesture(); };
     registerAudioMidiCommands (registry);
     registerLayerCommands (registry);
+    registerPitchBendCommands (registry);
+    registerPlaylistEditCommands (registry);
+    registerNoteTuneCommands (registry);   // afinação nota a nota (27/10)
 
     // Prévia do navegador de sons: depende do player daqui, então o comando mora aqui.
     registry.add ({ "browser.preview", "Ouvir prévia"_t,
@@ -475,10 +479,29 @@ AppController::AppController (bool isHeadless, const juce::File& requestedDataFo
 
     if (! headless)
         projectLibrary->setRoots ({ getDefaultProjectsFolder() });
+
+    // Gravar automação (26/10): abre a volta antes do primeiro knob e fecha antes de outra edição
+    automationRecording = std::make_unique<AutomationRecording> (*this);
+    registry.beforeCommand = [this] (const juce::String& id) { if (automationRecording != nullptr) automationRecording->beforeCommand (id); };
+    registry.beforeGestureBegins = [this] { if (automationRecording != nullptr) automationRecording->beforeGesture(); };
+}
+
+void AppController::setAutomationRecording (bool on)
+{
+    if (automationRecording != nullptr)
+        automationRecording->setArmed (on);
+}
+
+bool AppController::isAutomationRecording() const
+{
+    return automationRecording != nullptr && automationRecording->isArmed();
 }
 
 AppController::~AppController()
 {
+    registry.beforeCommand = nullptr;
+    registry.beforeGestureBegins = nullptr;
+    automationRecording = nullptr;   // sai do Edit antes do motor (uma volta aberta ao fechar o app se perde)
     beatKeys = nullptr;       // cancela a análise de tom em andamento e espera a thread sair
     soundInfos = nullptr;     // a leitura dos sons do navegador para, e o cache vai para o disco
     projectLibrary = nullptr;   // cancela a prévia renderizando e tira o deck da placa, antes do motor
@@ -1653,7 +1676,7 @@ namespace
                                 [&c] (const PlaylistItem& i) { return i.kind == "audio" && i.ref == c.id; });
 
         for (auto& pattern : p.patterns)
-            if (! Projector::notesFor (p, pattern, c, pattern.lengthTicks()).empty())
+            if (! Projector::notesFor (p, pattern, c, pattern.lengthTicks() * Projector::chanceLoops).empty())
                 return true;
 
         return false;

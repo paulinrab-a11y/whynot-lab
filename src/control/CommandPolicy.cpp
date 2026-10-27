@@ -63,25 +63,38 @@ namespace
 
     // Em ordem alfabética (o static_assert abaixo confere). Os motivos vão para a IA e para a tela.
     constexpr std::array table {
+        Entry { "audio.analyzeNotes",         ok() },   // afinação nota a nota (27/10)
+        Entry { "audio.clearNoteTune",        ok() },   // afinação nota a nota (27/10)
         Entry { "audio.consolidate",          ok() },
         Entry { "audio.detectBpm",            ok() },
         Entry { "audio.detectKey",            ok() },
         Entry { "audio.devices",              ok() },
+        Entry { "audio.editNotes",            ok() },   // afinação nota a nota (27/10)
         Entry { "audio.extractGroove",        ok() },
+        Entry { "audio.findSilence",          ok() },
         Entry { "audio.matchBpm",             ok() },
+        Entry { "audio.mergeNotes",           ok() },   // afinação nota a nota (27/10)
         Entry { "audio.normalize",            ok() },
         Entry { "audio.performance",          ok() },
+        Entry { "audio.removeSilence",        ok() },
         Entry { "audio.resetXruns",           ok() },
         Entry { "audio.reverse",              ok() },
         Entry { "audio.setDevice",            blocked (pcSetting) },
         Entry { "audio.setFades",             ok() },
         Entry { "audio.setGain",              ok() },
+        Entry { "audio.setNoteTune",          ok() },   // afinação nota a nota (27/10)
+        Entry { "audio.setPitch",             ok() },
+        Entry { "audio.splitNote",            ok() },   // afinação nota a nota (27/10)
         Entry { "audio.toMidi",               reading ("path") },
+        Entry { "audio.tuneToScale",          ok() },   // afinação nota a nota (27/10)
         Entry { "audio.warpToProject",        ok() },
         Entry { "automation.addLane",         ok() },
         Entry { "automation.list",            ok() },
+        Entry { "automation.recordPass",      ok() },   // (26/10) uma passada gravada, com desfazer
         Entry { "automation.removeLane",      ok() },
         Entry { "automation.setPoints",       ok() },
+        Entry { "automation.setRecording",    ok() },   // (26/10) só o modo; quem mexe nos controles é a pessoa
+        Entry { "automation.setTension",      ok() },   // (26/10)
         Entry { "automation.targets",         ok() },
         Entry { "browser.find",               reading ("folder") },
         Entry { "browser.info",               reading ("path") },
@@ -101,6 +114,7 @@ namespace
         Entry { "channel.removeLayer",        ok() },
         Entry { "channel.rename",             ok() },
         Entry { "channel.renderInPlace",      ok() },
+        Entry { "channel.setBendRange",       ok() },
         Entry { "channel.setChoke",           ok() },
         Entry { "channel.setCutItself",       ok() },
         Entry { "channel.setFrozen",          ok() },
@@ -216,6 +230,7 @@ namespace
         Entry { "pianoroll.importMidi",       reading ("path") },
         Entry { "pianoroll.inspectMidi",      reading ("path") },
         Entry { "pianoroll.removeNotes",      ok() },
+        Entry { "pianoroll.setNoteCurve",     ok() },
         Entry { "pianoroll.stepsToNotes",     ok() },
         Entry { "pianoroll.transform",        ok() },
         Entry { "pianoroll.updateNotes",      ok() },
@@ -224,9 +239,12 @@ namespace
         Entry { "playlist.addTrack",          ok() },
         Entry { "playlist.chopItem",          ok() },
         Entry { "playlist.clear",             ok() },
+        Entry { "playlist.cutAt",             ok() },
+        Entry { "playlist.insertSpace",       ok() },
         Entry { "playlist.moveTrack",         ok() },
         Entry { "playlist.removeItem",        ok() },
         Entry { "playlist.removeMarker",      ok() },
+        Entry { "playlist.removeSpace",       ok() },
         Entry { "playlist.removeTrack",       ok() },
         Entry { "playlist.renameTrack",       ok() },
         Entry { "playlist.setLaneInput",      blocked (recording) },

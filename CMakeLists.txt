@@ -109,12 +109,14 @@ juce_add_binary_data(whynot_assets
 set(WHYNOT_SOURCES
     src/app/Main.cpp
     src/app/AppController.cpp
+    src/app/AutomationRecording.cpp
     src/app/Favorites.cpp
     src/app/KeyMap.cpp
     src/app/Session.cpp
     src/app/SelfTest.cpp
     src/app/WindowsPower.cpp
     src/app/selftest/Automation.cpp
+    src/app/selftest/AutomationRecord.cpp
     src/app/selftest/BeatKey.cpp
     src/app/selftest/Community.cpp
     src/app/selftest/Composition.cpp
@@ -127,8 +129,10 @@ set(WHYNOT_SOURCES
     src/app/selftest/Ideas.cpp
     src/app/selftest/Library.cpp
     src/app/selftest/Mixing.cpp
+    src/app/selftest/NoteTune.cpp
     src/app/selftest/Performance.cpp
     src/app/selftest/Piano.cpp
+    src/app/selftest/PitchBend.cpp
     src/app/selftest/Plugins.cpp
     src/app/selftest/Producer.cpp
     src/app/selftest/ProducerPiano.cpp
@@ -140,7 +144,9 @@ set(WHYNOT_SOURCES
     src/app/selftest/Slicing.cpp
     src/app/selftest/Stretch.cpp
     src/app/selftest/Synth.cpp
+    src/app/selftest/Tune.cpp
     src/app/selftest/Voice.cpp
+    src/app/selftest/VoicePlaylist.cpp
     src/app/selftest/WarpCapture.cpp
     src/commands/AutomationCommands.cpp
     src/commands/BeatCommands.cpp
@@ -158,9 +164,12 @@ set(WHYNOT_SOURCES
     src/commands/LayerCommands.cpp
     src/commands/LibraryCommands.cpp
     src/commands/MidiLearnCommands.cpp
+    src/commands/NoteTuneCommands.cpp
     src/commands/SynthCommands.cpp
     src/commands/PerformanceCommands.cpp
     src/commands/PianoCommands.cpp
+    src/commands/PitchBendCommands.cpp
+    src/commands/PlaylistEditCommands.cpp
     src/commands/RecordCommands.cpp
     src/commands/SliceCommands.cpp
     src/control/AudioPreview.cpp
@@ -186,6 +195,7 @@ set(WHYNOT_SOURCES
     src/dsp/Master.cpp
     src/dsp/Modulation.cpp
     src/dsp/Multiband.cpp
+    src/dsp/NoteTune.cpp
     src/dsp/PitchDetect.cpp
     src/dsp/Space.cpp
     src/dsp/Tune.cpp
@@ -241,6 +251,7 @@ set(WHYNOT_SOURCES
     src/synth/SynthPresets.cpp
     src/synth/Wavetables.cpp
     src/record/InputRecorder.cpp
+    src/record/NoteTuneFiles.cpp
     src/record/RecordEngine.cpp
     src/ui/AiBridgeUi.cpp
     src/ui/AutomationLanes.cpp
@@ -264,6 +275,7 @@ set(WHYNOT_SOURCES
     src/ui/MidiLearnMenu.cpp
     src/ui/IdeasPanel.cpp
     src/ui/MixerView.cpp
+    src/ui/NoteTuneEditor.cpp
     src/ui/PianoRoll.cpp
     src/ui/Playlist.cpp
     src/ui/PluginBrowser.cpp

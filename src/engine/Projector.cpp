@@ -1,6 +1,9 @@
 #include "Projector.h"
 #include "../record/Takes.h"
+#include "../record/ReversedAudio.h"
+#include "../record/NoteTuneFiles.h"
 #include "../automation/AutomationTarget.h"
+#include "../model/NoteCurves.h"
 #include "../model/WnlFormat.h"
 #include "../plugins/PluginCatalog.h"
 #include "../dsp/Master.h"
@@ -142,6 +145,15 @@ WhynotPianoPlugin* Projector::pianoFor (const juce::String& channelId) const
 
 namespace
 {
+    /** A curva de um fade do bloco (FadeCurve) no Tracktion. */
+    te::AudioFadeCurve::Type fadeCurveType (int curve)
+    {
+        return curve == fadeCurveConvex ? te::AudioFadeCurve::convex
+             : curve == fadeCurveConcave ? te::AudioFadeCurve::concave
+             : curve == fadeCurveS ? te::AudioFadeCurve::sCurve
+             : te::AudioFadeCurve::linear;
+    }
+
     /** O que decide qual plugin a trilha tem: trocar o sample por um piano (ou o contrário) refaz a trilha. */
     juce::String bindingKind (const Channel& c)
     {
@@ -205,29 +217,71 @@ namespace
 }
 
 //==============================================================================
-std::vector<Note> Projector::notesFor (const Project& p, const Pattern& pattern, const Channel& channel, int lengthTicks, int offsetTicks)
+bool Projector::usesChance (const Pattern& pattern, const juce::String& channelId)
 {
-    if (offsetTicks <= 0)
-        return notesFor (p, pattern, channel, lengthTicks);
+    if (auto it = pattern.steps.find (channelId); it != pattern.steps.end())
+        for (auto& s : it->second)
+            if (s.on && s.chance < 100)
+                return true;
 
-    std::vector<Note> out;
+    return false;
+}
 
-    for (auto n : notesFor (p, pattern, channel, lengthTicks + offsetTicks))
+bool Projector::usesChance (const Pattern& pattern)
+{
+    for (auto& [id, steps] : pattern.steps)
+        if (usesChance (pattern, id))
+            return true;
+
+    return false;
+}
+
+bool Projector::chanceHits (int chance, int seed, const juce::String& channelId, int stepIndex, int rollIndex, int loopIndex)
+{
+    if (chance >= 100)
+        return true;
+
+    // splitmix64 sobre os números do passo: sem estado, o mesmo resultado no play, no export e no MIDI
+    auto mix = [] (std::uint64_t z)
     {
+        z += 0x9e3779b97f4a7c15ull;
+        z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+        z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+        return z ^ (z >> 31);
+    };
+
+    std::uint64_t h = mix ((std::uint64_t) (std::uint32_t) seed);
+    h = mix (h ^ (std::uint64_t) (std::uint32_t) channelId.hashCode());
+    h = mix (h ^ ((std::uint64_t) (std::uint32_t) stepIndex << 16) ^ (std::uint64_t) (std::uint32_t) rollIndex);
+    h = mix (h ^ (std::uint64_t) (std::uint32_t) loopIndex);
+    return (int) (h % 100) < chance;
+}
+
+std::vector<Note> Projector::notesFor (const Project& p, const Pattern& pattern, const Channel& channel, int lengthTicks, int offsetTicks,
+                                       int seed)
+{
+    if (offsetTicks > 0)
+    {
+        std::vector<Note> out;
+
+        for (auto n : notesFor (p, pattern, channel, lengthTicks + offsetTicks, 0, seed))
+        {
         if (n.start < offsetTicks)
             continue;
 
-        n.start -= offsetTicks;
-        out.push_back (n);
+            n.start -= offsetTicks;
+            out.push_back (n);
+        }
+
+        return out;
     }
 
-    return out;
-}
-
-std::vector<Note> Projector::notesFor (const Project&, const Pattern& pattern, const Channel& channel, int lengthTicks)
-{
     const int patternLength = juce::jmax (ticksPerStep, pattern.lengthTicks());
     std::vector<Note> base;
+
+    // Para a chance (26/10): de qual passo e de qual repetição do roll veio cada nota (-1 = do piano roll).
+    struct Origin { int step = -1, roll = 0, chance = 100; };
+    std::vector<Origin> origin;
 
     // Passos → notas. Num canal que respeita a duração (808), cada passo soa até o próximo.
     if (auto it = pattern.steps.find (channel.id); it != pattern.steps.end())
@@ -248,10 +302,12 @@ std::vector<Note> Projector::notesFor (const Project&, const Pattern& pattern, c
             {
                 Note n;
                 n.start = (int) i * ticksPerStep + k * sub + (i % 2 == 1 ? swing : 0);
-                n.key = channel.rootKey;
+                n.key = juce::jlimit (0, 127, channel.rootKey + s.pitch);   // o tom do passo (26/10)
                 n.velocity = s.velocity;
+                n.pan = channel.kind == "sampler" ? s.pan : 0;   // o pan do passo só existe no sampler
                 n.length = channel.oneShot ? juce::jmax (1, sub * 9 / 10) : sub;   // gate: ajustado abaixo
                 base.push_back (n);
+                origin.push_back ({ (int) i, k, s.chance });
             }
         }
 
@@ -265,18 +321,43 @@ std::vector<Note> Projector::notesFor (const Project&, const Pattern& pattern, c
         }
     }
 
+    const size_t stepNotes = base.size();
+    const bool anyChance = std::any_of (origin.begin(), origin.end(), [] (const Origin& o) { return o.chance < 100; });
+
     if (auto* notes = pattern.notesFor (channel.id))
         for (auto& n : *notes)
             if (! n.muted)   // nota muda (Alt+M) não toca nem sai no MIDI
+            {
                 base.push_back (n);
+                origin.push_back ({});
+            }
 
-    // Repete o padrão até preencher o bloco; corta o que passar do fim.
+    // Repete o padrão até preencher o bloco; corta o que passar do fim. Um passo com chance sorteia a
+    // cada volta (o número da volta entra no sorteio), o passo inteiro de uma vez (o roll junto).
     std::vector<Note> out;
+    std::vector<size_t> kept;
 
-    for (int offset = 0; offset < lengthTicks; offset += patternLength)
+    for (int offset = 0, loop = 0; offset < lengthTicks; offset += patternLength, ++loop)
     {
-        for (auto n : base)
+        kept.clear();
+
+        for (size_t b = 0; b < base.size(); ++b)
+            if (origin[b].chance >= 100 || chanceHits (origin[b].chance, seed, channel.id, origin[b].step, 0, loop))
+                kept.push_back (b);
+
+        for (size_t k = 0; k < kept.size(); ++k)
         {
+            const size_t b = kept[k];
+            auto n = base[b];
+
+            // No canal que respeita a duração (808), um passo que não saiu não pode cortar o anterior:
+            // a nota segue até o próximo passo que tocou nesta volta.
+            if (anyChance && ! channel.oneShot && b < stepNotes)
+            {
+                const int next = k + 1 < kept.size() && kept[k + 1] < stepNotes ? base[kept[k + 1]].start : patternLength;
+                n.length = juce::jmax (1, next - n.start);
+            }
+
             n.start += offset;
 
             if (n.start >= lengthTicks)
@@ -310,6 +391,7 @@ std::vector<Note> Projector::notesFor (const Project&, const Pattern& pattern, c
 //==============================================================================
 void Projector::sync (const Project& p, const juce::File& projectFolder)
 {
+    const juce::ScopedValueSetter<bool> applying (applyingParameters, true);   // gravar automação: não é a pessoa
     songMode = mode == Mode::song || (mode == Mode::followProject && p.songMode);
 
     syncTempo (p);
@@ -326,8 +408,9 @@ void Projector::sync (const Project& p, const juce::File& projectFolder)
 
     edit.clickTrackEnabled = p.metronome;
 
+    const auto* current = p.currentPatternPtr();
     const int lengthTicks = songMode ? p.songEndTicks()
-                                     : (p.currentPatternPtr() != nullptr ? p.currentPatternPtr()->lengthTicks() : ticksPerBar4) * loops;
+                                     : (current != nullptr ? current->lengthTicks() * patternLoops (p, *current) : ticksPerBar4 * loops);
     currentLengthSeconds = toTime (lengthTicks).inSeconds();
 
     if (transportLoopManaged)
@@ -492,8 +575,25 @@ void Projector::syncChannels (const Project& p, const juce::File& projectFolder)
                     if (item.kind == "audio" && item.ref == c.id && p.itemSounds (item))   // o bloco e a raia (bloco 4)
                     {
                         const auto edges = takes::edges (p, item);   // comping: o crossfade no corte entre takes
-                        audio.push_back ({ item.start, item.length, item.offsetSeconds, resolved, item.stretch, item.tape, edges.in, edges.out,
+                        // o reverso do bloco (voz na playlist, 27/10) toca o arquivo invertido ao lado, sem canal novo
+                        // a afinação nota a nota (27/10) toca o arquivo refeito ao lado, que nunca muda o original
+                        const auto played = item.reversed ? reversed::playedFile (file, true).getFullPathName()
+                                                          : notetune::playedFile (file, c.tunedNotes, c.tuneFormantFollows).getFullPathName();
+                        audio.push_back ({ item.start, item.length, item.offsetSeconds, played, item.stretch, item.tape, edges.in, edges.out,
                                            item.gainDb, item.fadeIn, item.fadeOut });
+                        const auto cross = playlistedit::autoCrossfade (p, item);
+                        auto& spec = audio.back();
+                        spec.userFadeInCurve = item.fadeInCurve;
+                        spec.userFadeOutCurve = item.fadeOutCurve;
+                        spec.autoFadeIn = cross.in;
+                        spec.autoFadeOut = cross.out;
+                        spec.pitch = item.pitch;
+
+                        if (item.reversed && file.existsAsFile() && ! juce::File (played).existsAsFile())
+                            problems.set (c.id, "Arquivo invertido não encontrado: "_t + played);
+
+                        if (! item.reversed && notetune::anyEdited (c.tunedNotes) && file.existsAsFile() && played == resolved)
+                            problems.set (c.id, "Não consegui refazer a voz afinada nota a nota; tocando o original: "_t + resolved);
                     }
 
             std::sort (audio.begin(), audio.end(), [] (const AudioSpec& a, const AudioSpec& x) { return a.start < x.start; });
@@ -603,8 +703,11 @@ std::vector<Projector::MidiSpec> Projector::midiFor (const Project& p, const Cha
         struct Key
         {
             const Pattern* pattern;
-            int length, offset;
-            bool operator< (const Key& o) const noexcept   { return std::tie (pattern, length, offset) < std::tie (o.pattern, o.length, o.offset); }
+            int length, offset, seed;   // seed: o começo do bloco, só quando o canal tem passo com chance
+            bool operator< (const Key& o) const noexcept
+            {
+                return std::tie (pattern, length, offset, seed) < std::tie (o.pattern, o.length, o.offset, o.seed);
+            }
         };
 
         std::map<Key, std::vector<Note>> known;
@@ -616,11 +719,13 @@ std::vector<Projector::MidiSpec> Projector::midiFor (const Project& p, const Cha
 
             if (auto* pat = p.findPattern (item.ref))
             {
-                const Key key { pat, item.length, item.patternOffset };
+                // o começo do padrão na linha do tempo: as duas metades de um bloco cortado sorteiam como o bloco inteiro
+                const int seed = usesChance (*pat, c.id) ? item.start - item.patternOffset : 0;
+                const Key key { pat, item.length, item.patternOffset, seed };
                 auto it = known.find (key);
 
                 if (it == known.end())
-                    it = known.emplace (key, notesFor (p, *pat, c, item.length, item.patternOffset)).first;
+                    it = known.emplace (key, notesFor (p, *pat, c, item.length, item.patternOffset, seed)).first;
 
                 if (! it->second.empty())
                     midi.push_back ({ item.start, item.length, it->second });
@@ -631,9 +736,15 @@ std::vector<Projector::MidiSpec> Projector::midiFor (const Project& p, const Cha
     }
     else if (auto* pat = p.currentPatternPtr())
     {
-        const int length = pat->lengthTicks() * loops;
+        const int length = pat->lengthTicks() * patternLoops (p, *pat);
         midi.push_back ({ 0, length, notesFor (p, *pat, c, length) });
     }
+
+    // pitch bend (26/10): mudar o alcance do instrumento reescreve as curvas em pitch wheel; sem curva, o knob do synth
+    // não reescreve o clipe
+    for (auto& m : midi)
+        if (std::any_of (m.notes.begin(), m.notes.end(), [] (const Note& n) { return ! n.pitch.empty(); }))
+            m.bendRange = curves::bendRangeFor (c);
 
     return midi;
 }
@@ -848,25 +959,35 @@ void Projector::rebuildClips (ChannelBinding& b, const juce::String& name, std::
         // estiver esticado, o esticar por cima. Merge do extra-onda1 abde694 com o extra-esticar 1177d2a.
         playFileAsIs (*clip, position);
 
-        if (before > 0.0 || spec.fadeOut > 0.0 || spec.userFadeIn > 0.0 || spec.userFadeOut > 0.0)
+        if (before > 0.0 || spec.fadeOut > 0.0 || spec.userFadeIn > 0.0 || spec.userFadeOut > 0.0 || spec.autoFadeIn > 0.0 || spec.autoFadeOut > 0.0)
         {
-            // o crossfade dos takes usa a curva de mesma potência; os fades das alças, a reta (como no FL)
-            clip->setFadeInType (before > 0.0 ? te::AudioFadeCurve::convex : te::AudioFadeCurve::linear);
-            clip->setFadeOutType (spec.fadeOut > 0.0 ? te::AudioFadeCurve::convex : te::AudioFadeCurve::linear);
-            clip->setFadeIn (te::TimeDuration::fromSeconds (juce::jmax (before, spec.userFadeIn)));
-            clip->setFadeOut (te::TimeDuration::fromSeconds (juce::jmax (spec.fadeOut, spec.userFadeOut)));
+            // O crossfade dos takes e o automático (dois áudios sobrepostos na raia) usam a curva de mesma
+            // potência; os fades das alças, a curva escolhida no bloco (a reta, se ninguém mexeu). Vale o mais longo.
+            const double fadeIn = juce::jmax (before, spec.userFadeIn, spec.autoFadeIn);
+            const double fadeOut = juce::jmax (spec.fadeOut, spec.userFadeOut, spec.autoFadeOut);
+            const bool powerIn = before > 0.0 || spec.autoFadeIn > spec.userFadeIn;
+            const bool powerOut = spec.fadeOut > 0.0 || spec.autoFadeOut > spec.userFadeOut;
+            clip->setFadeInType (powerIn ? te::AudioFadeCurve::convex : fadeCurveType (spec.userFadeInCurve));
+            clip->setFadeOutType (powerOut ? te::AudioFadeCurve::convex : fadeCurveType (spec.userFadeOutCurve));
+            clip->setFadeIn (te::TimeDuration::fromSeconds (fadeIn));
+            clip->setFadeOut (te::TimeDuration::fromSeconds (fadeOut));
         }
 
         if (spec.gainDb != 0.0f)
             clip->setGainDB (spec.gainDb);   // o ganho do bloco (a alça de baixo, normalizar)
 
-        if (spec.stretch != 1.0)
+        if (spec.stretch != 1.0 || spec.pitch != 0.0f)
         {
             // Esticado em tempo real, sem arquivo temporário: o som novo sai assim que o bloco muda.
             // O signalsmith-stretch (MIT, no Tracktion) mantém o tom; a fita só muda a velocidade, e o tom vai junto.
+            // O tom do bloco (voz na playlist, 27/10) pede o signalsmith; na fita, ele soma ao tom que a velocidade dá.
             clip->setUsesProxy (false);
-            clip->setTimeStretchMode (spec.tape ? te::TimeStretcher::disabled : te::TimeStretcher::signalsmithDefault);
+            const bool tapeOnly = spec.tape && spec.pitch == 0.0f;
+            clip->setTimeStretchMode (tapeOnly ? te::TimeStretcher::disabled : te::TimeStretcher::signalsmithDefault);
             clip->setSpeedRatio (1.0 / spec.stretch);
+
+            if (! tapeOnly)
+                clip->setPitchChange (spec.pitch + (spec.tape ? (float) (12.0 * std::log2 (1.0 / spec.stretch)) : 0.0f));
         }
 
         b.audioClips[j] = clip;
@@ -909,6 +1030,17 @@ void Projector::writeMidi (te::MidiClip& clip, const MidiSpec& spec)
     auto& seq = clip.getSequence();
     seq.clear (nullptr);
 
+    // Pan por passo (26/10): o sampler guarda o CC 10 numa fila com o instante em que chegou e o usa só na
+    // nota que chega no mesmo instante, na ordem. Num canal que usa pan, toda nota leva o seu (o centro
+    // também). No mesmo instante, o Tracktion manda os controles antes das notas, e os dois na ordem do clipe.
+    const bool anyPan = std::any_of (spec.notes.begin(), spec.notes.end(), [] (const Note& n) { return n.pan != 0; });
+
+    if (anyPan)
+        for (auto& n : spec.notes)
+            seq.addControllerEvent (te::BeatPosition::fromBeats (n.start / (double) ticksPerBeat), 10,
+                                    juce::jlimit (0, 127, 64 + juce::roundToInt (n.pan * 0.63)) << 7,   // o MidiList guarda 14 bits
+                                    nullptr);
+
     for (auto& n : spec.notes)
         seq.addNote (n.key,
                      te::BeatPosition::fromBeats (n.start / (double) ticksPerBeat),
@@ -918,6 +1050,14 @@ void Projector::writeMidi (te::MidiClip& clip, const MidiSpec& spec)
     // choke: o "All Sound Off" corta as vozes deste canal quando outro do grupo toca
     for (int t : spec.cuts)
         seq.addControllerEvent (te::BeatPosition::fromBeats (t / (double) ticksPerBeat), 120, 0, nullptr);
+
+    // Pitch bend e mod wheel desenhados nas notas (26/10): eventos do clipe, então tocar ao vivo e renderizar mandam
+    // os mesmos ao instrumento. O Tracktion guarda o pitch wheel em 14 bits e o CC em 7 bits deslocados (<< 7).
+    for (auto& e : curves::controlEvents (spec.notes, curves::Kind::pitch, spec.bendRange))
+        seq.addControllerEvent (te::BeatPosition::fromBeats (e.t / (double) ticksPerBeat), te::MidiControllerEvent::pitchWheelType, e.value, nullptr);
+
+    for (auto& e : curves::controlEvents (spec.notes, curves::Kind::mod))
+        seq.addControllerEvent (te::BeatPosition::fromBeats (e.t / (double) ticksPerBeat), 1, e.value << 7, nullptr);
 }
 
 void Projector::syncRouting (const Project& p)
@@ -1185,6 +1325,7 @@ void Projector::syncAutomation (const Project& p)
     // que interpola reto: o volume é o fader (0 a 1), o pan vai de -1 a 1, os efeitos e os VST3 de 0 a 1.
     // Só no modo SONG, como os clipes de automação do FL; no PAT o parâmetro fica no valor do knob.
     std::map<te::AutomatableParameter*, AppliedCurve> desired;
+    const juce::ScopedValueSetter<bool> applying (applyingParameters, true);
 
     if (songMode)
     {
@@ -1193,7 +1334,7 @@ void Projector::syncAutomation (const Project& p)
 
         for (auto& lane : p.automation)
         {
-            if (lane.points.empty())
+            if (lane.points.empty() || automationHeld.count (lane.target.key()) > 0)   // gravando: a pessoa segura
                 continue;
 
             if (lane.target.kind == "mixer" && (lane.target.param == "volume" || lane.target.param == "pan"))
@@ -1212,7 +1353,8 @@ void Projector::syncAutomation (const Project& p)
             curve.param = param;
             curve.owner = param->getPlugin();
 
-            for (auto& pt : lane.points)
+            // a tensão vira retas curtas (o Tracktion interpola reto)
+            for (auto& pt : automation::bake (automation::pointsOf (lane)))
                 curve.points.push_back ({ toTime (pt.t).inSeconds(), param->valueRange.convertFrom0to1 (juce::jlimit (0.0f, 1.0f, pt.v)) });
         }
 
@@ -1230,10 +1372,26 @@ void Projector::syncAutomation (const Project& p)
     {
         if (desired.count (it->first) == 0)
         {
-            it->second.param->getCurve().clear (nullptr);
-            it->second.param->updateStream();
+            auto param = it->second.param;
+            param->getCurve().clear (nullptr);
+            param->updateStream();
             it = automated.erase (it);
             cleared = true;
+
+            // (26/10) um VST3 volta ao valor de antes da curva; segurado pela gravação, fica na mão da pessoa
+            if (auto base = pluginBases.find (param.get()); base != pluginBases.end())
+            {
+                bool held = false;
+
+                for (auto& lane : p.automation)
+                    held = held || (automationHeld.count (lane.target.key()) > 0 && parameterFor (lane.target) == param);
+
+                if (! held)
+                {
+                    param->setParameter (base->second.value, juce::dontSendNotification);
+                    pluginBases.erase (base);
+                }
+            }
         }
         else
         {
@@ -1243,6 +1401,10 @@ void Projector::syncAutomation (const Project& p)
 
     for (auto& [raw, curve] : desired)
     {
+        // (26/10) a primeira curva de um parâmetro VST3: o valor de agora é o de antes da curva
+        if (automated.count (raw) == 0 && pluginBases.count (raw) == 0 && dynamic_cast<te::ExternalPlugin*> (curve.owner.get()) != nullptr)
+            pluginBases[raw] = { curve.param, curve.owner, curve.param->getCurrentValue() };
+
         auto& applied = automated[raw];
 
         if (applied.param == curve.param && applied.points == curve.points)
@@ -1273,6 +1435,12 @@ void Projector::faderCurves (const MixerTrack& m, const AutomationLane* volumeLa
 {
     auto* vol = volumeFor (m.id);
 
+    if (volumeLane != nullptr && automationHeld.count (volumeLane->target.key()) > 0)   // gravando: a pessoa segura
+        volumeLane = nullptr;
+
+    if (panLane != nullptr && automationHeld.count (panLane->target.key()) > 0)
+        panLane = nullptr;
+
     if (vol == nullptr || (volumeLane == nullptr && panLane == nullptr))
         return;
 
@@ -1284,7 +1452,7 @@ void Projector::faderCurves (const MixerTrack& m, const AutomationLane* volumeLa
         Points out;
 
         if (lane != nullptr)
-            for (auto& pt : lane->points)
+            for (auto& pt : automation::bake (automation::pointsOf (*lane)))   // a tensão vira retas curtas
                 out.push_back ({ toTime (pt.t).inSeconds(), range.convertFrom0to1 (juce::jlimit (0.0f, 1.0f, pt.v)) });
 
         return out;
@@ -1360,6 +1528,31 @@ void Projector::faderCurves (const MixerTrack& m, const AutomationLane* volumeLa
         const float fader = e.fader * std::exp (constantPower (e.pan).volumeOffsetDb / 20.0f);
         curve.points.push_back ({ e.t, juce::jlimit (0.0f, 1.0f, fader) });
     }
+}
+
+void Projector::setAutomationHold (const std::set<juce::String>& keys, const Project& p)
+{
+    if (keys == automationHeld)
+        return;
+
+    automationHeld = keys;
+    syncAutomation (p);
+}
+
+void Projector::rememberPluginBase (const AutomationTarget& target, float value)
+{
+    if (auto param = parameterFor (target); param != nullptr && dynamic_cast<te::ExternalPlugin*> (param->getPlugin()) != nullptr)
+        if (pluginBases.count (param.get()) == 0)
+            pluginBases[param.get()] = { param, param->getPlugin(), juce::jlimit (0.0f, 1.0f, value) };
+}
+
+std::optional<float> Projector::pluginBaseFor (const AutomationTarget& target) const
+{
+    if (auto param = parameterFor (target))
+        if (auto it = pluginBases.find (param.get()); it != pluginBases.end())
+            return it->second.value;
+
+    return std::nullopt;
 }
 
 //==============================================================================

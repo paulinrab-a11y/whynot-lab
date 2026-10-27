@@ -3,6 +3,7 @@
 #include "Bandlimit.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -99,6 +100,10 @@ struct VoiceParams
     float regionStart  = 0.0f;
     float regionEnd    = 1.0f;
     float regionFadeMs = 4.0f;
+
+    // Pan da nota (o pan do passo, 26/10): -1 esquerda .. 1 direita. No centro, os dois lados ficam em 1 e
+    // o som sai bit a bit igual ao de antes; fora dele, o lado oposto cai pela lei do cosseno.
+    float pan = 0.0f;
 };
 
 /** Troca valores não finitos pelo padrão e limita as faixas. Os parâmetros vêm
@@ -125,6 +130,7 @@ inline VoiceParams sanitized (VoiceParams p) noexcept
     p.regionStart   = fix (p.regionStart,   defaults.regionStart,   0.0f, 1.0f);
     p.regionEnd     = fix (p.regionEnd,     defaults.regionEnd,     0.0f, 1.0f);
     p.regionFadeMs  = fix (p.regionFadeMs,  defaults.regionFadeMs,  0.5f, 50.0f);
+    p.pan           = fix (p.pan,           defaults.pan,           -1.0f, 1.0f);
     return p;
 }
 
@@ -222,6 +228,7 @@ public:
             tailSamplesLeft = std::max (1, (int) std::lround (0.003 * outRate));
             tailAmp = env * playingGain;
             tailStep = tailAmp / (float) tailSamplesLeft;
+            tailPan = panGain;
         }
         else
         {
@@ -230,6 +237,10 @@ public:
 
         velocityGain = velocityTarget = newVelocity;
         velocitySamplesLeft = 0;
+
+        // Lei do cosseno só no lado oposto: no centro os dois ficam em 1 (multiplicar por 1 não muda nada).
+        panGain[0] = params.pan > 0.0f ? (float) std::cos (params.pan * 1.5707963267948966) : 1.0f;
+        panGain[1] = params.pan < 0.0f ? (float) std::cos (-params.pan * 1.5707963267948966) : 1.0f;
         position = 0.0;
         needsSetup = true;   // início, laço e fatia dependem do tamanho do sample, que só se sabe no render()
         loopOn = leavingLoop = hasRegion = regionFading = false;
@@ -454,7 +465,7 @@ public:
                     if (blend > 0.0f)
                         v += (read (sample, ch, length, back, ratio) - v) * blend;
 
-                    out[ch][i] += v * amp;
+                    out[ch][i] += v * amp * (numOutChannels > 1 ? panGain[(size_t) std::min (ch, 1)] : 1.0f);
                 }
             }
             else
@@ -466,7 +477,7 @@ public:
                     if (blend > 0.0f)
                         v += (read (sample, ch, length, back, ratio) - v) * blend;
 
-                    out[ch][i] += v * amp;
+                    out[ch][i] += v * amp * (numOutChannels > 1 ? panGain[(size_t) std::min (ch, 1)] : 1.0f);
                 }
             }
 
@@ -475,7 +486,7 @@ public:
             {
                 if (tailPosition < (double) (length - 1))
                     for (int ch = 0; ch < numOutChannels; ++ch)
-                        out[ch][i] += read (sample, ch, length, tailPosition, tailRatio) * tailAmp;
+                        out[ch][i] += read (sample, ch, length, tailPosition, tailRatio) * tailAmp * (numOutChannels > 1 ? tailPan[(size_t) std::min (ch, 1)] : 1.0f);
 
                 tailPosition += tailRatio;
                 tailAmp = std::max (0.0f, tailAmp - tailStep);
@@ -596,6 +607,7 @@ private:
     int velocitySamplesLeft = 0;
     double tailPosition = 0.0, tailRatio = 1.0;                              // a voz roubada saindo
     float tailAmp = 0.0f, tailStep = 0.0f;
+    std::array<float, 2> panGain { 1.0f, 1.0f }, tailPan { 1.0f, 1.0f };   // o pan desta nota e o da voz roubada
     int tailSamplesLeft = 0;
     const BandlimitTable* table = &bandlimitTable();   // feita na construção da voz, fora da thread de áudio
     double loopFrom = 0.0, loopTo = 0.0, loopLength = 1.0, loopFadeFrom = 0.0, xfade = 0.0, invXfade = 0.0;   // em frames do sample

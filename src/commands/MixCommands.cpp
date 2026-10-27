@@ -729,6 +729,7 @@ void registerMixCommands (CommandRegistry& r)
                  const float key = keepKey != t.insert->params.end() ? keepKey->second : -1.0f;
                  const float scale = keepScale != t.insert->params.end() ? keepScale->second : -1.0f;
                  const float follow = keepFollow != t.insert->params.end() ? keepFollow->second : -1.0f;
+                 const auto before = t.insert->params;
 
                  t.insert->params = user ? valuesForUser (*t.info, *user) : valuesFor (*t.info, preset);
                  t.insert->preset = presetId;
@@ -740,6 +741,11 @@ void registerMixCommands (CommandRegistry& r)
 
                      if (follow >= 0.0f)
                          t.insert->params["follow"] = follow;
+
+                     // As notas da escala Personalizada da afinação (27/10) também ficam.
+                     for (auto& [id, v] : before)
+                         if (id.startsWith ("note_"))
+                             t.insert->params[id] = v;
                  }
                  return CommandResult::success();
              } });
@@ -764,8 +770,13 @@ void registerMixCommands (CommandRegistry& r)
                  auto values = t.insert->params;
 
                  if (usesProjectKey (t.insert->type))
+                 {
                      for (auto* id : { "key", "scale", "follow" })
                          values.erase (id);
+
+                     for (auto it = values.begin(); it != values.end();)
+                         it = it->first.startsWith ("note_") ? values.erase (it) : std::next (it);   // as notas da escala também não
+                 }
 
                  juce::String id;
                  const auto result = usermix::savePreset (t.insert->type, params::string (a, "name"), values, id);

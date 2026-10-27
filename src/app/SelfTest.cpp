@@ -53,6 +53,11 @@ int runSelfTest (const juce::File& reportFile, const juce::File& workFolder)
     runRenderPackSelfTest (ctx);
     runWarpCaptureSelfTest (ctx);
     runControlSelfTest (ctx);
+    runAutomationRecordSelfTest (ctx);
+    runPitchBendSelfTest (ctx);
+    runTuneSelfTest (ctx);
+    runVoicePlaylistSelfTest (ctx);
+    runNoteTuneSelfTest (ctx);
     runInvalidFilesSelfTest (ctx);
 
     rep.lines.add ({});

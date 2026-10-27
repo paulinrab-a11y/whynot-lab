@@ -263,6 +263,7 @@ namespace
 
                 if (! merge)
                 {
+                    s = Step{};   // chance, tom e pan de antes não ficam no passo novo (26/10)
                     s.on = steps[i].on;
                     s.velocity = steps[i].velocity;
                     s.roll = steps[i].roll;

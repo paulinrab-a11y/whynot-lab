@@ -22,6 +22,7 @@ namespace whynot
 namespace te = tracktion;
 
 namespace piano { class Prefetch; }
+class AutomationRecording;
 
 /** Dono de tudo que não é tela: motor, Edit ao vivo, modelo, comandos e arquivos.
     A interface e o modo headless conversam com o app só por aqui.
@@ -149,6 +150,12 @@ public:
 
     /** O alvo em palavras: "EQ · Ganho agudo (Rack)", "Volume (Kick)", "Brilho (Rack)". */
     juce::String describeMidiTarget (const MidiLink&) const;
+
+    // AppServices: gravar automação (26/10). Com o modo ligado, mexer num controle no play do SONG escreve a curva.
+    bool canRecordAutomation() const override   { return automationRecording != nullptr; }
+    void setAutomationRecording (bool on) override;
+    bool isAutomationRecording() const override;
+    AutomationRecording* automationRecorder() noexcept   { return automationRecording.get(); }
 
     /** Um aviso para o pé da janela: o MIDI learn (aprendendo, ligado, parado), a automação criada pelo botão direito. */
     std::function<void (const juce::String& text, bool isError)> onNotice;
@@ -293,6 +300,7 @@ private:
     std::unique_ptr<DeferredSync> deferredSync;     // remontagem do motor agrupada durante um arraste
     std::unique_ptr<library::ProjectLibrary> projectLibrary;   // tela Projetos: prévias e deck; sai primeiro no destrutor
     std::unique_ptr<piano::Prefetch> pianoPrefetch; // carga do WHYNOT Piano ao abrir (só com janela)
+    std::unique_ptr<AutomationRecording> automationRecording;   // (26/10) gravar automação; sai antes do motor
     bool syncPending = false;
     juce::Range<int> timeSelection;
     int needleTicks = 0;                            // a agulha: o play do modo SONG começa aqui e o stop volta para cá

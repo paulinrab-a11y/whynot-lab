@@ -67,6 +67,18 @@ inline std::optional<Range> rangeFor (const Project& p, const AutomationTarget& 
     return std::nullopt;
 }
 
+/** Os pontos de uma curva do modelo, com a tensão, para as contas. */
+inline std::vector<Point> pointsOf (const AutomationLane& lane)
+{
+    std::vector<Point> out;
+    out.reserve (lane.points.size());
+
+    for (auto& pt : lane.points)
+        out.push_back ({ pt.t, pt.v, pt.tension });
+
+    return out;
+}
+
 /** O alvo só com os campos do tipo dele (o resto vazio): dois alvos iguais têm a mesma chave. */
 inline AutomationTarget tidy (AutomationTarget t)
 {

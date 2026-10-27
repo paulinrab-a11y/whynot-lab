@@ -1,4 +1,5 @@
 #include "MidiImport.h"
+#include "../model/NoteCurves.h"
 
 #include <array>
 #include <limits>
@@ -135,6 +136,79 @@ namespace
         }
     }
 
+    /** Pitch bend e CC1 de uma trilha viram as curvas das notas dela (26/10). Em cada nota: o valor que valia no começo
+        dela e cada evento enquanto ela soa. Eventos seguidos (até 2 × stepTicks de distância) são uma rampa; um evento
+        depois de um tempo parado é um salto, e ganha um ponto um tick antes com o valor de antes. O alcance do pitch
+        bend vem do RPN 0 da trilha (2 semitons se ela não diz). No fim, só os cantos ficam (curves::simplify). */
+    template <typename ToTicks>
+    void readCurves (const juce::MidiMessageSequence& seq, const ToTicks& toOurTicks, std::vector<Note>& notes)
+    {
+        struct Event { int t; float v; };
+        std::vector<Event> bends, mods;
+        int rpnMsb = 127, rpnLsb = 127;
+        float range = 2.0f;
+
+        for (int e = 0; e < seq.getNumEvents(); ++e)
+        {
+            const auto& m = seq.getEventPointer (e)->message;
+
+            if (m.isPitchWheel())
+            {
+                bends.push_back ({ toOurTicks (m.getTimeStamp()), curves::fromWheel (m.getPitchWheelValue(), range) });
+            }
+            else if (m.isController())
+            {
+                const int number = m.getControllerNumber(), value = m.getControllerValue();
+
+                if (number == 101)      rpnMsb = value;
+                else if (number == 100) rpnLsb = value;
+                else if (number == 6 && rpnMsb == 0 && rpnLsb == 0) range = (float) juce::jlimit (1, 24, value);
+                else if (number == 1)   mods.push_back ({ toOurTicks (m.getTimeStamp()), value / 127.0f });
+            }
+        }
+
+        // jump: a diferença a partir da qual um evento depois de um tempo parado é um salto (uma rampa lenta, com um passo
+        // de CC ou de wheel a cada tanto, não é); tolerance: o quanto o simplify deixa passar (mais que um passo de CC)
+        auto attach = [&notes] (const std::vector<Event>& events, curves::Kind kind, float jump, float tolerance)
+        {
+            if (events.empty())
+                return;
+
+            for (auto& n : notes)
+            {
+                // o último evento até o começo da nota (os eventos estão em ordem)
+                auto first = std::upper_bound (events.begin(), events.end(), n.start, [] (int t, const Event& ev) { return t < ev.t; });
+                float value = first == events.begin() ? 0.0f : std::prev (first)->v;
+                auto e = (size_t) (first - events.begin());
+
+                if (value == 0.0f && (e == events.size() || events[e].t >= n.end()))
+                    continue;   // a nota não dobra
+
+                std::vector<CurvePoint> pts { { 0, value } };
+                int lastT = n.start;
+
+                for (; e < events.size() && events[e].t < n.end(); ++e)
+                {
+                    const auto& ev = events[e];
+
+                    if (ev.t - lastT > 2 * curves::stepTicks && std::abs (ev.v - value) > jump)
+                        pts.push_back ({ ev.t - n.start - 1, value });   // um salto, não uma rampa
+
+                    pts.push_back ({ ev.t - n.start, ev.v });
+                    value = ev.v;
+                    lastT = ev.t;
+                }
+
+                auto& curve = curves::of (n, kind);
+                curve = curves::simplify (pts, tolerance);
+                curves::tidy (curve, kind);
+            }
+        };
+
+        attach (bends, curves::Kind::pitch, 0.1f, 0.01f);
+        attach (mods, curves::Kind::mod, 0.02f, 0.006f);
+    }
+
     /** As notas de uma linha da lista: a trilha inteira, ou só um canal dela. */
     juce::MidiMessageSequence sequenceOf (const juce::MidiFile& midi, const MidiFileInfo::Track& line)
     {
@@ -209,6 +283,7 @@ juce::Result readMidiNotes (const juce::File& file, const MidiImportOptions& opt
     {
         const auto seq = sequenceOf (midi, info.tracks[(size_t) i]);
         const bool wanted = options.track == 0 || options.track == i + 1;
+        std::vector<Note> trackNotes;
 
         for (int e = 0; e < seq.getNumEvents(); ++e)
         {
@@ -229,8 +304,12 @@ juce::Result readMidiNotes (const juce::File& file, const MidiImportOptions& opt
             n.length = off > m.getTimeStamp() ? juce::jmax (1, toOurTicks (off) - start) : ticksPerStep;
             n.key = juce::jlimit (0, 127, m.getNoteNumber());
             n.velocity = juce::jlimit (1, 127, (int) m.getVelocity());
-            notes.push_back (n);
+            trackNotes.push_back (n);
         }
+
+        // o pitch bend e o CC1 da trilha viram as curvas das notas dela (26/10)
+        readCurves (seq, toOurTicks, trackNotes);
+        notes.insert (notes.end(), trackNotes.begin(), trackNotes.end());
     }
 
     // o arquivo que começa depois de compassos vazios (comum ao exportar de outro app) vem para o começo

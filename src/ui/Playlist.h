@@ -5,6 +5,7 @@
 #include "AutomationLanes.h"
 #include "Controls.h"
 #include "TimeGrid.h"
+#include "../model/PlaylistEdit.h"
 #include "../model/Project.h"
 
 #include <map>
@@ -55,6 +56,19 @@ public:
         Vazia = nenhuma. Duplo clique na régua ou Esc limpa. */
     juce::Range<int> getTimeSelection() const noexcept   { return timeSelection; }
     void setTimeSelection (juce::Range<int>);
+
+    /** Voz na playlist (27/10). Ctrl+E: corta na agulha, ou nas bordas da seleção de tempo (só nos blocos
+        selecionados, se houver). Ctrl+Delete: apaga o trecho selecionado e puxa o resto. Ctrl+Insert: abre um
+        espaço do tamanho do trecho. Cada um é um passo de desfazer. */
+    void cutAtNeedle();
+    void removeTimeSelection();
+    void insertTimeSelection();
+    int needleTicks() const;
+
+    /** A prévia do "tirar silêncio e respiração": os trechos (ticks) que sairiam do bloco, em vermelho. Vazio = nenhum. */
+    void setSilencePreview (const juce::String& item, std::vector<juce::Range<int>> regions);
+    /** Abre a ferramenta de silêncio do bloco (CallOutBox ao lado dele). */
+    void showSilenceTool (const juce::String& item);
 
     /** Blocos selecionados (Ctrl+arrastar ou a ferramenta Selecionar faz a caixa; Shift soma). */
     const std::set<juce::String>& getSelection() const noexcept   { return selection; }
@@ -259,6 +273,10 @@ private:
     double playhead = -1.0;
     int needle = -1;                       // a agulha parada (o play do SONG começa aqui)
 
+    std::map<juce::String, playlistedit::Crossfade> crossfades;   // voz na playlist: o crossfade automático por bloco
+    juce::String silenceItem;                      // voz na playlist: o bloco com a prévia do silêncio
+    std::vector<juce::Range<int>> silenceRegions;
+    void addVoiceMenu (juce::PopupMenu&, const PlaylistItem&);
     std::set<juce::String> openGroups;     // grupos de takes abertos (estado da tela)
     std::map<juce::String, int> groupTakes;            // quantos takes cada grupo tem
     std::map<juce::String, juce::String> groupPill;    // o pedaço do comp que leva a pílula "3 takes"
@@ -279,6 +297,42 @@ private:
     bool updatingScrollBars = false;
 
     static constexpr int headerWidth = 150, rulerHeight = 28, scrollSize = 12;
+};
+
+/** Voz na playlist (27/10): tirar o silêncio e a respiração de um clipe. O limiar e o tamanho mínimo mudam a
+    prévia na hora (os trechos em vermelho no bloco); Tirar apaga os trechos (ou abaixa, com a opção), um passo de desfazer. */
+class SilenceTool : public juce::Component
+{
+public:
+    SilenceTool (AppController&, PlaylistGrid&, const juce::String& item);
+    ~SilenceTool() override;
+
+    void resized() override;
+    void paint (juce::Graphics&) override;
+
+    /** Roda o audio.removeSilence com o que está na tela. Devolve se deu certo; `message` diz o que fez ou o erro. */
+    bool apply (juce::String& message);
+    void setThreshold (double db)   { threshold.setValue (db, juce::sendNotificationSync); }
+    void setLowerInstead (bool on)  { lower.setToggleState (on, juce::dontSendNotification); }
+    int regionCount() const noexcept   { return regions; }
+    double previewSeconds() const noexcept   { return seconds; }
+
+    std::function<void (bool ok, const juce::String& message)> onDone;
+
+private:
+    void updatePreview();
+
+    AppController& app;
+    juce::Component::SafePointer<PlaylistGrid> grid;
+    juce::String item;
+    juce::Label title, summary;
+    juce::Slider threshold { juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight };
+    juce::Slider minimum { juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight };
+    juce::Label thresholdLabel, minimumLabel;
+    juce::ToggleButton lower { "Abaixar 15 dB em vez de apagar" };
+    juce::TextButton cancel { "Cancelar" }, remove { "Tirar" };
+    int regions = 0;
+    double seconds = 0.0;
 };
 
 /** Playlist com a barra de cima: grade de encaixe, o que o clique coloca e o modo de tocar. */

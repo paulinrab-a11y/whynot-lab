@@ -29,8 +29,9 @@ Como no FL:
 - **Editar a voz (gravar voz, fatia 4):** com o mouse num bloco de áudio aparecem as alças:
   - **fades** nos cantos de cima: arraste para dentro (a reta do volume aparece por cima da onda);
   - **ganho** no meio da borda de baixo: arraste para cima ou para baixo (0,2 dB por pixel; com Shift, 0,05). O cabeçalho mostra o ganho ("+3,0 dB").
-  - Na setinha do bloco: **Normalizar** (o pico do trecho em -1 dB, pelo ganho do bloco), **Inverter** (um WAV de trás para frente ao lado do original; inverter de novo volta para ele), **Consolidar** (os selecionados, ou o comp de um grupo de takes, num WAV só, com o ganho, os fades e os crossfades, sem os efeitos do mixer), **Ganho em 0 dB** e **Tirar os fades**.
+  - Na setinha do bloco: **Normalizar** (o pico do trecho em -1 dB, pelo ganho do bloco), **Inverter** (um WAV de trás para frente ao lado do original, tocado pelo mesmo bloco, sem canal novo; inverter de novo volta), **Consolidar** (os selecionados, ou o comp de um grupo de takes, num WAV só, com o ganho, os fades e os crossfades, sem os efeitos do mixer), **Ganho em 0 dB** e **Tirar os fades**.
   - O ganho e os fades não mexem no arquivo. Inverter e consolidar escrevem um WAV novo; o Ctrl+Z volta o bloco para o antigo, e o arquivo fica.
+  - Mais edição da voz (27/10): cortar na agulha, apagar o trecho puxando o resto, curvas dos fades, crossfade automático, tom do bloco e tirar silêncio e respiração. Ver `docs/voz-playlist.md`.
 - **Take de áudio:** vira um **canal de áudio novo** no channel rack ("Voz take 1", "Voz take 2"...), que sai pela trilha armada, com **um clipe na playlist** (na raia que grava por essa trilha, senão na primeira livre). O arquivo vai para `gravacoes/` na pasta do projeto, em WAV 32 bits float, igual à entrada amostra por amostra, com o nome da trilha e o número: **"Voz_take03.wav"** (o primeiro número que os canais do projeto não usam; se o arquivo já existe, como o de um take desfeito, o novo ganha "(2)" e nada é sobrescrito).
 - **Gravar pela playlist (fatia 5):** o botão direito no cabeçalho da raia escolhe a entrada da placa ("Entrada 1 (mono)", ou um par em estéreo) e **já arma**, como no FL. A raia ganha uma trilha do mixer com o nome dela (a voz passa pelos efeitos de lá), e os takes dela caem nessa raia. O cabeçalho mostra a entrada e o ponto vermelho quando armada. "Parar de gravar nesta raia" solta a raia e desarma.
 - **Cancelar o take:** no botão direito do REC, gravando, "Cancelar o take" (ou o atalho, no editor de atalhos): o arquivo é apagado, nada entra no projeto e o transporte para.
@@ -64,12 +65,33 @@ Uma **curva por parâmetro**, em ticks da música, como os clipes de automação
 - move qualquer parâmetro visível de um efeito nativo, como o corte do filtro;
 - move os parâmetros de um efeito ou instrumento VST3.
 
-- **Só toca no modo SONG.** No PAT, o parâmetro fica no valor do knob. Não é bug: é como no FL, e a raia na playlist deve dizer isso na dica.
+- **Só toca no modo SONG.** No PAT, o parâmetro fica no valor do knob. Não é bug: é como no FL, e a raia na playlist diz isso no cabeçalho.
 - **Entre dois pontos a curva anda reta na posição do knob**, não no valor: numa frequência, de 200 Hz a 8 kHz o meio do caminho é 1,3 kHz, como um knob girado com o mouse. O volume anda reto no fader. Antes do primeiro ponto vale o primeiro; depois do último, o último.
 - **Mudar o BPM leva a curva junto** (ela está em ticks, como as notas e os clipes).
-- **Quando a curva sai** (apagada, sem pontos, ou o modo volta para PAT), o volume, o pan e os efeitos nativos voltam ao valor do mixer ou do efeito. Um VST3 fica onde a curva o deixou, como no FL.
+- **Quando a curva sai** (apagada, sem pontos, ou o modo volta para PAT), o volume, o pan e os efeitos nativos voltam ao valor do mixer ou do efeito. **Um VST3 também volta** (26/10): ao valor que ele tinha quando a primeira curva começou a tocar. Sem isso, o plugin ficava preso no último valor da curva (a "automação fantasma").
 - **Apagar a trilha ou o efeito apaga a curva dele** (com aviso no log). O desfazer devolve os dois.
-- **Ainda não tem:** curvas com tensão e gravar automação mexendo no knob durante o play.
+
+### Tensão (26/10)
+
+- Cada trecho entre dois pontos pode ser curvo. A bolinha no meio do trecho, na raia, curva o trecho: arraste para cima ou para baixo, e ela vai para onde o mouse está. Duplo clique ou o botão direito na bolinha deixa o trecho reto. A bolinha só aparece em trecho que sobe ou desce e que tem pelo menos 24 px na tela.
+- A tensão vai de -1 a 1 e mora no ponto onde o trecho começa (a do último ponto não vale nada e fica 0). Tensão positiva segura no valor do começo e corre no fim; negativa corre no começo e assenta no fim. A conta é o tempo do trecho elevado a 2^(3 × tensão): na tensão 1, no meio do tempo a curva andou 1/256 do caminho; na -1, 92%.
+- O Tracktion só interpola reto: cada trecho com tensão vai para ele como 32 retas que seguem a curva (`automation::bake`), com erro abaixo de 1% do knob. O que a tela mostra e o que o export toca são a mesma conta (`automation::positionAt`).
+- No `.wnl` é o campo opcional `"tension"` no ponto, com 3 casas, escrito só quando não é 0: um projeto sem tensão sai byte a byte igual ao de antes, e o esquema não sobe.
+
+### Gravar automação (26/10)
+
+- O botão **AUTO**, ao lado do GRAVAR no transporte (ou `automation.setRecording { on }`), liga o modo. Com ele aceso e a música tocando no **SONG**, mexer num controle escreve a curva dele: o fader e o pan do mixer, um knob de efeito nativo, o controlador MIDI ligado a eles pelo MIDI learn (e as macros, pelos parâmetros que elas movem), ou um parâmetro de um VST3 mexido na janela do plugin. No PAT o modo fica aceso mas não grava, porque a curva não toca lá. Escrevendo, o AUTO pisca e o cabeçalho da raia avisa em vermelho.
+- **Uma volta** vai do play até o stop, ou até o loop voltar ao começo. Do primeiro toque até o fim da volta o controle escreve: o último valor segura até o fim da volta. O trecho tocado troca o que a curva tinha nele, e fora dele a curva fica como estava (pontos de emenda com o valor antigo, logo antes e logo depois). Com o loop, a volta seguinte começa limpa: só escreve o que for mexido de novo.
+- **Um Ctrl+Z por volta**: os passos do fader e a curva escrita saem juntos. Qualquer outra edição no meio da volta (um gesto novo, como arrastar uma nota ou um bloco, o salvar, ou o Ctrl+Z) fecha a volta antes, e ela vira um passo. O loop voltando com o fader ainda seguro também fecha a volta. Um comando da IA no meio conta como edição de fora: fecha a volta e não é gravado como a mão da pessoa.
+- O knob é medido a cada 20 ms, e a curva guarda só o que muda o som: os pontos que a reta entre os vizinhos já explica saem (Ramer-Douglas-Peucker na vertical, com 0,4% do knob). Uma rampa de 2 s e um platô viram 3 pontos.
+- Enquanto a pessoa segura um controle, a curva dele fica de fora e o som segue a mão. No fim da volta o knob (o valor fora da curva) volta ao de antes da volta, e a curva nova manda. Num VST3, o valor de antes da volta é o que ele volta a ter quando a curva for apagada.
+- Com o **punch** ligado (`record.setPunch`), só fica o que foi mexido entre o início e o fim do punch.
+- Para a IA: `automation.recordPass { passes: [{ target, points, from?, to?, base? }] }` escreve uma passada do mesmo jeito (um passo de desfazer), e `automation.setTension { lane, t, tension }` curva um trecho. O `automation.setPoints` aceita `tension` em cada ponto, e o `automation.list` devolve a tensão e se o modo de gravar está ligado.
+- **Limites:** sem controlador MIDI de verdade nem placa de som no autoteste (o relógio é de mentira e o VST3 é mexido pelo parâmetro do Tracktion, como a janela do plugin faz). Não ouvido. O valor de antes da curva de um VST3 vale na sessão: salvar com a curva tocando grava no plugin o valor da curva.
+
+### Tocar no modo PAT (decidido: não, 27/10)
+
+Hoje a curva não toca no PAT, como no FL. A curva está em ticks da **música**, e o PAT toca um padrão em loop a partir do tick 0: tocar a curva lá faria um padrão de 1 compasso ouvir só o comecinho da automação da música, o que não corresponde a nada que a pessoa montou. Fazer o certo pediria uma curva por padrão (a automação dentro do padrão), que é outra coisa: um campo novo no padrão e outra raia no piano roll ou no rack. Por isso o comportamento não mudou: o usuário decidiu (27/10) manter a automação tocando só no SONG.
 
 ## Medidor de CPU e falhas de buffer
 
@@ -116,9 +138,9 @@ Em C++, pela `AppController`:
 | `record.setMonitor {track, mode}` | Monitorar a entrada pela trilha: `off`, `armed` (o padrão) ou `on` |
 | `record.setLowLatency {on}` | Baixa latência ao gravar: os efeitos com atraso saem da escuta enquanto grava (fica no `gravacao.json`) |
 | `audio.setGain {item, db}` | O ganho do bloco de áudio, de -60 a +24 dB |
-| `audio.setFades {item, in?, out?}` | Os fades do bloco, em segundos |
-| `audio.normalize {item, peakDb?}` | Normaliza o trecho do bloco (o pico em -1 dB, ou no `peakDb`) pelo ganho do bloco |
-| `audio.reverse {item}` | O bloco passa a tocar o mesmo trecho de trás para frente (um WAV novo ao lado; de novo, volta) |
+| `audio.setFades {item, in?, out?, inCurve?, outCurve?}` | Os fades do bloco, em segundos, e a curva de cada um (ver `docs/voz-playlist.md`) |
+| `audio.normalize {item ou items, together?, peakDb?}` | Normaliza o trecho do bloco, ou um grupo (o pico em -1 dB, ou no `peakDb`) pelo ganho do bloco |
+| `audio.reverse {item}` | O bloco passa a tocar o mesmo trecho de trás para frente (um WAV novo ao lado, sem canal novo; de novo, volta) |
 | `audio.consolidate {items}` | Os blocos viram um WAV só (sem os efeitos do mixer), num bloco no lugar deles |
 | `takes.list {group?}` | Os grupos de takes: os takes e, em cada trecho, qual toca |
 | `takes.cut {group, at, unit?}` | Corta todos os takes do grupo no mesmo ponto |

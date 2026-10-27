@@ -72,7 +72,7 @@ void AutomationLanes::refresh (const Project& p)
         lane.range = automation::rangeFor (p, src.target);
 
         for (auto& pt : src.points)
-            lane.points.push_back ({ pt.t, pt.v });
+            lane.points.push_back ({ pt.t, pt.v, pt.tension });
 
         const auto& t = src.target;
 
@@ -149,6 +149,9 @@ void AutomationLanes::setView (double newScroll, float newPxPerTick)
 
 void AutomationLanes::setPlayhead (double ticks)
 {
+    if (app.isAutomationRecording() != recordingShown)   // o aviso do cabeçalho segue o modo
+        repaint (0, 0, getWidth(), headerHeight);
+
     if (std::abs (ticks - playhead) < 0.5)
         return;
 
@@ -244,6 +247,37 @@ int AutomationLanes::pointAt (int lane, juce::Point<float> p) const
     return best;
 }
 
+juce::Point<float> AutomationLanes::handlePosition (int lane, int segment) const
+{
+    const auto& points = lanes[(size_t) lane].points;
+    const auto area = curveBounds (lane).toFloat();
+    const auto& a = points[(size_t) segment];
+    const auto& b = points[(size_t) segment + 1];
+    const double mid = 0.5 * (a.t + b.t);
+    return { tickToX (mid), area.getBottom() - automation::positionAt (points, mid, 0.0f) * area.getHeight() };
+}
+
+int AutomationLanes::handleAt (int lane, juce::Point<float> p) const
+{
+    if (! juce::isPositiveAndBelow (lane, (int) lanes.size()))
+        return -1;
+
+    const auto& points = lanes[(size_t) lane].points;
+
+    for (int j = 0; j + 1 < (int) points.size(); ++j)
+    {
+        // só nos trechos largos e que sobem ou descem (num trecho reto, a tensão não muda nada)
+        if ((points[(size_t) j + 1].t - points[(size_t) j].t) * pxPerTick < 24.0f
+            || std::abs (points[(size_t) j + 1].v - points[(size_t) j].v) < 0.002f)
+            continue;
+
+        if (p.getDistanceFrom (handlePosition (lane, j)) < hitRadius)
+            return j;
+    }
+
+    return -1;
+}
+
 float AutomationLanes::tickToX (double tick) const   { return (float) (nameWidth + (tick - scrollTicks) * pxPerTick); }
 double AutomationLanes::xToTick (float x) const      { return scrollTicks + (x - (float) nameWidth) / pxPerTick; }
 
@@ -329,17 +363,30 @@ void AutomationLanes::paint (juce::Graphics& g)
     g.setFont (captionFont());
     g.drawText ("AUTOMAÇÃO"_t, juce::Rectangle<int> (32, 0, nameWidth - 32, headerHeight), juce::Justification::centredLeft, false);
 
-    const auto hint = lanes.empty() ? "O volume, o pan ou um efeito mudando ao longo da música. Toca no modo SONG."_t
-                    : songMode      ? "Toca no modo SONG."_t
+    recordingShown = app.isAutomationRecording();
+    const auto hint = recordingShown ? (songMode ? "Gravando automação: no play, mexa num knob, fader ou controlador."_t
+                                                 : "Gravando automação: ela grava no modo SONG."_t)
+                    : lanes.empty() ? "O volume, o pan ou um efeito mudando ao longo da música. Toca no modo SONG."_t
+                    : songMode      ? "Toca no modo SONG. A bolinha no meio do trecho curva."_t
                                     : "Modo PAT: as curvas ficam paradas. Toque a playlist (SONG) para ouvir."_t;
-    g.setColour (colour::textFaint);
+    auto hintArea = header.withLeft (nameWidth + 8).withRight (addButton.getX() - 8);
+
+    if (recordingShown)
+    {
+        g.setColour (colour::meterHigh);   // o vermelho funcional do REC
+        g.fillEllipse (juce::Rectangle<float> (8.0f, 8.0f).withCentre ({ (float) hintArea.getX() + 4.0f, (float) header.getCentreY() }));
+        hintArea.removeFromLeft (14);
+    }
+
+    g.setColour (recordingShown ? colour::text : colour::textFaint);
     g.setFont (font (type::body));
-    g.drawText (hint, header.withLeft (nameWidth + 8).withRight (addButton.getX() - 8), juce::Justification::centredLeft, true);
+    g.drawText (hint, hintArea, juce::Justification::centredLeft, true);
 
     // raias
     const int last = juce::jmin ((int) lanes.size(), firstLane + maxVisible);
     const int hoverLane = dragging ? -1 : laneAt (hoverPos);
     const int hoverPoint = hoverLane >= 0 ? pointAt (hoverLane, hoverPos) : -1;
+    const int hoverHandle = hoverLane >= 0 && hoverPoint < 0 ? handleAt (hoverLane, hoverPos) : -1;
 
     for (int i = firstLane; i < last; ++i)
     {
@@ -372,7 +419,8 @@ void AutomationLanes::paint (juce::Graphics& g)
                 g.fillRect (tickToX ((double) bar * barTicks), (float) strip.getY(), 1.0f, (float) strip.getHeight());
             }
 
-            // a curva: reta entre os pontos; antes do primeiro e depois do último, reta no valor da ponta
+            // a curva: reta ou curvada (a tensão) entre os pontos; antes do primeiro e depois do último, reta no
+            // valor da ponta
             if (! lane.points.empty())
             {
                 auto yOf = [&curve] (float v) { return curve.getBottom() - v * curve.getHeight(); };
@@ -380,8 +428,25 @@ void AutomationLanes::paint (juce::Graphics& g)
                 juce::Path path;
                 path.startNewSubPath ((float) strip.getX(), yOf (lane.points.front().v));
 
-                for (auto& pt : lane.points)
+                for (size_t j = 0; j < lane.points.size(); ++j)
+                {
+                    const auto& pt = lane.points[j];
+
+                    if (j > 0 && std::abs (lane.points[j - 1].tension) >= 1.0e-4f)
+                    {
+                        // um passo a cada ~3 px na tela, entre 4 e 64
+                        const auto& a = lane.points[j - 1];
+                        const int steps = juce::jlimit (4, 64, (int) ((float) (pt.t - a.t) * pxPerTick / 3.0f));
+
+                        for (int k = 1; k < steps; ++k)
+                        {
+                            const double t = a.t + (double) (pt.t - a.t) * k / steps;
+                            path.lineTo (tickToX (t), yOf (automation::positionAt (lane.points, t, 0.0f)));
+                        }
+                    }
+
                     path.lineTo (tickToX (pt.t), yOf (pt.v));
+                }
 
                 path.lineTo ((float) strip.getRight(), yOf (lane.points.back().v));
 
@@ -394,6 +459,33 @@ void AutomationLanes::paint (juce::Graphics& g)
 
                 g.setColour (ink);
                 g.strokePath (path, juce::PathStrokeType (1.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+                // as bolinhas do meio de cada trecho (a tensão): pequenas e vazadas; maiores com o mouse em cima
+                if (lane.range.has_value())
+                {
+                    for (int j = 0; j + 1 < (int) lane.points.size(); ++j)
+                    {
+                        const bool held = dragging && dragLane == i && dragSegment == j;
+                        const bool over = hoverLane == i && hoverHandle == j;
+                        const auto& a = lane.points[(size_t) j];
+                        const auto& b = lane.points[(size_t) j + 1];
+
+                        if (! held && ((b.t - a.t) * pxPerTick < 24.0f || std::abs (b.v - a.v) < 0.002f))
+                            continue;
+
+                        const auto c = handlePosition (i, j);
+
+                        if (c.x < (float) strip.getX() || c.x > (float) strip.getRight())
+                            continue;
+
+                        const float r = held || over ? 3.5f : 2.5f;
+                        const auto ring = juce::Rectangle<float> (r * 2.0f, r * 2.0f).withCentre (c);
+                        g.setColour (held || over ? ink : colour::background);
+                        g.fillEllipse (ring);
+                        g.setColour (ink.withAlpha (held || over ? 1.0f : 0.7f));
+                        g.drawEllipse (ring, 1.0f);
+                    }
+                }
 
                 for (int j = 0; j < (int) lane.points.size(); ++j)
                 {
@@ -478,7 +570,9 @@ void AutomationLanes::mouseMove (const juce::MouseEvent& e)
     auto newCursor = juce::MouseCursor::NormalCursor;
 
     if (index >= 0 && lanes[(size_t) index].range.has_value() && curveBounds (index).expanded (0, curvePad).toFloat().contains (e.position))
-        newCursor = pointAt (index, e.position) >= 0 ? juce::MouseCursor::DraggingHandCursor : juce::MouseCursor::CrosshairCursor;
+        newCursor = pointAt (index, e.position) >= 0 ? juce::MouseCursor::DraggingHandCursor
+                  : handleAt (index, e.position) >= 0 ? juce::MouseCursor::UpDownResizeCursor
+                                                      : juce::MouseCursor::CrosshairCursor;
 
     setMouseCursor (newCursor);
     repaint();
@@ -514,6 +608,24 @@ void AutomationLanes::mouseDown (const juce::MouseEvent& e)
     }
 
     const int hit = pointAt (index, e.position);
+
+    // a bolinha do meio: arrastar curva o trecho; duplo clique (ou o botão direito) deixa reto
+    if (const int segment = hit < 0 ? handleAt (index, e.position) : -1; segment >= 0)
+    {
+        if (e.mods.isPopupMenu() || e.getNumberOfClicks() > 1)
+        {
+            lane.points[(size_t) segment].tension = 0.0f;
+            commit (index);
+            return;
+        }
+
+        dragLane = index;
+        dragPoint = -1;
+        dragSegment = segment;
+        dragging = true;
+        repaint();
+        return;
+    }
 
     if (e.mods.isPopupMenu())
     {
@@ -561,6 +673,21 @@ void AutomationLanes::mouseDrag (const juce::MouseEvent& e)
 
     auto& points = lanes[(size_t) dragLane].points;
 
+    if (juce::isPositiveAndBelow (dragSegment, (int) points.size() - 1))
+    {
+        // a bolinha vai para onde o mouse está: a tensão que põe o meio do trecho nessa altura
+        const auto& a = points[(size_t) dragSegment];
+        const auto& b = points[(size_t) dragSegment + 1];
+        const float v = yToPosition (dragLane, e.position.y);
+
+        if (std::abs (b.v - a.v) >= 0.002f)
+            points[(size_t) dragSegment].tension = automation::tensionForMidpoint ((v - a.v) / (b.v - a.v));
+
+        hoverPos = e.position;
+        repaint();
+        return;
+    }
+
     if (! juce::isPositiveAndBelow (dragPoint, (int) points.size()))
         return;
 
@@ -581,7 +708,7 @@ void AutomationLanes::mouseUp (const juce::MouseEvent&)
 
     dragging = false;
     const int index = dragLane;
-    dragLane = dragPoint = -1;
+    dragLane = dragPoint = dragSegment = -1;
     commit (index);   // um passo de desfazer por arrasto
 }
 
@@ -616,6 +743,9 @@ juce::String AutomationLanes::getTooltip()
     if (const int p = pointAt (index, hoverPos); p >= 0)
         return formatValue (lane, lane.points[(size_t) p].v) + ". Arraste para mover, botão direito apaga. Alt: sem grade."_t;
 
+    if (handleAt (index, hoverPos) >= 0)
+        return "Arraste para cima ou para baixo para curvar o trecho. Duplo clique deixa reto."_t;
+
     return "Clique cria um ponto, arraste move, botão direito apaga. Alt: sem grade."_t
            + (songMode ? juce::String() : " A curva toca no modo SONG."_t);
 }
@@ -629,7 +759,7 @@ void AutomationLanes::commit (int index)
     juce::Array<juce::var> list;
 
     for (auto& pt : lanes[(size_t) index].points)
-        list.add (args ({ { "t", pt.t }, { "v", pt.v } }));
+        list.add (pt.tension != 0.0f ? args ({ { "t", pt.t }, { "v", pt.v }, { "tension", pt.tension } }) : args ({ { "t", pt.t }, { "v", pt.v } }));
 
     const auto result = app.run ("automation.setPoints", args ({ { "lane", lanes[(size_t) index].id }, { "points", list } }));
 

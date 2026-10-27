@@ -399,6 +399,36 @@ void ChannelRack::paint (juce::Graphics& g)
                         g.fillRect (x - 1.0f, b.getBottom() - 9.0f, 2.0f, 5.0f);
                     }
                 }
+
+                // Passos mais ricos (26/10): o tom em cima à esquerda, a chance em cima à direita (ou um ponto,
+                // se o passo for pequeno) e o pan num traço embaixo, do meio para o lado.
+                const bool roomy = b.getWidth() >= 24.0f;
+                g.setColour (colour::onSignal.withAlpha (0.9f));
+                g.setFont (font (10.0f, Weight::semibold));
+
+                if (step.pitch != 0)
+                {
+                    if (roomy)
+                        g.drawText ((step.pitch > 0 ? "+" : "") + juce::String (step.pitch), b.reduced (3.0f, 1.0f).withHeight (11.0f),
+                                    juce::Justification::topLeft, false);
+                    else
+                        g.fillEllipse (b.getX() + 2.0f, b.getY() + 2.0f, 3.0f, 3.0f);
+                }
+
+                if (step.chance < 100)
+                {
+                    // com o tom também escrito, o número da chance só cabe num passo largo
+                    if (roomy && (step.pitch == 0 || b.getWidth() >= 34.0f))
+                        g.drawText (juce::String (step.chance), b.reduced (3.0f, 1.0f).withHeight (11.0f), juce::Justification::topRight, false);
+                    else
+                        g.fillEllipse (b.getRight() - 5.0f, b.getY() + 2.0f, 3.0f, 3.0f);
+                }
+
+                if (step.pan != 0)
+                {
+                    const float half = b.getWidth() * 0.5f - 3.0f, len = half * std::abs (step.pan) / 100.0f;
+                    g.fillRect (step.pan > 0 ? b.getCentreX() : b.getCentreX() - len, b.getBottom() - 3.0f, juce::jmax (1.0f, len), 2.0f);
+                }
             }
             else
             {
@@ -438,7 +468,7 @@ void ChannelRack::paint (juce::Graphics& g)
 
         g.setColour (colour::textFaint);
         g.setFont (font (type::body));   // dica: 13 px, a revisão de iniciante pediu
-        g.drawText ("Clique liga o passo, arraste para pintar, botão direito apaga. Ctrl+roda: força. Alt+roda: roll. Clique no nome: canal do piano roll."_t,
+        g.drawText ("Clique liga o passo, arraste pinta, botão direito apaga. Roda: Ctrl força, Alt roll, Ctrl+Shift tom. Shift+botão direito: chance, tom e pan."_t,
                     addButtonBounds().getRight() + 16, getHeight() - footerHeight, getWidth() - addButtonBounds().getRight() - 32, footerHeight - 4,
                     juce::Justification::centredLeft);
     }
@@ -535,6 +565,12 @@ void ChannelRack::mouseDown (const juce::MouseEvent& e)
     {
         case Hit::Kind::step:
         {
+            if (e.mods.isPopupMenu() && e.mods.isShiftDown())
+            {
+                showStepMenu (h.row, h.step);
+                break;
+            }
+
             paintRow = h.row;
             painting = true;
             paintValue = ! e.mods.isPopupMenu() && ! rows[(size_t) h.row].steps[(size_t) h.step].on;
@@ -664,16 +700,37 @@ void ChannelRack::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWh
 {
     const auto h = hitTest (e.getPosition());
 
+    // Shift sozinho continua rolando o rack para o lado (o Viewport); Alt+Shift troca o layout do teclado no Windows.
     if (h.kind == Hit::Kind::step && (e.mods.isCtrlDown() || e.mods.isAltDown()))
     {
         const auto& step = rows[(size_t) h.row].steps[(size_t) h.step];
-        const bool up = w.deltaY > 0;
-        auto params = args ({ { "channel", rows[(size_t) h.row].id }, { "index", h.step }, { "on", true } });
+        const float delta = w.deltaY != 0.0f ? w.deltaY : w.deltaX;   // com Shift, alguns mouses viram a rodinha para o lado
 
-        if (e.mods.isCtrlDown())
-            params.getDynamicObject()->setProperty ("velocity", juce::jlimit (1, 127, step.velocity + (up ? 8 : -8)));
+        if (delta == 0.0f)
+            return;
+
+        const bool up = delta > 0;
+        auto params = args ({ { "channel", rows[(size_t) h.row].id }, { "index", h.step } });
+        auto* o = params.getDynamicObject();
+
+        // Ctrl+Shift: tom (26/10), só num passo ligado. Como antes: Ctrl força, Alt roll (esses ligam o passo).
+        if (e.mods.isCtrlDown() && e.mods.isShiftDown())
+        {
+            if (! step.on)
+                return;
+
+            o->setProperty ("pitch", juce::jlimit (-24, 24, step.pitch + (up ? 1 : -1)));
+        }
+        else if (e.mods.isCtrlDown())
+        {
+            o->setProperty ("on", true);
+            o->setProperty ("velocity", juce::jlimit (1, 127, step.velocity + (up ? 8 : -8)));
+        }
         else
-            params.getDynamicObject()->setProperty ("roll", nextRoll (step.roll, up));
+        {
+            o->setProperty ("on", true);
+            o->setProperty ("roll", nextRoll (step.roll, up));
+        }
 
         app.run ("steps.set", params);
         return;
@@ -717,13 +774,78 @@ juce::String ChannelRack::getTooltip()
         const auto& s = rows[(size_t) hover.row].steps[(size_t) hover.step];
         if (s.on)
             return "Passo " + juce::String (hover.step + 1) + ": força "_t + juce::String (s.velocity)
-                   + (s.roll > 1 ? ", roll de " + juce::String (s.roll) : juce::String());
+                   + (s.roll > 1 ? ", roll de " + juce::String (s.roll) : juce::String())
+                   + (s.pitch != 0 ? ", tom "_t + (s.pitch > 0 ? "+" : "") + juce::String (s.pitch) : juce::String())
+                   + (s.chance < 100 ? ", chance de "_t + juce::String (s.chance) + "%" : juce::String())
+                   + (s.pan != 0 ? ", pan "_t + juce::String (std::abs (s.pan)) + (s.pan < 0 ? " E" : " D") : juce::String())
+                   + ". Rodinha: Ctrl força, Alt roll, Ctrl+Shift tom. Shift+botão direito: chance, tom e pan."_t;
     }
 
     return {};
 }
 
 //==============================================================================
+bool ChannelRack::stepPanWorks (int row) const
+{
+    const auto& r = rows[(size_t) row];
+    return ! r.isAudio && ! r.isPlugin && ! r.isSynth && ! r.isPiano;
+}
+
+void ChannelRack::showStepMenu (int row, int step)
+{
+    if (! juce::isPositiveAndBelow (row, (int) rows.size()) || ! juce::isPositiveAndBelow (step, numSteps))
+        return;
+
+    const auto& s = rows[(size_t) row].steps[(size_t) step];
+    juce::PopupMenu menu, chance, pitch, pan;
+    menu.addSectionHeader ("Passo "_t + juce::String (step + 1));
+
+    // ids: 1000 + chance, 2024 + tom, 3100 + pan, 4000 voltar ao padrão
+    for (int c : { 100, 75, 50, 33, 25, 10 })
+        chance.addItem (1000 + c, juce::String (c) + "%", true, s.chance == c);
+
+    for (int t : { 12, 7, 5, 3, 2, 1, 0, -1, -2, -3, -5, -7, -12 })
+        pitch.addItem (2024 + t, (t > 0 ? "+" : "") + juce::String (t) + (t == 0 ? " (a nota do canal)"_t : juce::String (" st")), true, s.pitch == t);
+
+    const std::pair<int, const char*> pans[] = { { -100, "Toda à esquerda" }, { -50, "Esquerda" }, { 0, "Centro" }, { 50, "Direita" },
+                                                 { 100, "Toda à direita" } };
+
+    for (auto& [v, label] : pans)
+        pan.addItem (3100 + v, juce::String::fromUTF8 (label), true, s.pan == v);
+
+    menu.addSubMenu ("Chance de tocar"_t, chance);
+    menu.addSubMenu ("Tom"_t, pitch);
+    menu.addSubMenu (stepPanWorks (row) ? juce::String ("Pan") : juce::String ("Pan (só em canal de sample)"_t), pan, stepPanWorks (row));
+    menu.addSeparator();
+    menu.addItem (4000, "Voltar ao padrão (chance, tom e pan)"_t, s.chance != 100 || s.pitch != 0 || s.pan != 0);
+
+    const auto id = rows[(size_t) row].id;
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withTargetScreenArea (localAreaToGlobal (stepBounds (row, step))),
+                        [this, id, step] (int choice)
+                        {
+                            if (choice <= 0)
+                                return;
+
+                            auto params = args ({ { "channel", id }, { "index", step }, { "on", true } });
+                            auto* o = params.getDynamicObject();
+
+                            if (choice == 4000)
+                            {
+                                o->setProperty ("chance", 100);
+                                o->setProperty ("pitch", 0);
+                                o->setProperty ("pan", 0);
+                            }
+                            else if (choice >= 3000)  o->setProperty ("pan", choice - 3100);
+                            else if (choice >= 2000)  o->setProperty ("pitch", choice - 2024);
+                            else                      o->setProperty ("chance", choice - 1000);
+
+                            const auto result = app.run ("steps.set", params);
+
+                            if (! result.ok && onStatus)
+                                onStatus (result.error, true);
+                        });
+}
+
 void ChannelRack::showTapeMenu (int row)
 {
     juce::PopupMenu menu;

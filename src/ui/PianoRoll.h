@@ -75,6 +75,11 @@ public:
         ou uma, trocando ou somando às notas do canal, a partir de `at` (ticks do padrão). */
     void importMidi (const juce::File&, int track = 0, bool replace = true, int at = 0);
 
+    /** A raia embaixo da grade (26/10): a força das notas, o pitch bend ou o mod wheel (CC1) desenhados nelas. */
+    enum class LaneMode { velocity, pitch, mod };
+    void setLaneMode (LaneMode);
+    LaneMode getLaneMode() const noexcept       { return laneMode; }
+
     std::function<void (const juce::String&, bool isError)> onStatus;
     std::function<void()> onModesChanged;    // Esc desligou o carimbo de acorde
     std::function<void()> onToolChanged;     // P, B ou E trocaram a ferramenta
@@ -93,7 +98,7 @@ public:
     juce::String getTooltip() override;
 
 private:
-    enum class Drag { none, keys, move, resize, erase, paint, select, velocity, stretch };
+    enum class Drag { none, keys, move, resize, erase, paint, select, velocity, stretch, curve, curveErase };
 
     struct Ghost { int start, length, key; };
 
@@ -106,6 +111,7 @@ private:
     juce::Rectangle<int> keyboardArea() const;
     juce::Rectangle<int> rulerArea() const;
     juce::Rectangle<int> velocityArea() const;
+    juce::Rectangle<int> laneLabelArea() const;   // à esquerda da raia, embaixo do teclado: Força, Pitch, Mod e o alcance
     float tickToX (double tick) const;
     double xToTick (float x) const;
     float keyToY (int key) const;            // topo da linha da tecla
@@ -130,6 +136,11 @@ private:
     void eraseAt (juce::Point<float>);
     void paintAt (juce::Point<float>);
     void applyVelocity (float fromX, float toX, float y);
+    void applyCurve (float fromX, float toX, float y, bool erase, bool free);   // a raia Pitch ou Mod (26/10)
+    void clearCurveAt (float x);
+    float laneValue (float y, bool free) const;
+    float laneY (float value) const;
+    void clickLaneLabel (juce::Point<float>);
     void nudgeSelection (int deltaTicks, int deltaKeys);
     void toggleSlideOnSelection();
 
@@ -154,6 +165,7 @@ private:
     void paintKeyboard (juce::Graphics&);
     void paintRuler (juce::Graphics&);
     void paintVelocity (juce::Graphics&);
+    void paintCurves (juce::Graphics&, juce::Rectangle<int> lane);
     void paintModes (juce::Graphics&);       // o aviso do carimbo e do encaixe na escala, no canto da grade
 
     AppController& app;
@@ -171,6 +183,9 @@ private:
     std::vector<BeatHint> beatHints;         // o acorde do beat em cada compasso do padrão
     bool showBeatHints = true;
     bool beatHintFlats = false;
+    LaneMode laneMode = LaneMode::velocity;
+    float bendRange = 2.0f;                  // o alcance do pitch wheel no instrumento do canal (curves::bendRangeFor)
+    bool channelBends = false;               // o instrumento toca o pitch bend (o synth e o VST3; o sampler ainda não)
 
     std::set<int> selected;
     Tool tool = Tool::draw;

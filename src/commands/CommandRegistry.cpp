@@ -78,6 +78,9 @@ juce::var CommandRegistry::describe() const
 
 CommandResult CommandRegistry::run (const juce::String& id, const juce::var& p)
 {
+    if (beforeCommand)
+        beforeCommand (id);
+
     if (beforeAnything)
         beforeAnything();
 
@@ -251,6 +254,9 @@ bool CommandRegistry::redo()
 
 void CommandRegistry::beginGesture (const juce::String& name)
 {
+    if (beforeGestureBegins)
+        beforeGestureBegins();
+
     if (beforeAnything)
         beforeAnything();
 

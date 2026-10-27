@@ -1,6 +1,7 @@
 #include "TransportBar.h"
 #include "Theme.h"
 #include "../app/AppController.h"
+#include "../app/AutomationRecording.h"
 #include "../record/RecordEngine.h"
 
 namespace whynot
@@ -227,6 +228,11 @@ TransportBar::TransportBar (AppController& a) : app (a), bpm (a), performance (a
     };
     recButton.addMouseListener (this, false);
 
+    autoRecButton.setTooltip ("Gravar automação: aceso, no play do modo SONG, mexer num knob, fader ou controlador MIDI escreve "
+                              "a curva dele embaixo da playlist. Cada volta é um Ctrl+Z."_t);
+    autoRecButton.setClickingTogglesState (false);
+    autoRecButton.onClick = [this] { app.run ("automation.setRecording", args ({ { "on", ! app.isAutomationRecording() } })); };
+
     metronomeButton.setTooltip ("Metrônomo (Ctrl+M)"_t);
     metronomeButton.onClick = [this] { app.run ("transport.setMetronome", args ({ { "on", ! app.getModel().get().metronome } })); };
 
@@ -272,7 +278,8 @@ TransportBar::TransportBar (AppController& a) : app (a), bpm (a), performance (a
 
     for (juce::Component* c : { (juce::Component*) &fileButton, (juce::Component*) &undoButton, (juce::Component*) &redoButton,
                                 (juce::Component*) &saveButton, (juce::Component*) &modeSwitch, (juce::Component*) &playButton,
-                                (juce::Component*) &stopButton, (juce::Component*) &recButton, (juce::Component*) &bpm, (juce::Component*) &timeSig,
+                                (juce::Component*) &stopButton, (juce::Component*) &recButton, (juce::Component*) &autoRecButton,
+                                (juce::Component*) &bpm, (juce::Component*) &timeSig,
                                 (juce::Component*) &loopButton, (juce::Component*) &metronomeButton, (juce::Component*) &typingButton,
                                 (juce::Component*) &tapButton, (juce::Component*) &patternBox,
                                 (juce::Component*) &newPatternButton, (juce::Component*) &performance, (juce::Component*) &masterMeter })
@@ -366,6 +373,11 @@ void TransportBar::tick()
     const bool recording = rec != nullptr && rec->isRecording();
     recButton.setToggleState (recordMode, juce::dontSendNotification);
     recButton.setAlert (recording ? ((juce::Time::getMillisecondCounter() / 500) % 2 == 0 ? 1.0f : 0.35f) : 0.0f);
+
+    // gravar automação: aceso com o modo; escrevendo (um controle mexido na volta), pisca como o REC
+    auto* autoRec = app.automationRecorder();
+    autoRecButton.setToggleState (app.isAutomationRecording(), juce::dontSendNotification);
+    autoRecButton.setAlert (autoRec != nullptr && autoRec->isWriting() ? ((juce::Time::getMillisecondCounter() / 500) % 2 == 0 ? 1.0f : 0.35f) : 0.0f);
 
     const auto& perf = app.performanceSnapshot();
     performance.update (perf.cpu, perf.cpuPeak, perf.xruns, perf.overloaded);
@@ -482,8 +494,8 @@ void TransportBar::resized()
     };
 
     const juce::String playCap ("TOCAR"), stopCap ("PARAR"), recCap ("GRAVAR"), loopCap ("LOOP"), clickCap ("CLIQUE"), typingCap ("TECLADO"),
-                       tapCap ("BATER");
-    const int playCol = column (playCap, 40), stopCol = column (stopCap, 40), recCol = column (recCap, 40);
+                       tapCap ("BATER"), autoCap ("AUTO");
+    const int playCol = column (playCap, 40), stopCol = column (stopCap, 40), recCol = column (recCap, 40), autoCol = column (autoCap, c);
     const int loopCol = column (loopCap, c), clickCol = column (clickCap, c), typingCol = column (typingCap, c);
     const int tapKey = tapButton.getIdealWidth (c), tapCol = column (tapCap, tapKey);
 
@@ -499,7 +511,7 @@ void TransportBar::resized()
 
     // o que não cabe sai primeiro: o medidor master, depois a CPU, e por fim o visor encolhe
     int lcdWidth = 288;
-    const int fixedCentre = 112 + 12 + playCol + 4 + stopCol + 4 + recCol + 12 + 12 + loopCol + 2 + clickCol + 2 + typingCol + 2 + tapCol;
+    const int fixedCentre = 112 + 12 + playCol + 4 + stopCol + 4 + recCol + 2 + autoCol + 12 + 12 + loopCol + 2 + clickCol + 2 + typingCol + 2 + tapCol;
     const int rightBase = 164 + 4 + c;
     const int perfBlock = PerformanceMeter::idealWidth + metric::pad;
     const int meterBlock = 24 + 16 + 8 + 96;
@@ -561,6 +573,8 @@ void TransportBar::resized()
     place (stopButton, stopCol, 40, stopCap);
     centre.removeFromLeft (4);
     place (recButton, recCol, 40, recCap);
+    centre.removeFromLeft (2);
+    place (autoRecButton, autoCol, c, autoCap);
     centre.removeFromLeft (12);
     lcdArea = juce::Rectangle<int> (centre.getX(), (getHeight() - lcdHeight) / 2, lcdWidth, lcdHeight);
     centre.removeFromLeft (lcdWidth);

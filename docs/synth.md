@@ -280,6 +280,7 @@ cabe com folga é a combinação extrema de 4 camadas com unison 8 e 32 vozes. A
 - Os 400 presets foram desenhados e medidos por número: nível e pico de todos, o acorde nos timbres de
   acorde e o Variar numa amostra de 1 a cada 7. O aliasing é medido só nos osciladores, não preset por
   preset. Ainda falta uma passada de ouvido do usuário: os que não agradarem saem ou são refeitos.
-- O piano roll ainda não escreve mod wheel, aftertouch nem pitch bend: o synth já entende esses
-  eventos MIDI (fontes da matriz e pitch bend), para quando chegarem de um controlador ou da automação.
+- Desde 26/10 o piano roll desenha pitch bend e mod wheel por nota (a raia Pitch/Mod, `docs/como-rodar.md`,
+  seção 6, item 13): o synth recebe o pitch wheel no alcance do parâmetro Pitch bend e o CC1 na fonte Mod wheel
+  da matriz, tocando e no render. O aftertouch ainda não sai do piano roll (só de um controlador).
 - Sem arpejador próprio: os presets Arp/Seq são timbres curtos ou com portão no tempo (LFO no volume).

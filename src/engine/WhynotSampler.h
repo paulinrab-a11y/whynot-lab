@@ -124,7 +124,14 @@ private:
     void tryPublishPending();
 
     audio::VoiceParams voiceParams() const noexcept;
-    void noteOn (int key, float velocity, const SampleRef&) noexcept;
+    // Thread de áudio: os pans (CC 10) que chegaram, com a amostra em que chegaram. Uma nota usa o da frente
+    // só se ele chegou no mesmo instante (até 8 amostras antes); o que ficou para trás é jogado fora.
+    struct PendingPan { std::int64_t at = 0; float pan = 0.0f; };
+    std::array<PendingPan, 16> pendingPans {};
+    int pendingCount = 0;
+    std::int64_t sampleClock = 0;
+    float takePan (std::int64_t now) noexcept;
+    void noteOn (int key, float velocity, const SampleRef&, float pan = 0.0f) noexcept;
     void noteOff (int key, const SampleRef&) noexcept;
     int allocateVoice() noexcept;
     void pushHeld (int key, float velocity) noexcept;

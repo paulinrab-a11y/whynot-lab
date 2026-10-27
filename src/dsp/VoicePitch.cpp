@@ -149,16 +149,18 @@ namespace
     constexpr float gainExponent = 0.5f;   // pulsos da voz: a potência acompanha o número de períodos por segundo
 }
 
-void PsolaCore::prepare (double rate, int readCount)
+void PsolaCore::prepare (double rate, int readCount, float maxGrainPeriods)
 {
     sampleRate = rate;
     numReads = std::clamp (readCount, 1, maxReads);
     maxPeriod = (float) (rate / 60.0);
     unvoicedPeriod = (float) std::round (0.005 * rate);
+    maxGrainPeriods = std::clamp (maxGrainPeriods, 1.5f, 2.0f);
+    maxHalfOut = maxGrainPeriods * maxPeriod;
 
-    // O grão de saída tem até 1,5 período de meia largura (formante -7); ele é feito 1,5 período depois
-    // da marca e lido 1,5 período antes dela: três períodos de 60 Hz e uma folga.
-    latencySamples = (int) std::ceil (3.0f * maxPeriod) + 8;
+    // O grão de saída tem até 1,5 período de meia largura (formante -7; 2 períodos com a formante -12); ele é
+    // feito 1,5 período depois da marca e lido meia largura antes dela: três períodos de 60 Hz (ou 3,5) e uma folga.
+    latencySamples = (int) std::ceil ((1.5f + maxGrainPeriods) * maxPeriod) + 8;
 
     std::int64_t size = 4;
 
@@ -191,6 +193,7 @@ void PsolaCore::reset() noexcept
         std::fill (r.accL.begin(), r.accL.end(), 0.0f);
         std::fill (r.accR.begin(), r.accR.end(), 0.0f);
         r.nextSynthesis = 0.0;
+        r.lastGrain = -1.0e30;
     }
 
     lowFilter.reset();
@@ -211,6 +214,22 @@ void PsolaCore::setShift (int read, float ratio, float formantRatio, bool voiced
     r.ratio = std::clamp (ratio, 0.25f, 4.0f);
     r.formant = std::clamp (formantRatio, 0.5f, 2.0f);
     r.voicedOnly = voicedOnly;
+}
+
+void PsolaCore::setEnabled (int read, bool enabled) noexcept
+{
+    if (read < 0 || read >= numReads || reads[(size_t) read].enabled == enabled)
+        return;
+
+    auto& r = reads[(size_t) read];
+    r.enabled = enabled;
+
+    if (enabled)
+    {
+        // Recomeça no grão que acabou de ficar pronto: o que ficou para trás já saiu em silêncio.
+        r.nextSynthesis = std::max (r.nextSynthesis, (double) now - (1.5 * maxPeriod + 2.0));
+        r.lastGrain = -1.0e30;
+    }
 }
 
 const PsolaCore::Mark* PsolaCore::nearestMark (double pos) const noexcept
@@ -292,7 +311,7 @@ void PsolaCore::synthesize (Read& read) noexcept
 
     while (read.nextSynthesis + ready <= (double) now)
     {
-        const double s = read.nextSynthesis;
+        double s = read.nextSynthesis;
         const Mark* a = nearestMark (s);
 
         if (a == nullptr)
@@ -300,6 +319,15 @@ void PsolaCore::synthesize (Read& read) noexcept
             read.nextSynthesis += unvoicedPeriod;
             continue;
         }
+
+        // Sem mudança nenhuma, o grão cai em cima da marca: a leitura fica em fase com a entrada (a afinação com
+        // Mistura abaixo de 100% não soa como um pente quando a voz já está afinada).
+        // Só quando o grão inteiro ainda cabe antes do ponto de leitura (a marca pode estar até meio período atrás).
+        if (read.ratio == 1.0f && read.formant == 1.0f && a->voiced && a->pos > read.lastGrain + 0.5 * a->period
+            && a->pos - std::min ((double) a->period, (double) maxHalfOut) > (double) (now - latencySamples) + 1.0)
+            s = a->pos;
+
+        read.lastGrain = s;
 
         const double r = a->voiced ? read.ratio : 1.0;
         const double f = a->voiced ? read.formant : 1.0;
@@ -311,7 +339,7 @@ void PsolaCore::synthesize (Read& read) noexcept
 
         // Potência por período constante: mais períodos por segundo (tom acima) = cada grão um pouco mais baixo;
         // menos (tom abaixo, grãos com folga entre si) = um pouco mais alto. A voz sai no mesmo volume.
-        const double halfOut = a->period / f;
+        const double halfOut = std::min ((double) a->period / f, (double) maxHalfOut);   // nunca além da latência
         const float gain = (float) std::pow (spacing / halfOut, (double) gainExponent);
         const auto from = (std::int64_t) std::ceil (s - halfOut), to = (std::int64_t) std::floor (s + halfOut);
 
@@ -347,7 +375,10 @@ void PsolaCore::process (float l, float r, float* wetL, float* wetR, float& dryL
     for (int k = 0; k < numReads; ++k)
     {
         auto& read = reads[(size_t) k];
-        synthesize (read);
+
+        if (read.enabled)
+            synthesize (read);
+
         wetL[k] = read.accL[out];
         wetR[k] = read.accR[out];
         read.accL[out] = read.accR[out] = 0.0f;

@@ -1,5 +1,6 @@
 #include "Tune.h"
 
+#include <bit>
 #include <cmath>
 #include <iterator>
 
@@ -9,14 +10,18 @@ namespace whynot::dsp
 namespace
 {
     const char* const keyNames[] = { "Dó", "Dó#", "Ré", "Ré#", "Mi", "Fá", "Fá#", "Sol", "Sol#", "Lá", "Lá#", "Si" };
-    const char* const scaleNames[] = { "Menor", "Maior", "Menor harmônica", "Frígio", "Dórico", "Pentatônica menor", "Cromática" };
+    const char* const scaleNames[] = { "Menor", "Maior", "Menor harmônica", "Frígio", "Dórico", "Pentatônica menor", "Cromática",
+                                       "Personalizada" };
     const char* const rangeNames[] = { "Ampla", "Grave", "Aguda" };
+    const char* const harmonyNames[] = { "Sem", "+3ª", "+5ª", "-3ª", "-8ª" };   // curtos: cabem na caixa de 80 px do knob
+
+    constexpr const char* noteHelp = "Na escala Personalizada: esta nota vale (ligada) ou a voz não vai para ela (desligada).";
 
     const ParamInfo tuneParams[] = {
         { "key",    "Tom",        0, 11, 9,    "",   ParamKind::choice,     false, keyNames,
           "Tônica da música. Ao entrar no mixer, o efeito pega o tom do projeto." },
-        { "scale",  "Escala",     0, 6, 0,     "",   ParamKind::choice,     false, scaleNames,
-          "As notas permitidas. Cromática corrige para o semitom mais perto." },
+        { "scale",  "Escala",     0, 7, 0,     "",   ParamKind::choice,     false, scaleNames,
+          "As notas permitidas. Cromática corrige para o semitom mais perto. Personalizada: as notas ligadas no teclado." },
         { "speed",  "Velocidade", 0, 400, 25,  "ms", ParamKind::continuous, false, {},
           "Quanto tempo a correção leva. 0 ms = salto na hora (o efeito robô); 50 a 150 ms soa natural." },
         { "amount", "Força",      0, 100, 100, "%",  ParamKind::continuous, false, {},
@@ -31,6 +36,33 @@ namespace
           "0% com velocidade 0 = o efeito duro do trap." },
         { "follow",   "Seguir o tom do projeto", 0, 1, 1, "", ParamKind::toggle, false, {},
           "Ligado: quando o tom ou a escala do projeto mudam, a afinação muda junto. Escolher o tom aqui desliga." },
+        { "reference", "Lá de referência", 430, 450, 440, "Hz", ParamKind::continuous, false, {},
+          "A frequência do Lá. 440 Hz é o padrão; mude se o beat foi afinado em outra referência (432, 443...)." },
+        { "fine",   "Ajuste fino", -50, 50, 0,  "cents", ParamKind::continuous, false, {},
+          "Desloca todas as notas alvo em cents: para casar com um sample ou instrumento um pouco fora." },
+        { "note_c",  "Nota Dó",   0, 1, 1, "", ParamKind::toggle, false, {}, noteHelp },
+        { "note_cs", "Nota Dó#",  0, 1, 1, "", ParamKind::toggle, false, {}, noteHelp },
+        { "note_d",  "Nota Ré",   0, 1, 1, "", ParamKind::toggle, false, {}, noteHelp },
+        { "note_ds", "Nota Ré#",  0, 1, 1, "", ParamKind::toggle, false, {}, noteHelp },
+        { "note_e",  "Nota Mi",   0, 1, 1, "", ParamKind::toggle, false, {}, noteHelp },
+        { "note_f",  "Nota Fá",   0, 1, 1, "", ParamKind::toggle, false, {}, noteHelp },
+        { "note_fs", "Nota Fá#",  0, 1, 1, "", ParamKind::toggle, false, {}, noteHelp },
+        { "note_g",  "Nota Sol",  0, 1, 1, "", ParamKind::toggle, false, {}, noteHelp },
+        { "note_gs", "Nota Sol#", 0, 1, 1, "", ParamKind::toggle, false, {}, noteHelp },
+        { "note_a",  "Nota Lá",   0, 1, 1, "", ParamKind::toggle, false, {}, noteHelp },
+        { "note_as", "Nota Lá#",  0, 1, 1, "", ParamKind::toggle, false, {}, noteHelp },
+        { "note_b",  "Nota Si",   0, 1, 1, "", ParamKind::toggle, false, {}, noteHelp },
+        { "formant", "Formante", -12, 12, 0, "st", ParamKind::continuous, false, {},
+          "O timbre da voz, à parte da nota. 0 = o timbre fica igual ao corrigir; negativo = voz maior e mais grossa; "
+          "positivo = menor e mais fina." },
+        { "guide",   "Seguir a guia", 0, 1, 0, "", ParamKind::toggle, false, {},
+          "Ligado: a nota vem da trilha escolhida em Guia (um synth ou piano tocando a melodia do piano roll), na oitava "
+          "da voz. Quando a guia para, volta para a escala." },
+        { "harmony", "Harmonia", 0, 4, 0, "", ParamKind::choice, false, harmonyNames,
+          "Uma voz a mais, já afinada, a partir da nota corrigida: +3ª e +5ª = terça e quinta da escala acima; -3ª = terça abaixo; "
+          "-8ª = a oitava exata abaixo." },
+        { "harmonyLevel", "Nível da harmonia", 0, 100, 60, "%", ParamKind::continuous, false, {},
+          "O volume da voz de harmonia. A voz principal continua igual." },
     };
 
     static_assert (std::size (tuneParams) == TuneProcessor::count);
@@ -41,8 +73,9 @@ namespace
 const FxInfo& TuneProcessor::staticInfo()
 {
     static const FxInfo info { "tune", "Afinação", "Afin.", "Voz",
-                               "Corrige a afinação da voz para as notas da escala, do natural ao efeito robô.",
-                               tuneParams };
+                               "Corrige a afinação da voz para as notas da escala, do natural ao efeito robô, com a formante "
+                               "no lugar. A nota também pode vir de uma trilha guia (a melodia do piano roll).",
+                               tuneParams, true };
     return info;
 }
 
@@ -93,7 +126,40 @@ int TuneProcessor::nearestInScale (float midi, int keyRoot, int mask) noexcept
     return best;
 }
 
+int TuneProcessor::activeNotes (const float* v) noexcept
+{
+    int mask = 0;
+
+    if ((int) v[scale] == customScale)
+    {
+        for (int n = 0; n < 12; ++n)
+            if (v[noteC + n] >= 0.5f)
+                mask |= 1 << n;
+
+        return mask;
+    }
+
+    // A máscara da escala é relativa à tônica: gira para as classes absolutas.
+    const int relative = scaleMask ((int) v[scale]), root = pitchClassOf ((int) v[key]);
+
+    for (int d = 0; d < 12; ++d)
+        if ((relative >> d) & 1)
+            mask |= 1 << pitchClassOf (root + d);
+
+    return mask;
+}
+
+float TuneProcessor::gridOffset (const float* v) noexcept
+{
+    return 12.0f * std::log2 (std::max (1.0f, v[reference]) / 440.0f) + v[fine] * 0.01f;
+}
+
 //==============================================================================
+namespace
+{
+    constexpr int controlBlock = 32;   // a correção vai para o PSOLA a cada 32 amostras (0,7 ms)
+}
+
 void TuneProcessor::prepare (double rate, int)
 {
     sampleRate = rate;
@@ -101,57 +167,43 @@ void TuneProcessor::prepare (double rate, int)
     for (int i = 0; i < count; ++i)
         values[(size_t) i] = tuneParams[i].def;
 
-    // Detecção a ~12 kHz: o YIN fica barato e a voz cabe inteira (até 1 kHz de fundamental).
-    decimation = std::max (1, (int) std::lround (rate / 12000.0));
-    detectRate = rate / decimation;
-    antiAlias = SvfCoeffs::make (FilterType::lowpass, std::min (4000.0, detectRate * 0.38), 0.70710678, 0.0, rate);
-    tauMaxAll = (int) std::ceil (detectRate / 60.0);
-    window = 2 * tauMaxAll;
-    hop = std::max (16, (int) std::lround (detectRate * 0.005));
-    ring.assign ((size_t) (window + tauMaxAll + 1), 0.0f);
-    frame.assign (ring.size(), 0.0f);
-    diff.assign ((size_t) tauMaxAll + 2, 1.0f);
-    rawDiff.assign ((size_t) tauMaxAll + 2, 0.0f);
-
-    // Limites das cabeças de leitura: cabem um salto de até um período a 60 Hz mais a janela.
-    maxPeriod = (float) (rate / 60.0);
-    minDelay = std::ceil (maxPeriod * 0.2f) + 16.0f;
-    maxDelay = minDelay + maxPeriod + std::ceil ((float) rate * 0.006f);
-    latency = (int) std::lround ((minDelay + maxDelay) * 0.5f);
-
-    const int capacity = (int) maxDelay + (int) maxPeriod + 64;
-    lineL.prepare (capacity);
-    lineR.prepare (capacity);
-
+    // Grão de até 2 períodos: a formante desce até -12 st sem cortar o grão.
+    core.prepare (rate, 2, 2.0f);
+    guideYin.prepare (rate);
+    guideYin.setRange (60.0, 2000.0);   // a oitava da guia não importa: até o Si 6; abaixo de 60 Hz o YIN não mede
+    halfMaxPeriod = (float) (0.5 * rate / 60.0);
     releaseCoeff = onePoleCoeff (60.0f, rate);
-    wet.prepare (rate, 10.0f);
+    formantFactor.prepare (rate, 30.0f);
+    wet.prepare (rate, 20.0f);
+    harmonyShift.prepare (rate, 15.0f);
+    harmonyGain.prepare (rate, 20.0f);
+    harmonyGate.prepare (rate, 20.0f);
     snapToTargets();
     reset();
 }
 
 void TuneProcessor::reset() noexcept
 {
-    lineL.reset();
-    lineR.reset();
-    aa1.reset();
-    aa2.reset();
-    std::fill (ring.begin(), ring.end(), 0.0f);
-    ringPos = ringFilled = hopCounter = decimCounter = 0;
+    core.reset();
+    guideYin.reset();
+    guiding = guideListening = false;
+    harmonyTarget = -1;
+    harmonyShift.snap (0.0f);
+    harmonyGate.snap (0.0f);
+    history.fill ({});
+    historyPos = 0;
     lastTarget = -1;
     detectedMidi = targetMidi = -1.0f;
     voiced = false;
-    periodSamples = 0.0f;
     correctionTarget = correction = 0.0f;
-    currentAttack = attackCoeff;
     heldSamples = 0;
-    delayA = delayB = (float) latency;
-    fading = false;
-    fadePos = fadeLen = 0;
 
     setMeter (detectedNote, -1.0f);
     setMeter (targetNote, -1.0f);
     setMeter (correctionCents, 0.0f);
     setMeter (voicedMeter, 0.0f);
+    setMeter (guideMeter, 0.0f);
+    setMeter (harmonyNote, -1.0f);
 }
 
 void TuneProcessor::setParam (int index, float value) noexcept
@@ -161,148 +213,115 @@ void TuneProcessor::setParam (int index, float value) noexcept
 
     values[(size_t) index] = value;
 
-    if (index == speed)
-        currentAttack = attackCoeff = value < 0.5f ? 0.0f : onePoleCoeff (value, sampleRate);
-    else if (index == mix)
-        wet.setTarget (value * 0.01f);
+    if (index == range)
+    {
+        const int r = (int) value;
+        core.setRange (r == 2 ? 120.0 : 60.0, r == 1 ? 500.0 : 1000.0);
+    }
+    else if (index == formant)
+    {
+        formantFactor.setTarget (std::exp2 (value / 12.0f));
+    }
+
+    notesMask = activeNotes (values.data());
+    updateNeutral();
+}
+
+void TuneProcessor::updateNeutral() noexcept
+{
+    // Sem nada a fazer, a saída é a entrada atrasada, exata (o PSOLA continua rodando por baixo).
+    const bool correcting = values[amount] > 0.05f && (notesMask != 0 || values[guide] >= 0.5f);
+    const bool shaping = std::abs (values[formant]) > 0.005f;
+    wet.setTarget (correcting || shaping ? values[mix] * 0.01f : 0.0f);
+    harmonyGain.setTarget ((int) values[harmony] > 0 ? values[harmonyLevel] * 0.01f : 0.0f);
+    core.setEnabled (1, (int) values[harmony] > 0);   // sem harmonia, a 2ª leitura do PSOLA não roda
 }
 
 void TuneProcessor::snapToTargets() noexcept
 {
-    attackCoeff = values[speed] < 0.5f ? 0.0f : onePoleCoeff (values[speed], sampleRate);
-    currentAttack = attackCoeff;
-    wet.snap (values[mix] * 0.01f);
+    for (int i = 0; i < count; ++i)
+        setParam (i, values[(size_t) i]);
+
+    currentAttack = values[speed] < 0.5f ? 0.0f : onePoleCoeff (values[speed], sampleRate);
+    formantFactor.snap (formantFactor.getTarget());
+    wet.snap (wet.getTarget());
+    harmonyGain.snap (harmonyGain.getTarget());
 }
 
 //==============================================================================
-float TuneProcessor::detect (float& clarity) noexcept
+const TuneProcessor::Measure& TuneProcessor::measureFor (bool guideTrack) const noexcept
 {
-    clarity = 0.0f;
-    const float* x = frame.data();
-    const int total = (int) frame.size();
-    double energy = 0.0;
-
-    for (int j = 0; j < total; ++j)
-        energy += (double) x[j] * x[j];
-
-    // Porta: abaixo de ~-50 dBFS não há voz para afinar.
-    if (std::sqrt (energy / total) < 0.003)
-        return 0.0f;
-
-    const int rangeIndex = (int) values[range];
-    const double fLow = rangeIndex == 2 ? 120.0 : 60.0;
-    const double fHigh = rangeIndex == 1 ? 500.0 : 1000.0;
-    const int tauMin = std::max (2, (int) std::floor (detectRate / fHigh));
-    const int tauMax = std::min (tauMaxAll, (int) std::ceil (detectRate / fLow));
-
-    // YIN: diferença ao quadrado e a média acumulada normalizada. Cada atraso usa as amostras mais
-    // novas do quadro (as últimas window + tau): a nota medida é a de ~18 ms atrás em 440 Hz, quase o
-    // atraso da leitura (15 ms). Com as mais velhas, a medida chegava 14 ms mais tarde e o modo duro
-    // deixava passar metade do vibrato.
-    double running = 0.0;
-    diff[0] = 1.0f;
-
-    for (int tau = 1; tau <= tauMax; ++tau)
-    {
-        double d = 0.0;
-        const float* y = x + (total - window - tau);
-
-        for (int j = 0; j < window; ++j)
-        {
-            const float e = y[j] - y[j + tau];
-            d += (double) e * e;
-        }
-
-        running += d;
-        rawDiff[(size_t) tau] = (float) d;
-        diff[(size_t) tau] = running > 0.0 ? (float) (d * tau / running) : 1.0f;
-    }
-
-    int found = -1;
-
-    for (int tau = tauMin; tau <= tauMax; ++tau)
-    {
-        if (diff[(size_t) tau] < 0.15f)
-        {
-            while (tau + 1 <= tauMax && diff[(size_t) tau + 1] < diff[(size_t) tau])
-                ++tau;
-
-            found = tau;
-            break;
-        }
-    }
-
-    if (found < 0)
-    {
-        // Sem mínimo abaixo do limiar: o menor da faixa, se ainda for claro o bastante.
-        float best = 1.0e9f;
-
-        for (int tau = tauMin; tau <= tauMax; ++tau)
-            if (diff[(size_t) tau] < best)
-            {
-                best = diff[(size_t) tau];
-                found = tau;
-            }
-
-        if (best >= 0.3f)
-            return 0.0f;
-    }
-
-    float t = (float) found;
-
-    if (found > tauMin && found < tauMax)
-    {
-        // Na diferença crua, não na normalizada: a normalizada puxa o mínimo para os lados
-        // (dava ~2 cents de erro a 440 Hz na taxa de 12 kHz).
-        const float a = rawDiff[(size_t) found - 1], b = rawDiff[(size_t) found], c = rawDiff[(size_t) found + 1];
-        const float den = a - 2.0f * b + c;
-
-        // Vale achatado (den perto de zero ou do lado errado): o ajuste fica dentro de um passo.
-        if (std::abs (den) > 1.0e-9f)
-            t += std::clamp (0.5f * (a - c) / den, -1.0f, 1.0f);
-    }
-
-    clarity = 1.0f - diff[(size_t) found];
-    return (float) (detectRate / std::max (1.0f, t));
+    // O YIN olha a janela que termina agora (o meio dela fica ~1 período de 60 Hz mais o período medido atrás);
+    // o grão que sai agora está 1,5 período de 60 Hz atrás. A medida usada é a de (0,5 período de 60 Hz − período) antes.
+    const int size = (int) history.size(), newest = (historyPos - 1 + size) % size;
+    const auto& latest = history[(size_t) newest];
+    const bool on = guideTrack ? latest.guideVoiced : latest.voiced;
+    const float period = guideTrack ? latest.guidePeriod : latest.period;
+    const int lag = on ? std::clamp ((int) std::lround ((halfMaxPeriod - period) / (float) controlBlock), 0, size - 1) : 0;
+    return history[(size_t) ((newest - lag + size) % size)];
 }
 
-void TuneProcessor::analyse() noexcept
+void TuneProcessor::analyse (int elapsed) noexcept
 {
-    const int n = (int) ring.size();
+    history[(size_t) historyPos] = { core.periodSamples(), guideYin.periodSamples(), core.voiced(), guideYin.voiced() };
+    historyPos = (historyPos + 1) % (int) history.size();
 
-    if (ringFilled < n)
-        return;
+    const auto& m = measureFor (false);
+    const auto& g = measureFor (true);
+    guiding = false;
 
-    for (int k = 0; k < n; ++k)
-        frame[(size_t) k] = ring[(size_t) ((ringPos + k) % n)];
-
-    float clarity = 0.0f;
-    const float hz = detect (clarity);
-
-    if (hz <= 0.0f)
+    if (! m.voiced || m.period <= 0.0f)
     {
         voiced = false;
+        harmonyTarget = -1;
         detectedMidi = targetMidi = -1.0f;
         correctionTarget = 0.0f;
         heldSamples = 0;
         return;
     }
 
-    const int keyRoot = (int) values[key];
-    const int mask = scaleMask ((int) values[scale]);
+    // A voz medida na grade de notas (Lá de referência e ajuste fino): a nota alvo é inteira nessa grade.
+    const float offset = gridOffset (values.data());
     voiced = true;
-    detectedMidi = 69.0f + 12.0f * std::log2 (hz / 440.0f);
-    periodSamples = (float) (sampleRate / hz);
+    detectedMidi = 69.0f + 12.0f * std::log2 ((float) (sampleRate / m.period) / 440.0f) - offset;
+    int target = -1;
 
-    int target = nearestInScale (detectedMidi, keyRoot, mask);
+    if (values[guide] >= 0.5f && g.guideVoiced && g.guidePeriod > 0.0f)
+    {
+        // A guia está tocando: a nota dela (fora da escala também), na oitava mais perto da voz.
+        const float guideMidi = 69.0f + 12.0f * std::log2 ((float) (sampleRate / g.guidePeriod) / 440.0f) - offset;
+        const int nearest = (int) std::lround (detectedMidi), guideClass = pitchClassOf ((int) std::lround (guideMidi));
+        target = nearest + pitchClassOf (guideClass - nearest + 6) - 6;   // de -6 a +5 semitons da voz
 
-    // Histerese: fica na nota anterior enquanto a voz está a menos de 0,65 semitom dela.
-    if (lastTarget >= 0 && target != lastTarget && ((mask >> pitchClassOf (lastTarget - keyRoot)) & 1) != 0
-        && std::abs (detectedMidi - (float) lastTarget) < 0.65f)
-        target = lastTarget;
+        // Perto do trítono, a oitava não fica pulando com o vibrato: mantém a nota anterior da mesma classe.
+        if (lastTarget >= 0 && pitchClassOf (lastTarget) == guideClass && std::abs ((float) lastTarget - detectedMidi) <= 6.5f)
+            target = lastTarget;
+
+        guiding = true;
+    }
+    else if (notesMask != 0)
+    {
+        target = nearestInScale (detectedMidi, 0, notesMask);
+
+        // Histerese: fica na nota anterior enquanto a voz está a menos de 0,65 semitom dela.
+        if (lastTarget >= 0 && target != lastTarget && ((notesMask >> pitchClassOf (lastTarget)) & 1) != 0
+            && std::abs (detectedMidi - (float) lastTarget) < 0.65f)
+            target = lastTarget;
+    }
+
+    if (target < 0)
+    {
+        // Nenhuma nota ligada: mostra a voz, mas não corrige.
+        harmonyTarget = -1;
+        targetMidi = -1.0f;
+        lastTarget = -1;
+        correctionTarget = 0.0f;
+        heldSamples = 0;
+        return;
+    }
 
     // Humanizar: quanto mais a nota se sustenta, mais lenta a correção dentro dela.
-    heldSamples = target == lastTarget ? heldSamples + hop * decimation : 0;
+    heldSamples = target == lastTarget ? std::min (heldSamples + elapsed, (int) sampleRate) : 0;
     float ms = values[speed];
     const float human = values[humanize] * 0.01f;
 
@@ -316,131 +335,92 @@ void TuneProcessor::analyse() noexcept
 
     lastTarget = target;
     targetMidi = (float) target;
-    const float wanted = std::clamp ((targetMidi - detectedMidi) * values[amount] * 0.01f, -3.0f, 3.0f);
+    const float wanted = std::clamp ((targetMidi - detectedMidi) * values[amount] * 0.01f, -6.0f, 6.0f);
 
-    // Menos de 2 cents é inaudível: não corrige (a cabeça fica parada e volta ao centro, alinhada com o seco).
+    // Menos de 2 cents é inaudível: não corrige.
     correctionTarget = std::abs (wanted) < 0.02f ? 0.0f : wanted;
-}
 
-void TuneProcessor::startSplice (float newDelay, int length) noexcept
-{
-    delayB = std::clamp (newDelay, 2.0f, (float) lineL.capacity() - 4.0f);
-    fadeLen = std::max (16, length);
-    fadePos = 0;
-    fading = true;
+    // Harmonia: o intervalo da escala a partir da nota alvo (cromática ou sem notas: terça maior e quinta justa).
+    const int choice = (int) values[harmony];
+
+    if (choice > 0)
+    {
+        const int degrees[] = { 0, 2, 4, -2, 0 };
+        // Com menos de 3 notas não há terça na escala: vale a terça maior e a quinta justa.
+        const int mask = std::popcount ((unsigned) notesMask) >= 3 ? notesMask : 0xFFF;
+        const int newHarmony = choice == 4 ? target - 12 : HarmonyProcessor::scaleStep (target, degrees[choice], 0, mask);
+        const bool phraseStart = harmonyTarget < 0;
+        harmonyTarget = newHarmony;
+        harmonyShift.setTarget ((float) (newHarmony - target));
+
+        if (phraseStart)
+            harmonyShift.snap (harmonyShift.getTarget());   // começo de frase: a voz nova entra já na nota
+    }
+    else
+    {
+        harmonyTarget = -1;
+    }
 }
 
 void TuneProcessor::process (AudioBlock& block) noexcept
 {
-    DenormalGuard guard;
-    const int fadeMin = std::max (32, (int) (0.0027 * sampleRate));
-    const int ringSize = (int) ring.size();
+    const DenormalGuard guard;
+    const bool listening = values[guide] >= 0.5f && block.sideLeft != nullptr;
 
-    for (int i = 0; i < block.numSamples; ++i)
+    if (! listening && guideListening)
+        guideYin.reset();   // ao voltar, a guia começa sem a medida velha
+
+    guideListening = listening;
+
+    for (int start = 0; start < block.numSamples; start += controlBlock)
     {
-        // Um NaN ou infinito na entrada vira silêncio antes de entrar nas linhas de atraso e no detector.
-        float l = block.left[i], r = block.right[i];
+        const int n = std::min (controlBlock, block.numSamples - start);
+        analyse (n);
+        harmonyGate.setTarget (harmonyTarget >= 0 ? 1.0f : 0.0f);   // sem nota alvo, a harmonia cala
 
-        if (! std::isfinite (l)) l = 0.0f;
-        if (! std::isfinite (r)) r = 0.0f;
-
-        lineL.push (l);
-        lineR.push (r);
-
-        // Detecção na taxa reduzida, a cada ~5 ms.
-        const float m = aa2.process (aa1.process (0.5f * (l + r), antiAlias), antiAlias);
-
-        if (++decimCounter >= decimation)
-        {
-            decimCounter = 0;
-            ring[(size_t) ringPos] = m;
-            ringPos = (ringPos + 1) % ringSize;
-            ringFilled = std::min (ringFilled + 1, ringSize);
-
-            if (++hopCounter >= hop)
-            {
-                hopCounter = 0;
-                analyse();
-            }
-        }
-
-        // Correção em semitons: a velocidade vale ao corrigir; sem voz, volta a zero em ~60 ms.
+        // Correção em semitons, amostra a amostra: a velocidade vale ao corrigir; sem voz, volta a zero em ~60 ms.
         const float coeff = voiced ? currentAttack : releaseCoeff;
-        correction = correctionTarget + (correction - correctionTarget) * coeff;
+
+        for (int i = 0; i < n; ++i)
+            correction = correctionTarget + (correction - correctionTarget) * coeff;
 
         if (std::abs (correction - correctionTarget) < 1.0e-5f)
             correction = correctionTarget;
 
-        const float ratio = std::exp2 (correction * (1.0f / 12.0f));
-        const float drift = 1.0f - ratio;   // quanto o atraso muda por amostra
-        delayA += drift;
+        const float f = formantFactor.skip (n);
+        core.setShift (0, std::exp2 (correction * (1.0f / 12.0f)), f, false);
+        core.setShift (1, std::exp2 ((correction + harmonyShift.skip (n)) * (1.0f / 12.0f)), f, true);
 
-        if (fading)
-            delayB += drift;
-
-        if (! fading)
+        for (int i = start; i < start + n; ++i)
         {
-            const float period = voiced ? periodSamples : 0.0f;
-            const int fade = period > 0.0f ? std::clamp ((int) period, fadeMin, (int) maxPeriod) : (int) (0.01 * sampleRate);
+            // Um NaN ou infinito na entrada vira silêncio antes de entrar no PSOLA e no detector.
+            float l = block.left[i], r = block.right[i];
 
-            if (delayA < minDelay || delayA > maxDelay)
+            if (! std::isfinite (l)) l = 0.0f;
+            if (! std::isfinite (r)) r = 0.0f;
+
+            // A guia (sidechain), em mono; o detector dela só roda com "Seguir a guia" ligado e uma trilha no sidechain.
+            if (listening)
             {
-                // Salto de um múltiplo do período: a emenda cai na mesma fase da onda.
-                const float jump = period > 0.0f ? period * std::ceil ((float) fade / period)
-                                                 : (maxDelay - minDelay) * 0.5f;
-                startSplice (delayA < minDelay ? delayA + jump : delayA - jump, fade);
+                const float sl = block.sideLeft[i], sr = block.sideRight != nullptr ? block.sideRight[i] : sl;
+                const float side = 0.5f * (sl + sr);
+                guideYin.push (std::isfinite (side) ? side : 0.0f);
             }
-            else if (correction == 0.0f && std::abs (delayA - (float) latency) > 0.5f)
-            {
-                // Sem correção: a cabeça volta ao atraso nominal, alinhada com o sinal seco.
-                if (period > 0.0f)
-                {
-                    const float k = std::round (((float) latency - delayA) / period);
 
-                    if (k != 0.0f)
-                        startSplice (delayA + k * period, fade);
-                    else if (wet.getTarget() < 0.999f)
-                        startSplice ((float) latency, fade);   // com Mistura < 100%: alinha com o seco (sem pente fixo)
-                }
-                else
-                {
-                    startSplice ((float) latency, fade);
-                }
-            }
+            float wl[PsolaCore::maxReads] {}, wr[PsolaCore::maxReads] {}, dl = 0.0f, dr = 0.0f;
+            core.process (l, r, wl, wr, dl, dr);
+            const float w = wet.next(), h = harmonyGain.next() * harmonyGate.next();
+            block.left[i] = dl + w * (wl[0] - dl) + h * wl[1];
+            block.right[i] = dr + w * (wr[0] - dr) + h * wr[1];
         }
-
-        float wl, wr;
-
-        if (fading)
-        {
-            const float w = 0.5f - 0.5f * std::cos ((float) pi * (float) fadePos / (float) fadeLen);
-            const float al = lineL.readHermite (delayA), bl = lineL.readHermite (delayB);
-            const float ar = lineR.readHermite (delayA), br = lineR.readHermite (delayB);
-            wl = al + w * (bl - al);
-            wr = ar + w * (br - ar);
-
-            if (++fadePos >= fadeLen)
-            {
-                fading = false;
-                delayA = delayB;
-            }
-        }
-        else
-        {
-            wl = lineL.readHermite (delayA);
-            wr = lineR.readHermite (delayA);
-        }
-
-        const float dl = lineL.read (latency), dr = lineR.read (latency);
-        const float w = wet.next();
-        block.left[i] = dl + w * (wl - dl);
-        block.right[i] = dr + w * (wr - dr);
     }
 
     setMeter (detectedNote, detectedMidi);
     setMeter (targetNote, targetMidi);
     setMeter (correctionCents, correction * 100.0f);
     setMeter (voicedMeter, voiced ? 1.0f : 0.0f);
+    setMeter (guideMeter, guiding ? 1.0f : 0.0f);
+    setMeter (harmonyNote, (float) harmonyTarget);
 }
 
 } // namespace whynot::dsp

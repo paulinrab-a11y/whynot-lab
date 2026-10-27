@@ -99,6 +99,11 @@ void runProducerPianoSelfTest (SelfTestContext&); // pedidos do produtor no pian
 void runRenderPackSelfTest (SelfTestContext&);    // bloco 2 da pesquisa: renderizar no lugar e exportar para vender (Recomendações)
 void runWarpCaptureSelfTest (SelfTestContext&);   // bloco 3: warp, groove, strum, Capture MIDI e reamostrar (Recomendações)
 void runControlSelfTest (SelfTestContext&);       // a ponte de controle da IA (Fase 4)
+void runAutomationRecordSelfTest (SelfTestContext&);   // automação completa (26/10): gravar mexendo, tensão, VST3 que volta (Automação completa)
+void runPitchBendSelfTest (SelfTestContext&);     // pitch bend e mod wheel desenhados na nota: curvas, comandos, render, MIDI e a raia (Pitch bend)
+void runTuneSelfTest (SelfTestContext&);          // afinação completa (27/10): render, escala nota a nota, guia e a tela (Afinação)
+void runVoicePlaylistSelfTest (SelfTestContext&);  // voz na playlist (27/10): corte sem buraco, ripple, fades, tom e reverso por clipe (Voz na playlist)
+void runNoteTuneSelfTest (SelfTestContext&);       // afinação nota a nota (27/10): análise, editor, edições, render não destrutivo e formante (Afinação nota a nota)
 void runInvalidFilesSelfTest (SelfTestContext&);  // fecha o relatório (núcleo)
 
 } // namespace whynot::selftest

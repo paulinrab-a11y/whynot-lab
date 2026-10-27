@@ -1,5 +1,6 @@
 #pragma once
 
+#include "NoteCurves.h"
 #include "Project.h"
 
 #include <set>
@@ -63,6 +64,33 @@ inline std::vector<int> glue (std::vector<Note>& notes, const std::set<int>& ids
     {
         if (current != nullptr && current->key == n->key && n->start <= current->end())
         {
+            // as curvas de pitch e mod (26/10): a da primeira até onde a segunda começa, depois a da segunda
+            const int offset = n->start - current->start;
+
+            for (auto kind : { curves::Kind::pitch, curves::Kind::mod })
+            {
+                auto& mine = curves::of (*current, kind);
+                const auto& theirs = curves::of (*n, kind);
+
+                if (mine.empty() && theirs.empty())
+                    continue;
+
+                std::vector<CurvePoint> joined;
+
+                for (auto& p : mine)
+                    if (p.t < offset)
+                        joined.push_back (p);
+
+                if (offset > 0)
+                    joined.push_back ({ offset - 1, curves::valueAt (mine, offset - 1) });
+
+                for (auto& p : theirs.empty() ? std::vector<CurvePoint> { { 0, 0.0f } } : theirs)
+                    joined.push_back ({ p.t + offset, p.v });
+
+                curves::tidy (joined, kind);
+                mine = std::move (joined);
+            }
+
             current->length = juce::jmax (current->end(), n->end()) - current->start;
             removed.push_back (n->id);
             continue;
@@ -140,6 +168,10 @@ inline int strum (std::vector<Note>& notes, const std::set<int>& ids, int stepTi
             const int end = n.end();
             n.start = start + juce::jmin ((int) i * juce::jmax (0, stepTicks), n.length - 1);
             n.length = juce::jmax (1, end - n.start);
+            n.pitch = curves::from (n.pitch, n.start - start);   // a curva fica no tempo em que estava (26/10)
+            n.mod = curves::from (n.mod, n.start - start);
+            curves::tidy (n.pitch, curves::Kind::pitch);
+            curves::tidy (n.mod, curves::Kind::mod);
             ++changed;
         }
     }

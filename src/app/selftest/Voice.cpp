@@ -723,10 +723,11 @@ void runVoiceSelfTest (SelfTestContext& ctx)
 
             return best;
         }();
-        rep.check (reversed.ok && clip()->ref != originalRef && juce::File (reversed.value["path"].toString()).existsAsFile()
+        // voz na playlist (27/10): inverter vira o bloco (reversed) no mesmo canal, sem canal novo
+        rep.check (reversed.ok && clip()->ref == originalRef && clip()->reversed && juce::File (reversed.value["path"].toString()).existsAsFile()
                        && std::abs (clickAtReversed - (int) (1.5 * rate) + 1) <= 1,
                    "inverter: o clique de 0,5 s toca em 1,5 s (amostra "_t + juce::String (clickAtReversed) + ")");
-        rep.check (app.run ("audio.reverse", args ({ { "item", clipId } })).ok && clip()->ref == originalRef,
+        rep.check (app.run ("audio.reverse", args ({ { "item", clipId } })).ok && clip()->ref == originalRef && ! clip()->reversed,
                    "inverter de novo volta para o arquivo original (sem arquivo novo)"_t);
 
         {

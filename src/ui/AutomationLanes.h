@@ -17,6 +17,8 @@ class AppController;
 /** Automação (3.5), embaixo da grade da playlist e na mesma linha do tempo: uma raia por curva.
     Clique cria um ponto, arrastar move, botão direito apaga; cada arrasto vira um passo de desfazer
     (automation.setPoints no fim). A curva toca no modo SONG: no PAT ela fica apagada, em cinza.
+    (26/10) A bolinha no meio de cada trecho curva o trecho (a tensão): arrastar para cima ou para baixo,
+    duplo clique deixa reto. Com a gravação de automação ligada, o cabeçalho avisa em vermelho.
 */
 class AutomationLanes : public juce::Component,
                         public juce::TooltipClient
@@ -66,6 +68,9 @@ private:
     juce::Rectangle<int> curveBounds (int index) const;  // só a parte da curva, com respiro em cima e embaixo
     int laneAt (juce::Point<float>) const;
     int pointAt (int lane, juce::Point<float>) const;
+    /** O trecho cuja bolinha do meio está embaixo do mouse (o índice do ponto onde ele começa), ou -1. */
+    int handleAt (int lane, juce::Point<float>) const;
+    juce::Point<float> handlePosition (int lane, int segment) const;
     float tickToX (double tick) const;
     double xToTick (float x) const;
     float yToPosition (int lane, float y) const;
@@ -92,7 +97,9 @@ private:
     juce::String revealLane;       // curva nova: rola até ela no próximo refresh
 
     int dragLane = -1, dragPoint = -1;
+    int dragSegment = -1;   // arrastando a bolinha do meio: a tensão do trecho que começa nesse ponto
     bool dragging = false;
+    bool recordingShown = false;
     juce::Point<float> hoverPos { -1.0f, -1.0f };
 };
 

@@ -336,6 +336,8 @@ void registerCoreCommands (CommandRegistry& r)
                  ch->samplePath = file.getFullPathName().replaceCharacter ('\\', '/');
                  ch->originalPath = {};
                  ch->instrument = {};   // um sample no canal do WHYNOT Piano: ele volta a ser sampler
+                 ch->tunedNotes.clear();   // afinação nota a nota (27/10): as notas eram do áudio antigo
+                 ch->tuneFormantFollows = false;
                  ch->instrumentPreset = {};
 
                  // O desvio em cents era do sample antigo. Sem nota no novo (bateria), a raiz fica.
@@ -497,6 +499,9 @@ void registerCoreCommands (CommandRegistry& r)
                        { "on", "boolean", false, "Liga ou desliga; ausente = mantém"_t },
                        { "velocity", "integer", false, "1 a 127" },
                        { "roll", "integer", false, "Repetições dentro do passo: 1, 2, 3, 4, 6 ou 8"_t },
+                       { "chance", "integer", false, "Chance de tocar em cada volta, 1 a 100 (%)"_t },
+                       { "pitch", "integer", false, "Tom do passo em semitons, -24 a 24, sobre a nota do canal"_t },
+                       { "pan", "integer", false, "Pan do passo, -100 (esquerda) a 100 (direita); só em canal de sample"_t },
                        { "pattern", "string", false, "Id do padrão; padrão = atual"_t } }), true,
              [] (CommandContext& c, const juce::var& a)
              {
@@ -514,6 +519,9 @@ void registerCoreCommands (CommandRegistry& r)
                  if (index < 0 || index >= pat->lengthSteps)
                      return CommandResult::fail ("Passo fora do padrão: "_t + juce::String (index));
 
+                 if (params::has (a, "pan") && p.findChannel (channel)->kind != "sampler")
+                     return CommandResult::fail ("O pan do passo vale só nos canais de sample (bateria e one-shots)."_t);
+
                  auto& steps = pat->steps[channel];
                  steps.resize ((size_t) pat->lengthSteps);
                  auto& s = steps[(size_t) index];
@@ -521,6 +529,9 @@ void registerCoreCommands (CommandRegistry& r)
                  if (params::has (a, "on"))        s.on = params::boolean (a, "on", s.on);
                  if (params::has (a, "velocity"))  s.velocity = juce::jlimit (1, 127, (int) params::number (a, "velocity", s.velocity));
                  if (params::has (a, "roll"))      s.roll = clampRoll ((int) params::number (a, "roll", s.roll));
+                 if (params::has (a, "chance"))    s.chance = juce::jlimit (1, 100, (int) params::number (a, "chance", s.chance));
+                 if (params::has (a, "pitch"))     s.pitch = juce::jlimit (-24, 24, (int) params::number (a, "pitch", s.pitch));
+                 if (params::has (a, "pan"))       s.pan = juce::jlimit (-100, 100, (int) params::number (a, "pan", s.pan));
 
                  return CommandResult::success();
              } });

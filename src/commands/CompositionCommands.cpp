@@ -1,4 +1,6 @@
 #include "CommandRegistry.h"
+#include "../model/PlaylistEdit.h"
+#include "../model/NoteCurves.h"
 #include "../model/NoteTools.h"
 #include "../model/WnlFormat.h"
 #include "../engine/MidiImport.h"
@@ -150,7 +152,8 @@ void registerCompositionCommands (CommandRegistry& r)
     // Piano roll
     r.add ({ "pianoroll.addNotes", "Adicionar notas",
              schema ({ { "channel", "string", true, "Id do canal" },
-                       { "notes", "array", true, "Lista de { t, len, key, vel?, slide?, muted? }: início, duração, nota MIDI (60 = Dó central), força 1-127, slide do 808, nota muda"_t },
+                       { "notes", "array", true, "Lista de { t, len, key, vel?, slide?, muted?, pitch?, mod? }: início, duração, nota MIDI (60 = Dó central), força 1-127, slide do 808, nota muda, "
+                                                    "curvas de pitch bend (semitons, -24 a 24) e de mod wheel (0 a 1) em [{ t, v }] desde o começo da nota"_t },
                        { "unit", "string", false, "Unidade de t e len: ticks (960 por tempo, padrão), steps, beats ou bars"_t },
                        { "pattern", "string", false, "Id do padrão; padrão = atual"_t } }), true,
              [] (CommandContext& c, const juce::var& a)
@@ -178,6 +181,14 @@ void registerCompositionCommands (CommandRegistry& r)
                      n.velocity = juce::jlimit (1, 127, (int) fieldNumber (no, "vel", 100));
                      n.slide = no.isObject() && no.hasProperty ("slide") && (bool) no["slide"];
                      n.muted = no.isObject() && no.hasProperty ("muted") && (bool) no["muted"];
+
+                     // pitch bend e mod wheel desenhados (26/10): opcionais, com t na unidade do comando
+                     for (auto kind : { curves::Kind::pitch, curves::Kind::mod })
+                     {
+                         int bad = 0;
+                         curves::of (n, kind) = curves::pointsFromVar (no[kind == curves::Kind::pitch ? "pitch" : "mod"], toTicks (a, 1.0), kind, bad);
+                     }
+
                      notes.push_back (n);
                      ids.add (n.id);
                  }
@@ -188,7 +199,7 @@ void registerCompositionCommands (CommandRegistry& r)
 
     r.add ({ "pianoroll.updateNotes", "Editar notas",
              schema ({ { "channel", "string", true, "Id do canal" },
-                       { "notes", "array", true, "Lista de { id, t?, len?, key?, vel?, slide?, muted? } com só o que muda"_t },
+                       { "notes", "array", true, "Lista de { id, t?, len?, key?, vel?, slide?, muted?, pitch?, mod? } com só o que muda (pitch e mod trocam a curva inteira)"_t },
                        { "unit", "string", false, "Unidade de t e len: ticks (padrão), steps, beats ou bars"_t },
                        { "pattern", "string", false, "Id do padrão; padrão = atual"_t } }), true,
              [] (CommandContext& c, const juce::var& a)
@@ -217,6 +228,14 @@ void registerCompositionCommands (CommandRegistry& r)
                      if (no.hasProperty ("vel"))   it->velocity = juce::jlimit (1, 127, (int) fieldNumber (no, "vel", it->velocity));
                      if (no.hasProperty ("slide")) it->slide = (bool) no["slide"];
                      if (no.hasProperty ("muted")) it->muted = (bool) no["muted"];
+
+                     for (auto kind : { curves::Kind::pitch, curves::Kind::mod })   // pitch bend e mod wheel (26/10)
+                     {
+                         int bad = 0;
+
+                         if (const char* key = kind == curves::Kind::pitch ? "pitch" : "mod"; no.hasProperty (key))
+                             curves::of (*it, kind) = curves::pointsFromVar (no[key], toTicks (a, 1.0), kind, bad);
+                     }
                  }
 
                  growPatternToFit (*pat);
@@ -284,7 +303,7 @@ void registerCompositionCommands (CommandRegistry& r)
                          n.id = nextNoteId (notes);
                          n.start = (int) i * ticksPerStep + k * sub + (i % 2 == 1 ? swing : 0);
                          n.length = sub;
-                         n.key = ch->rootKey;
+                         n.key = juce::jlimit (0, 127, ch->rootKey + s.pitch);   // o tom do passo vai junto (26/10)
                          n.velocity = s.velocity;
                          notes.push_back (n);
                      }
@@ -1210,17 +1229,8 @@ void registerCompositionCommands (CommandRegistry& r)
                  if (at <= item->start || at >= item->end())
                      return CommandResult::fail ("O corte precisa cair dentro do bloco."_t);
 
-                 PlaylistItem right = *item;
+                 auto right = playlistedit::splitAt (p, *item, at);   // os fades ficam nas pontas de fora
                  right.id = makeId ("it");
-                 right.start = at;
-                 right.length = item->end() - at;
-
-                 if (item->kind == "audio")   // esticado, o arquivo anda 1 / stretch por segundo da playlist
-                     right.offsetSeconds = roundToMicroseconds (item->offsetSeconds + item->fileSeconds (ticksToSeconds (at - item->start, p.bpm)));
-                 else
-                     right.patternOffset = item->patternOffset + (at - item->start);
-
-                 item->length = at - item->start;
                  const auto leftId = item->id;
                  p.playlistItems.push_back (right);   // item pode mudar de endereço daqui em diante
 

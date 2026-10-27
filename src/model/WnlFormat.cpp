@@ -3,6 +3,7 @@
 #include "../automation/Macros.h"
 #include "../common/FolderHints.h"
 #include "../common/SafeJson.h"
+#include "NoteCurves.h"
 #include "../dsp/FxCatalog.h"
 #include "../audio/PianoPresets.h"
 #include "../synth/SynthParams.h"
@@ -275,6 +276,8 @@ void normalise (Project& p)
                 n.length = juce::jlimit (1, 256 * ticksPerStep, n.length);
                 n.key = juce::jlimit (0, 127, n.key);
                 n.velocity = juce::jlimit (1, 127, n.velocity);
+                curves::tidy (n.pitch, curves::Kind::pitch);   // pitch bend e mod wheel (26/10)
+                curves::tidy (n.mod, curves::Kind::mod);
                 maxId = juce::jmax (maxId, n.id);
             }
 
@@ -340,8 +343,18 @@ void normalise (Project& p)
             c.kind = "sampler";
 
         c.glideMs = juce::jlimit (0.0f, 2000.0f, c.glideMs);
+        c.bendRange = juce::jlimit (1, 24, c.bendRange);
         c.chokeGroup = juce::jlimit (0, 8, c.chokeGroup);
         c.swing = std::isfinite (c.swing) ? juce::jlimit (0.0f, 100.0f, c.swing) : 0.0f;
+
+        // afinação nota a nota (27/10): só no canal de áudio; faixas, ordem e a precisão do arquivo
+        if (! c.isAudio())
+        {
+            c.tunedNotes.clear();
+            c.tuneFormantFollows = false;
+        }
+
+        notetune::normalise (c.tunedNotes);
 
         auto fix = [] (float& v, float fallback, float lo, float hi) { v = std::isfinite (v) ? juce::jlimit (lo, hi, v) : fallback; };
         const Channel defaults;
@@ -482,6 +495,11 @@ void normalise (Project& p)
         i.gainDb = i.kind == "audio" ? clampClipGain (i.gainDb) : 0.0f;
         i.fadeIn = i.kind == "audio" && std::isfinite (i.fadeIn) ? roundToMicroseconds (juce::jlimit (0.0, blockSeconds, i.fadeIn)) : 0.0;
         i.fadeOut = i.kind == "audio" && std::isfinite (i.fadeOut) ? roundToMicroseconds (juce::jlimit (0.0, juce::jmax (0.0, blockSeconds - i.fadeIn), i.fadeOut)) : 0.0;
+        // voz na playlist (27/10): a curva dos fades, o tom e o reverso, só no áudio
+        i.fadeInCurve = i.kind == "audio" ? juce::jlimit ((int) fadeCurveLinear, (int) fadeCurveS, i.fadeInCurve) : 0;
+        i.fadeOutCurve = i.kind == "audio" ? juce::jlimit ((int) fadeCurveLinear, (int) fadeCurveS, i.fadeOutCurve) : 0;
+        i.pitch = i.kind == "audio" && std::isfinite (i.pitch) ? std::round (juce::jlimit (-maxClipPitch, maxClipPitch, i.pitch) * 100.0f) / 100.0f : 0.0f;
+        i.reversed = i.kind == "audio" && i.reversed;
 
         if (i.kind != "audio" || i.takeGroup.isEmpty())
         {
@@ -535,15 +553,19 @@ void normalise (Project& p)
         std::vector<automation::Point> points;
 
         for (auto& pt : lane.points)
-            points.push_back ({ pt.t, pt.v });
+            points.push_back ({ pt.t, pt.v, pt.tension });
 
         AutomationLane clean;
         clean.id = lane.id;
         clean.target = target;
 
-        // v com 4 casas, as mesmas do arquivo: o projeto reaberto soa igual ao que foi salvo
+        // v com 4 casas e a tensão com 3, as mesmas do arquivo: o projeto reaberto soa igual ao que foi salvo.
+        // A tensão do último ponto não dobra trecho nenhum: fica 0 (o arquivo não muda por ela).
         for (auto& pt : automation::cleanPoints (points, maxTimelineTicks))
-            clean.points.push_back ({ pt.t, std::round (pt.v * 10000.0f) / 10000.0f });
+            clean.points.push_back ({ pt.t, std::round (pt.v * 10000.0f) / 10000.0f, std::round (pt.tension * 1000.0f) / 1000.0f });
+
+        if (! clean.points.empty())
+            clean.points.back().tension = 0.0f;
 
         while (clean.id.isEmpty() || laneIds.count (clean.id) > 0)
             clean.id = makeId ("au");
@@ -663,6 +685,9 @@ juce::String toJsonReference (const Project& p)
 
         if (c.releaseMs != Channel {}.releaseMs)   // opcional: um canal com o release de sempre sai igual ao de antes
             set (sampler, "releaseMs", roundTo (c.releaseMs, 1));
+
+        if (c.bendRange != Channel {}.bendRange)   // pitch bend (26/10): opcional, como o releaseMs
+            set (sampler, "bendRange", c.bendRange);
         set (sampler, "decayMs", roundTo (c.decayMs, 1));
         set (sampler, "sustain", roundTo (c.sustain, 3));
         set (sampler, "pitchDrop", roundTo (c.pitchDrop, 2));
@@ -717,6 +742,35 @@ juce::String toJsonReference (const Project& p)
 
         if (c.swing != 0.0f)
             set (ch, "swing", roundTo (c.swing, 1));
+
+        if (! c.tunedNotes.empty())   // afinação nota a nota (27/10): opcional, igual ao toJsonReference
+        {
+            auto tune = obj();
+
+            if (c.tuneFormantFollows)
+                set (tune, "formantFollows", true);
+
+            juce::Array<juce::var> notes;
+
+            for (auto& n : c.tunedNotes)
+            {
+                auto no = obj();
+                set (no, "start10us", (int) std::llround (n.start * 1.0e5));
+                set (no, "end10us", (int) std::llround (n.end * 1.0e5));
+                set (no, "sourceCents", juce::roundToInt (n.sourceMidi * 100.0));
+
+                if (n.shift != 0.0f)        set (no, "shiftCents", juce::roundToInt (n.shift * 100.0));
+                if (n.center != 0.0f)       set (no, "centerPct", juce::roundToInt (n.center * 100.0));
+                if (n.flatten != 0.0f)      set (no, "flattenPct", juce::roundToInt (n.flatten * 100.0));
+                if (n.formant != 0.0f)      set (no, "formantCents", juce::roundToInt (n.formant * 100.0));
+                if (n.transitionMs != TunedNote {}.transitionMs) set (no, "transitionMs", juce::roundToInt (n.transitionMs));
+
+                notes.add (no);
+            }
+
+            set (tune, "notes", notes);
+            set (ch, "noteTune", tune);
+        }
         if (c.isSynth())
         {
             // Campo opcional: arquivos sem ele abrem iguais. O núcleo sobe o esquema para 4 no merge do synth.
@@ -786,6 +840,15 @@ juce::String toJsonReference (const Project& p)
                     if (s.roll != 1)
                         set (so, "roll", s.roll);
 
+                    if (s.chance != 100)
+                        set (so, "chance", s.chance);
+
+                    if (s.pitch != 0)
+                        set (so, "pitch", s.pitch);
+
+                    if (s.pan != 0)
+                        set (so, "pan", s.pan);
+
                     on.add (so);
                 }
             }
@@ -806,6 +869,27 @@ juce::String toJsonReference (const Project& p)
 
                     if (n.muted)   // nota muda (bloco 1, 22/10): opcional
                         set (no, "muted", true);
+
+                    // pitch bend e mod wheel desenhados (26/10): opcionais, só quando há curva
+                    for (auto [curveKey, kind] : { std::pair { "pitch", curves::Kind::pitch }, std::pair { "mod", curves::Kind::mod } })
+                    {
+                        const auto& pts = curves::of (n, kind);
+
+                        if (pts.empty())
+                            continue;
+
+                        juce::Array<juce::var> pointList;
+
+                        for (auto& pt : pts)
+                        {
+                            auto pointObj = obj();
+                            set (pointObj, "t", pt.t);
+                            set (pointObj, "v", roundTo (pt.v, kind == curves::Kind::pitch ? 2 : 3));
+                            pointList.add (pointObj);
+                        }
+
+                        set (no, curveKey, pointList);
+                    }
 
                     notes.add (no);
                 }
@@ -892,6 +976,19 @@ juce::String toJsonReference (const Project& p)
         if (i.fadeOut > 0.0)
             set (io, "fadeOut", roundTo (i.fadeOut, 6));
 
+        // voz na playlist (27/10): opcionais, iguais no toJsonReference
+        if (i.fadeInCurve != fadeCurveLinear)
+            set (io, "fadeInCurve", fadeCurveName (i.fadeInCurve));
+
+        if (i.fadeOutCurve != fadeCurveLinear)
+            set (io, "fadeOutCurve", fadeCurveName (i.fadeOutCurve));
+
+        if (i.pitch != 0.0f)
+            set (io, "pitch", roundTo (i.pitch, 2));
+
+        if (i.reversed)
+            set (io, "reversed", true);
+
         plItems.add (io);
     }
 
@@ -945,6 +1042,10 @@ juce::String toJsonReference (const Project& p)
                 auto po = obj();
                 set (po, "t", pt.t);
                 set (po, "v", roundTo (pt.v, 4));
+
+                if (pt.tension != 0.0f)   // (26/10) opcional: a curva reta sai igual
+                    set (po, "tension", roundTo (pt.tension, 3));
+
                 points.add (po);
             }
 
@@ -1343,6 +1444,9 @@ juce::String toJson (const Project& p)
         if (c.releaseMs != Channel {}.releaseMs)   // opcional (Fatiar e 808): o release de sempre sai igual ao de antes
             w.member ("releaseMs", rounded (c.releaseMs, 1));
 
+        if (c.bendRange != Channel {}.bendRange)   // pitch bend (26/10): opcional, igual ao toJsonReference
+            w.member ("bendRange", c.bendRange);
+
         w.member ("decayMs", rounded (c.decayMs, 1));
         w.member ("sustain", rounded (c.sustain, 3));
         w.member ("pitchDrop", rounded (c.pitchDrop, 2));
@@ -1398,6 +1502,35 @@ juce::String toJson (const Project& p)
 
         if (c.swing != 0.0f)
             w.member ("swing", rounded (c.swing, 1));
+
+        if (! c.tunedNotes.empty())   // afinação nota a nota (27/10): opcional, igual ao toJson
+        {
+            w.key ("noteTune").beginObject();
+
+            if (c.tuneFormantFollows)
+                w.member ("formantFollows", true);
+
+            w.key ("notes").beginArray();
+
+            for (auto& n : c.tunedNotes)
+            {
+                w.item().beginObject();
+                w.member ("start10us", (int) std::llround (n.start * 1.0e5));
+                w.member ("end10us", (int) std::llround (n.end * 1.0e5));
+                w.member ("sourceCents", juce::roundToInt (n.sourceMidi * 100.0));
+
+                if (n.shift != 0.0f)        w.member ("shiftCents", juce::roundToInt (n.shift * 100.0));
+                if (n.center != 0.0f)       w.member ("centerPct", juce::roundToInt (n.center * 100.0));
+                if (n.flatten != 0.0f)      w.member ("flattenPct", juce::roundToInt (n.flatten * 100.0));
+                if (n.formant != 0.0f)      w.member ("formantCents", juce::roundToInt (n.formant * 100.0));
+                if (n.transitionMs != TunedNote {}.transitionMs) w.member ("transitionMs", juce::roundToInt (n.transitionMs));
+
+                w.endObject();
+            }
+
+            w.endArray();
+            w.endObject();
+        }
 
         if (c.isSynth())
         {
@@ -1483,6 +1616,15 @@ juce::String toJson (const Project& p)
                     if (s.roll != 1)
                         w.member ("roll", s.roll);
 
+                    if (s.chance != 100)
+                        w.member ("chance", s.chance);
+
+                    if (s.pitch != 0)
+                        w.member ("pitch", s.pitch);
+
+                    if (s.pan != 0)
+                        w.member ("pan", s.pan);
+
                     w.endObject();
                 }
 
@@ -1507,6 +1649,27 @@ juce::String toJson (const Project& p)
 
                     if (n.muted)   // nota muda (bloco 1, 22/10): opcional, igual ao toJsonReference
                         w.member ("muted", true);
+
+                    // pitch bend e mod wheel desenhados (26/10): opcionais, igual ao toJsonReference
+                    for (auto [curveKey, kind] : { std::pair { "pitch", curves::Kind::pitch }, std::pair { "mod", curves::Kind::mod } })
+                    {
+                        const auto& pts = curves::of (n, kind);
+
+                        if (pts.empty())
+                            continue;
+
+                        w.key (curveKey).beginArray();
+
+                        for (auto& pt : pts)
+                        {
+                            w.item().beginObject();
+                            w.member ("t", pt.t);
+                            w.member ("v", rounded (pt.v, kind == curves::Kind::pitch ? 2 : 3));
+                            w.endObject();
+                        }
+
+                        w.endArray();
+                    }
 
                     w.endObject();
                 }
@@ -1591,6 +1754,19 @@ juce::String toJson (const Project& p)
         if (i.fadeOut > 0.0)
             w.member ("fadeOut", rounded (i.fadeOut, 6));
 
+        // voz na playlist (27/10): opcionais, iguais no toJson
+        if (i.fadeInCurve != fadeCurveLinear)
+            w.member ("fadeInCurve", fadeCurveName (i.fadeInCurve));
+
+        if (i.fadeOutCurve != fadeCurveLinear)
+            w.member ("fadeOutCurve", fadeCurveName (i.fadeOutCurve));
+
+        if (i.pitch != 0.0f)
+            w.member ("pitch", rounded (i.pitch, 2));
+
+        if (i.reversed)
+            w.member ("reversed", true);
+
         w.endObject();
     }
 
@@ -1642,6 +1818,10 @@ juce::String toJson (const Project& p)
                 w.item().beginObject();
                 w.member ("t", pt.t);
                 w.member ("v", rounded (pt.v, 4));
+
+                if (pt.tension != 0.0f)   // (26/10) opcional: a curva reta sai igual
+                    w.member ("tension", rounded (pt.tension, 3));
+
                 w.endObject();
             }
 
@@ -1878,6 +2058,7 @@ juce::Result fromJson (const juce::String& json, Project& out)
             c.tune = (float) getDouble (co["sampler"], "tune", c.tune);
             c.attackMs = (float) getDouble (co["sampler"], "attackMs", c.attackMs);
             c.releaseMs = (float) getDouble (co["sampler"], "releaseMs", c.releaseMs);
+            c.bendRange = getInt (co["sampler"], "bendRange", c.bendRange);   // pitch bend (26/10): opcional
             c.decayMs = (float) getDouble (co["sampler"], "decayMs", c.decayMs);
             c.sustain = (float) getDouble (co["sampler"], "sustain", c.sustain);
             c.pitchDrop = (float) getDouble (co["sampler"], "pitchDrop", c.pitchDrop);
@@ -1910,6 +2091,25 @@ juce::Result fromJson (const juce::String& json, Project& out)
             c.mute = getBool (co, "mute", c.mute);
             c.chokeGroup = getInt (co, "choke", 0);        // opcionais: o esquema continua 3
             c.swing = (float) getDouble (co, "swing", 0.0);
+
+            if (auto* notes = co["noteTune"]["notes"].getArray())   // afinação nota a nota (27/10): opcional; o normalise confere
+            {
+                c.tuneFormantFollows = getBool (co["noteTune"], "formantFollows", false);
+
+                for (auto& no : *notes)
+                {
+                    TunedNote n;
+                    n.start = getDouble (no, "start10us", 0.0) / 1.0e5;
+                    n.end = getDouble (no, "end10us", 0.0) / 1.0e5;
+                    n.sourceMidi = (float) (getDouble (no, "sourceCents", 6000.0) / 100.0);
+                    n.shift = (float) (getDouble (no, "shiftCents", 0.0) / 100.0);
+                    n.center = (float) (getDouble (no, "centerPct", 0.0) / 100.0);
+                    n.flatten = (float) (getDouble (no, "flattenPct", 0.0) / 100.0);
+                    n.formant = (float) (getDouble (no, "formantCents", 0.0) / 100.0);
+                    n.transitionMs = (float) getDouble (no, "transitionMs", n.transitionMs);
+                    c.tunedNotes.push_back (n);
+                }
+            }
             c.output = getString (co, "output");
             c.armed = getBool (co, "armed", false);
             c.instrument = getString (co["instrument"], "type");        // opcional: o WHYNOT Piano
@@ -2030,6 +2230,9 @@ juce::Result fromJson (const juce::String& json, Project& out)
                             s.on = true;
                             s.velocity = juce::jlimit (1, 127, getInt (so, "vel", 100));
                             s.roll = sanitiseRoll (getInt (so, "roll", 1));
+                            s.chance = juce::jlimit (1, 100, getInt (so, "chance", 100));
+                            s.pitch = juce::jlimit (-24, 24, getInt (so, "pitch", 0));
+                            s.pan = juce::jlimit (-100, 100, getInt (so, "pan", 0));
                         }
                     }
 
@@ -2047,6 +2250,13 @@ juce::Result fromJson (const juce::String& json, Project& out)
                             n.velocity = getInt (no, "vel", 100);
                             n.slide = getBool (no, "slide", false);
                             n.muted = getBool (no, "muted", false);
+
+                            // pitch bend e mod wheel (26/10): opcionais; o normalise arruma os pontos
+                            for (auto [curveKey, kind] : { std::pair { "pitch", curves::Kind::pitch }, std::pair { "mod", curves::Kind::mod } })
+                                if (auto* pts = no[curveKey].getArray())
+                                    for (auto& pt : *pts)
+                                        if (pt.isObject() && curves::of (n, kind).size() < (size_t) curves::maxPoints * 4)
+                                            curves::of (n, kind).push_back ({ getInt (pt, "t", 0), (float) getDouble (pt, "v", 0.0) });
                             notes.push_back (n);
                         }
                     }
@@ -2098,6 +2308,10 @@ juce::Result fromJson (const juce::String& json, Project& out)
             i.gainDb = (float) getDouble (io, "gainDb", 0.0);   // ganho e fades do bloco (gravar voz); o normalise limita
             i.fadeIn = getDouble (io, "fadeIn", 0.0);
             i.fadeOut = getDouble (io, "fadeOut", 0.0);
+            i.fadeInCurve = fadeCurveFromName (getString (io, "fadeInCurve"));   // voz na playlist (27/10); o normalise limita
+            i.fadeOutCurve = fadeCurveFromName (getString (io, "fadeOutCurve"));
+            i.pitch = (float) getDouble (io, "pitch", 0.0);
+            i.reversed = getBool (io, "reversed", false);
 
             if (i.id.isNotEmpty() && p.findItem (i.id) == nullptr)
                 p.playlistItems.push_back (i);
@@ -2132,9 +2346,11 @@ juce::Result fromJson (const juce::String& json, Project& out)
                 for (auto& pt : *points)
                 {
                     const double tick = getDouble (pt, "t", -1.0), value = getDouble (pt, "v", 0.0);
+                    const double tension = getDouble (pt, "tension", 0.0);   // (26/10) opcional; o normalise limita
 
                     if (std::isfinite (tick) && std::isfinite (value))   // tick absurdo vira -1 e o normalise tira
-                        lane.points.push_back ({ tick >= 0.0 && tick <= 1.0e9 ? (int) tick : -1, (float) value });
+                        lane.points.push_back ({ tick >= 0.0 && tick <= 1.0e9 ? (int) tick : -1, (float) value,
+                                                 std::isfinite (tension) ? (float) tension : 0.0f });
                 }
             }
 

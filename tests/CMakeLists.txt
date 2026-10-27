@@ -171,3 +171,19 @@ else()
 endif()
 
 add_test(NAME control COMMAND whynot_control_tests)
+
+# Afinação nota a nota (frente C de 27/10): análise da voz em notas, edições do modelo e render com o PSOLA, sem JUCE.
+add_executable(whynot_notetune_tests
+    notetune/test_notetune.cpp
+    ../src/dsp/NoteTune.cpp
+    ../src/dsp/Tune.cpp
+    ../src/dsp/VoicePitch.cpp)
+target_compile_features(whynot_notetune_tests PRIVATE cxx_std_20)
+
+if(MSVC)
+    target_compile_options(whynot_notetune_tests PRIVATE /W4 /utf-8 /O2)
+else()
+    target_compile_options(whynot_notetune_tests PRIVATE -Wall -Wextra -O2)
+endif()
+
+add_test(NAME notetune COMMAND whynot_notetune_tests)

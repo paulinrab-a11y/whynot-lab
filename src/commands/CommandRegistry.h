@@ -226,6 +226,12 @@ struct AppServices
     virtual void learnMidi (const MidiLink&) {}
     virtual void cancelMidiLearn() {}
     virtual bool isLearningMidi() const   { return false; }
+
+    // Gravar automação (26/10): com o modo ligado, mexer num controle durante o play no SONG escreve a curva dele
+    // (automation.recordPass no fim de cada volta). Sem gravador, o automation.setRecording recusa.
+    virtual bool canRecordAutomation() const   { return false; }
+    virtual void setAutomationRecording (bool) {}
+    virtual bool isAutomationRecording() const   { return false; }
 };
 
 struct CommandContext
@@ -266,6 +272,10 @@ public:
         ali o gesto aberto pelos knobs do controlador MIDI (bloco 4d): nada de outra origem entra no passo dele. */
     std::function<void()> beforeAnything;
 
+    /** (26/10) Chamado no começo de cada run(), com o id, antes do beforeAnything: gravando automação, o app abre a
+        volta antes do primeiro knob mexido (um passo de desfazer por volta) e fecha antes de qualquer outra edição. */
+    std::function<void (const juce::String& id)> beforeCommand;
+
     /** Vários comandos num passo de desfazer só, tudo ou nada (Fase 4: o command_batch da IA).
         steps = [{ id, params }]. Recusa o lote inteiro, sem rodar nada, se um id não existe, não muda o
         modelo ou é project.new/open (limpam o desfazer). Cada passo é um run() normal (normaliza e projeta
@@ -284,6 +294,19 @@ public:
 
     void beginGesture (const juce::String& name);
     void endGesture();
+
+    /** (26/10) Troca o nome do passo do gesto aberto (gravar automação: a volta que começou dentro do arrasto do fader
+        sai como "Gravar automação", não como "Volume"). */
+    void renameGesture (const juce::String& name)   { if (gestureDepth > 0) undoManager.setCurrentTransactionName (name); }
+
+    /** (26/10) O nome do gesto aberto (vazio fora de um gesto), quantos estão abertos, e se um lote está rodando. */
+    juce::String gestureName() const   { return gestureDepth > 0 ? undoManager.getCurrentTransactionName() : juce::String(); }
+    int gestureLevels() const noexcept   { return gestureDepth; }
+    bool isInBatch() const noexcept      { return batchDepth > 0; }
+
+    /** (26/10) Chamado no começo de cada beginGesture, antes do beforeAnything: gravando automação, um gesto que começa
+        (arrastar nota, bloco, outro knob) fecha antes a volta aberta, para não entrar no passo dela. */
+    std::function<void()> beforeGestureBegins;
 
     /** Há um gesto aberto (arrasto de fader, de nota...)? A ponte da IA espera ele acabar. */
     bool isInGesture() const noexcept   { return gestureDepth > 0; }
@@ -361,6 +384,12 @@ void registerMidiLearnCommands (CommandRegistry&);
 void registerAudioMidiCommands (CommandRegistry&);
 /** Camadas por força no sampler (bloco 4f): channel.layers, addLayer, setLayer e removeLayer. */
 void registerLayerCommands (CommandRegistry&);
+/** Pitch bend e mod wheel desenhados na nota (26/10): pianoroll.setNoteCurve e channel.setBendRange. */
+void registerPitchBendCommands (CommandRegistry&);
+/** Voz na playlist (27/10): cortar na agulha, apagar o trecho puxando o resto e abrir espaço. */
+void registerPlaylistEditCommands (CommandRegistry&);
+/** Afinação nota a nota (27/10): audio.analyzeNotes, setNoteTune, editNotes, splitNote, mergeNotes, tuneToScale e clearNoteTune. */
+void registerNoteTuneCommands (CommandRegistry&);
 
 //==============================================================================
 // Ajudas para ler parâmetros com mensagens de erro claras.

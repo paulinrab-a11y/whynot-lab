@@ -136,6 +136,7 @@ private:
     IconButton recButton { "Gravar", Icon::record, {}, IconButton::Style::filled };
     BpmDisplay bpm;
     juce::ComboBox timeSig;
+    IconButton autoRecButton { "Gravar automacao", Icon::automation };   // (26/10) gravar automação mexendo nos controles
     IconButton loopButton { "Loop", Icon::loop };
     IconButton metronomeButton { "Metronomo", Icon::metronome };
     IconButton typingButton { "Teclado-piano", Icon::keyboard };

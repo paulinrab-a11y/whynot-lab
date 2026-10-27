@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 
 #include "../common/Text.h"
+#include "NoteTuneData.h"
 
 #include <map>
 #include <vector>
@@ -51,7 +52,22 @@ struct Step
     int velocity = 100;   // 1..127
     int roll = 1;         // 1, 2, 3, 4, 6 ou 8
 
+    // Passos mais ricos (26/10): campos opcionais no .wnl; os padrões deixam o passo igual ao de antes.
+    int chance = 100;     // 1..100: a chance de o passo tocar em cada volta (sorteio fixo: o export sai sempre igual)
+    int pitch = 0;        // -24..24 semitons acima ou abaixo da nota do canal
+    int pan = 0;          // -100 (esquerda) .. 100 (direita): só nos canais de sample
+
     bool operator== (const Step&) const = default;
+};
+
+/** Um ponto da curva de uma nota (pitch bend e mod wheel, 26/10): t em ticks desde o começo da nota; v em semitons
+    no pitch (de -24 a +24) ou a posição da roda no mod (de 0 a 1). As contas ficam em src/model/NoteCurves.h. */
+struct CurvePoint
+{
+    int t = 0;
+    float v = 0.0f;
+
+    bool operator== (const CurvePoint&) const = default;
 };
 
 /** Uma nota do piano roll. slide = desliza da nota anterior até esta (808). */
@@ -64,6 +80,12 @@ struct Note
     int velocity = 100;
     bool slide = false;
     bool muted = false;   // mudo (Alt+M, como no FL): fica no piano roll, não toca nem sai no MIDI; campo opcional
+    int pan = 0;          // -100..100; por enquanto só vem dos passos (o pan do passo) e não vai para o .wnl
+
+    // Pitch bend e mod wheel desenhados na nota (26/10): curvas opcionais, por t. Enquanto a nota toca, o canal recebe
+    // o pitch wheel e o CC1 delas; vazias = a nota não mexe. Campos opcionais ("pitch" e "mod"; não sobem o esquema).
+    std::vector<CurvePoint> pitch;
+    std::vector<CurvePoint> mod;
 
     int end() const noexcept   { return start + length; }
     bool operator== (const Note&) const = default;
@@ -115,6 +137,9 @@ struct Channel
     float swing = 0.0f;           // 0 a 100 %: atrasa os passos ímpares do step sequencer (100 % = sensação de tercina)
     bool mono = false;            // uma nota por vez; notas com slide deslizam (glide do 808)
     float glideMs = 80.0f;        // tempo do slide
+    int bendRange = 2;            // pitch bend (26/10): quantos semitons o pitch wheel inteiro dobra no instrumento VST3
+                                  // (tem que ser o mesmo do plugin); o WHYNOT Synth usa o parâmetro "bend" dele.
+                                  // De 1 a 24; campo opcional, 2 = o padrão do MIDI
 
     // Sampler: forma da nota. Os padrões deixam o som igual ao de um canal antigo.
     float rootCents = 0.0f;       // quanto o sample está fora de rootKey (-50..50), achado na detecção
@@ -165,6 +190,12 @@ struct Channel
     // Campos opcionais (não sobem o esquema): um app sem eles abre o canal como um sampler sem sample.
     juce::String instrument;
     juce::String instrumentPreset;   // piano: "grand", "suave" ou "lofi" (audio::pianoPresets)
+
+    // Afinação nota a nota (frente C de 27/10), só no kind "audio": as notas da voz e o que mudou em cada uma, em
+    // segundos do arquivo (NoteTuneData.h). Com alguma nota editada, os blocos do canal tocam o arquivo refeito ao lado
+    // do original ("Voz_nota_<código>.wav"); o original nunca muda. Campos opcionais ("noteTune"; não sobem o esquema).
+    std::vector<TunedNote> tunedNotes;
+    bool tuneFormantFollows = false;   // true: o timbre anda junto com o tom (como fita); false: fica (o padrão)
 
     bool isAudio() const noexcept    { return kind == "audio"; }
     bool isPlugin() const noexcept   { return kind == "plugin"; }
@@ -347,6 +378,20 @@ struct PlaylistTrack
     bool operator== (const PlaylistTrack&) const = default;
 };
 
+/** A curva de um fade do bloco de áudio (PlaylistItem::fadeInCurve e fadeOutCurve). No .wnl: "convex", "concave", "s". */
+enum FadeCurve : int { fadeCurveLinear = 0, fadeCurveConvex = 1, fadeCurveConcave = 2, fadeCurveS = 3 };
+constexpr float maxClipPitch = 24.0f;
+
+inline const char* fadeCurveName (int c) noexcept
+{
+    return c == fadeCurveConvex ? "convex" : c == fadeCurveConcave ? "concave" : c == fadeCurveS ? "s" : "linear";
+}
+
+inline int fadeCurveFromName (const juce::String& s) noexcept
+{
+    return s == "convex" ? fadeCurveConvex : s == "concave" ? fadeCurveConcave : s == "s" ? fadeCurveS : fadeCurveLinear;
+}
+
 /** Um bloco na playlist: um padrão (repetido se o bloco for maior que ele) ou um clipe de áudio. */
 struct PlaylistItem
 {
@@ -370,6 +415,11 @@ struct PlaylistItem
     float gainDb = 0.0f;               // áudio: o ganho do bloco (a alça de baixo, normalizar), de -60 a +24 dB; opcional
     double fadeIn = 0.0;               // áudio: fades nas alças do bloco, em segundos da playlist (não mudam com o BPM,
     double fadeOut = 0.0;              // como o offsetSeconds); opcionais
+    // voz na playlist (27/10), todos opcionais e só no áudio:
+    int fadeInCurve = 0;               // a curva de cada fade (fadeCurve*): reta, rápida, lenta ou em S
+    int fadeOutCurve = 0;
+    float pitch = 0.0f;                // tom do bloco em semitons (-24 a +24), sem mudar o tempo e sem canal novo
+    bool reversed = false;             // o bloco toca o trecho de trás para frente (o arquivo "_invertido" ao lado), sem canal novo
 
     int end() const noexcept   { return start + length; }
 
@@ -395,6 +445,7 @@ struct AutomationPoint
 {
     int t = 0;          // ticks da música
     float v = 0.0f;     // 0 a 1 na faixa do parâmetro (logarítmica nas frequências, o fader no volume)
+    float tension = 0.0f;   // (26/10) a curva do trecho até o próximo ponto, -1 a 1 (0 = reta); campo opcional no .wnl
 
     bool operator== (const AutomationPoint&) const = default;
 };

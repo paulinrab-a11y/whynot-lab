@@ -16,6 +16,7 @@
 #include "../../engine/SampleAnalysis.h"
 #include "../../model/NoteTools.h"
 #include "../../model/WnlFormat.h"
+#include "../../ui/ChannelRack.h"
 #include "../../ui/ControlMenu.h"
 #include "../../ui/MidiLearnMenu.h"
 #include "../../ui/MixerView.h"
@@ -1471,6 +1472,236 @@ void runCommunitySelfTest (SelfTestContext& ctx)
         {
             rep.check (false, "o synth do canal não abriu"_t);
         }
+    }
+
+    //--------------------------------------------------------------------------
+    rep.section ("Pedidos de 26/10: passos mais ricos no rack (chance, tom e pan)"_t);
+    {
+        app.run ("project.new");
+        const auto dir = ctx.work.getChildFile ("passos");
+        dir.createDirectory();
+        const double rate = 48000.0;
+        const auto tone = dir.getChildFile ("Tom 220.wav");
+        tone.deleteFile();
+
+        {
+            juce::AudioBuffer<float> buffer (1, (int) (0.4 * rate));   // curto: um passo não vaza no seguinte
+
+            for (int i = 0; i < buffer.getNumSamples(); ++i)
+                buffer.setSample (0, i, 0.5f * (float) std::sin (juce::MathConstants<double>::twoPi * 220.0 * i / rate));
+
+            juce::WavAudioFormat wav;
+            std::unique_ptr<juce::OutputStream> out = std::make_unique<juce::FileOutputStream> (tone);
+
+            if (auto w = wav.createWriterFor (out, juce::AudioFormatWriterOptions{}.withSampleRate (rate).withNumChannels (1).withBitsPerSample (24)))
+                w->writeFromAudioSampleBuffer (buffer, 0, buffer.getNumSamples());
+        }
+
+        const auto added = app.run ("channel.addSampler", args ({ { "path", tone.getFullPathName() }, { "name", "Tom" } }));
+        const auto stepCh = added.value["channel"].toString();
+        app.run ("mixer.setSolo", args ({ { "track", added.value["mixerTrack"].toString() }, { "on", true } }));
+        setGrid (app, stepCh, "x...............", 100);
+
+        int renders = 0;
+        auto render = [&]
+        {
+            const auto f = dir.getChildFile ("passo-" + juce::String (++renders) + ".wav");
+            app.run ("project.exportWav", args ({ { "path", f.getFullPathName() }, { "loops", 1 }, { "what", "pattern" } }));
+            return readWav (f);
+        };
+        auto channelRms = [] (const Audio& a, int c)
+        {
+            double acc = 0.0;
+            const int n = juce::jmin (a.buffer.getNumSamples(), (int) (0.3 * a.sampleRate));
+
+            for (int i = 0; i < n; ++i)
+                acc += (double) a.buffer.getSample (c, i) * a.buffer.getSample (c, i);
+
+            return std::sqrt (acc / juce::jmax (1, n));
+        };
+
+        // Tom: +12 dobra a frequência (220 → 440 Hz); -12 divide.
+        const auto up = app.run ("steps.set", args ({ { "channel", stepCh }, { "index", 0 }, { "pitch", 12 } }));
+        const double hzUp = measureHz (render(), 0.05, 0.3);
+        app.run ("steps.set", args ({ { "channel", stepCh }, { "index", 0 }, { "pitch", -12 } }));
+        const double hzDown = measureHz (render(), 0.05, 0.3);
+        rep.check (up.ok && std::abs (hzUp - 440.0) < 3.0 && std::abs (hzDown - 110.0) < 1.5,
+                   "o tom do passo: +12 toca "_t + juce::String (hzUp, 1) + " Hz e -12 toca " + juce::String (hzDown, 1) + " Hz (o sample é 220)"_t);
+
+        // Pan: toda à esquerda cala a direita; no centro os dois lados saem iguais (bit a bit).
+        app.run ("steps.set", args ({ { "channel", stepCh }, { "index", 0 }, { "pitch", 0 }, { "pan", -100 } }));
+        const auto left = render();
+        app.run ("steps.set", args ({ { "channel", stepCh }, { "index", 0 }, { "pan", 0 } }));
+        const auto centre = render();
+        const double lL = channelRms (left, 0), lR = channelRms (left, 1);
+        const bool sameSides = centre.valid && centre.buffer.getNumChannels() == 2 && channelRms (centre, 0) > 0.01
+                               && channelRms (centre, 0) == channelRms (centre, 1);
+        rep.check (left.valid && lL > 0.01 && lR < lL * 1.0e-3 && sameSides,
+                   "o pan do passo: toda à esquerda, a direita fica "_t + juce::String (juce::Decibels::gainToDecibels (lR / lL, -200.0), 0)
+                       + " dB abaixo; no centro, os dois lados iguais");
+
+        // Pan só no passo dele: o passo 2 no centro, depois de um passo à direita, não herda o lado.
+        setGrid (app, stepCh, "x.......x.......", 100);
+        app.run ("steps.set", args ({ { "channel", stepCh }, { "index", 0 }, { "pan", 100 } }));
+        const auto two = render();
+        double secondL = 0.0, secondR = 0.0;
+
+        for (int i = (int) (2.0 * 60.0 / model.get().bpm * two.sampleRate) + 100; i < two.buffer.getNumSamples(); ++i)
+        {
+            secondL += std::abs (two.buffer.getSample (0, i));
+            secondR += std::abs (two.buffer.getSample (1, i));
+        }
+
+        rep.check (two.valid && secondL > 0.0 && std::abs (secondL - secondR) < 1.0e-3 * secondL,
+                   "o pan vale só para o passo dele: o passo seguinte, no centro, sai igual nos dois lados"_t);
+
+        // Toda à direita cala a esquerda.
+        setGrid (app, stepCh, "x...............", 100);
+        app.run ("steps.set", args ({ { "channel", stepCh }, { "index", 0 }, { "pan", 100 } }));
+        const auto right = render();
+        rep.check (right.valid && channelRms (right, 1) > 0.01 && channelRms (right, 0) < channelRms (right, 1) * 1.0e-3,
+                   "toda à direita, a esquerda fica calada"_t);
+
+        // O centro de um canal que usa pan sai bit a bit igual ao de um canal sem pan nenhum.
+        setGrid (app, stepCh, "x.......x.......", 100);
+        const auto plain = render();
+        app.run ("steps.set", args ({ { "channel", stepCh }, { "index", 8 }, { "pan", -100 } }));
+        const auto mixed = render();
+        float worst = 0.0f;
+        const int firstStep = (int) (0.4 * rate);
+
+        for (int c = 0; c < 2 && plain.valid && mixed.valid; ++c)
+            for (int i = 0; i < juce::jmin (firstStep, plain.buffer.getNumSamples(), mixed.buffer.getNumSamples()); ++i)
+                worst = juce::jmax (worst, std::abs (plain.buffer.getSample (c, i) - mixed.buffer.getSample (c, i)));
+
+        rep.check (plain.valid && mixed.valid && worst == 0.0f,
+                   "o passo no centro sai bit a bit igual com e sem pan nos outros passos (diferença "_t + juce::String (worst) + ")");
+
+        // Duas notas no mesmo instante: o passo (+12, toda à esquerda) e uma nota do piano roll (220 Hz, centro).
+        // A direita só pode ter a nota do piano roll.
+        setGrid (app, stepCh, "x...............", 100);
+        app.run ("steps.set", args ({ { "channel", stepCh }, { "index", 0 }, { "pitch", 12 }, { "pan", -100 } }));
+        addNotes (app, stepCh, juce::Array<juce::var> { noteVar (0, 4, model.get().findChannel (stepCh)->rootKey, false) });
+        const auto both = render();
+        Audio rightOnly;
+        rightOnly.sampleRate = both.sampleRate;
+        rightOnly.valid = both.valid;
+        rightOnly.buffer.setSize (1, both.buffer.getNumSamples());
+
+        if (both.valid)
+            rightOnly.buffer.copyFrom (0, 0, both.buffer, 1, 0, both.buffer.getNumSamples());
+
+        const double rightHz = measureHz (rightOnly, 0.05, 0.3);
+        rep.check (both.valid && std::abs (rightHz - 220.0) < 3.0,
+                   "passo e nota no mesmo instante: cada um com o seu pan (a direita toca só a nota do piano roll, "_t
+                       + juce::String (rightHz, 1) + " Hz)");
+        app.run ("pianoroll.clear", args ({ { "channel", stepCh } }));
+
+        // Chance: 50% em 16 passos, 8 voltas. O sorteio é fixo (sai igual de novo) e muda de volta em volta.
+        setGrid (app, stepCh, "xxxxxxxxxxxxxxxx", 100);
+        app.getCommands().beginGesture ("Chance");
+
+        for (int i = 0; i < 16; ++i)
+            app.run ("steps.set", args ({ { "channel", stepCh }, { "index", i }, { "chance", 50 } }));
+
+        app.getCommands().endGesture();
+        const auto& p = model.get();
+        const auto* pat = p.currentPatternPtr();
+        const auto* chp = p.findChannel (stepCh);
+        std::vector<Note> a, b, other;
+
+        if (pat != nullptr && chp != nullptr)
+        {
+            a = Projector::notesFor (p, *pat, *chp, pat->lengthTicks() * 8);
+            b = Projector::notesFor (p, *pat, *chp, pat->lengthTicks() * 8);
+            other = Projector::notesFor (p, *pat, *chp, pat->lengthTicks() * 8, 0, 3840);
+        }
+
+        auto loopSet = [&] (const std::vector<Note>& notes, int loop)
+        {
+            juce::String sig;
+
+            for (auto& n : notes)
+                if (n.start / pat->lengthTicks() == loop)
+                    sig << (n.start % pat->lengthTicks()) / ticksPerStep << ",";
+
+            return sig;
+        };
+
+        const bool varies = pat != nullptr && (loopSet (a, 0) != loopSet (a, 1) || loopSet (a, 1) != loopSet (a, 2));
+        rep.check (a.size() >= 40 && a.size() <= 88 && a == b && a != other && varies,
+                   "chance de 50%: "_t + juce::String ((int) a.size()) + " de 128 notas em 8 voltas, o mesmo sorteio de novo, outro bloco sorteia diferente e cada volta muda"_t);
+
+        // No 808 (canal que respeita a duração), o passo que não saiu não corta o anterior.
+        if (pat != nullptr && chp != nullptr)
+        {
+            auto held = *chp;
+            held.oneShot = false;
+            Pattern half = *pat;
+            auto& lane = half.steps[stepCh];
+            std::fill (lane.begin(), lane.end(), Step{});
+            lane[0].on = lane[8].on = true;
+            lane[8].chance = 30;
+            const auto notes808 = Projector::notesFor (p, half, held, half.lengthTicks() * 8);
+            bool ok = true;
+            int alone = 0;
+
+            for (auto& n : notes808)
+                if (n.start % half.lengthTicks() == 0)
+                {
+                    const bool secondPlays = std::any_of (notes808.begin(), notes808.end(),
+                                                          [&] (const Note& m) { return m.start == n.start + 8 * ticksPerStep; });
+                    ok &= n.length == (secondPlays ? 8 * ticksPerStep : half.lengthTicks());
+                    alone += secondPlays ? 0 : 1;
+                }
+
+            rep.check (ok && alone > 0,
+                       "808 com chance: quando o passo 9 não sai, o passo 1 segura até o fim do padrão ("_t + juce::String (alone) + " de 8 voltas)");
+        }
+
+        // No PAT ao vivo (com o loop ligado) o laço vira 8 voltas, para cada volta poder sair diferente.
+        app.getProjector().sync (model.get(), model.projectFolder());   // o que o Housekeeping do app faz quando vence
+        const double patternSeconds = pat != nullptr ? pat->lengthTicks() / (double) ticksPerBeat * 60.0 / p.bpm : 0.0;
+        rep.check (std::abs (app.getProjector().lengthSeconds() - 8.0 * patternSeconds) < 1.0e-3,
+                   "no PAT, um padrão com chance toca 8 voltas antes de repetir: "_t + juce::String (app.getProjector().lengthSeconds(), 2) + " s"
+                       + " (o padrão tem "_t + juce::String (patternSeconds, 2) + " s)");
+
+        // .wnl: os três campos vão e voltam, iguais nos dois escritores.
+        app.run ("steps.set", args ({ { "channel", stepCh }, { "index", 3 }, { "chance", 25 }, { "pitch", 7 }, { "pan", -40 } }));
+        const auto json = wnl::toJson (model.get());
+        Project back;
+        const auto* backPat = wnl::fromJson (json, back).wasOk() ? back.currentPatternPtr() : nullptr;
+        const Step* s3 = backPat != nullptr && backPat->steps.count (stepCh) > 0 ? &backPat->steps.at (stepCh)[3] : nullptr;
+        rep.check (s3 != nullptr && s3->chance == 25 && s3->pitch == 7 && s3->pan == -40 && json == wnl::toJsonReference (model.get()),
+                   "chance, tom e pan vão e voltam no .wnl, iguais nos dois escritores"_t);
+
+        // Passos para o piano roll: o tom vai junto.
+        setGrid (app, stepCh, "x...............", 100);
+        app.run ("steps.set", args ({ { "channel", stepCh }, { "index", 0 }, { "pitch", 5 } }));
+        const auto converted = app.run ("pianoroll.stepsToNotes", args ({ { "channel", stepCh } }));
+        const auto* notes = model.get().currentPatternPtr()->notesFor (stepCh);
+        const auto* chNow = model.get().findChannel (stepCh);
+        rep.check (converted.ok && (notes != nullptr && ! notes->empty() && chNow != nullptr && notes->front().key == chNow->rootKey + 5),
+                   "passos para o piano roll levam o tom do passo"_t);
+
+        // A tela: o rack com as marquinhas (tom, chance e pan), num canal que ainda usa passos (o Tom virou notas acima).
+        juce::String rackCh = stepCh;
+
+        for (auto& c : model.get().channels)
+            if (c.name == "Kick")
+                rackCh = c.id;
+
+        setGrid (app, rackCh, "x...x...x...x...", 100);
+        app.run ("steps.set", args ({ { "channel", rackCh }, { "index", 0 }, { "pitch", 7 } }));
+        app.run ("steps.set", args ({ { "channel", rackCh }, { "index", 4 }, { "chance", 50 } }));
+        app.run ("steps.set", args ({ { "channel", rackCh }, { "index", 8 }, { "pan", -100 } }));
+        app.run ("steps.set", args ({ { "channel", rackCh }, { "index", 12 }, { "pitch", -12 }, { "chance", 75 }, { "pan", 60 } }));
+        ChannelRack rack (app);
+        rack.setSize (1180, 420);
+        host.addAndMakeVisible (rack);
+        rack.refresh (model.get());
+        rep.check (savePngOnPanel (rack, ctx.work.getChildFile ("passos-rack.png")), "captura do rack com chance, tom e pan nos passos"_t);
+        host.removeChildComponent (&rack);
     }
 
     host.setLookAndFeel (nullptr);

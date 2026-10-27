@@ -62,7 +62,9 @@ namespace
         if (type == "meter")
             return { { "REFERÊNCIA", { "target" } } };
         if (type == "tune")
-            return { { "NOTAS", { "key", "scale", "follow:DO PROJETO" } }, { "CORREÇÃO", { "speed", "amount", "humanize" } },
+            return { { "NOTAS", { "key", "scale", "follow:DO PROJETO" } }, { "AFINAÇÃO", { "reference:LÁ EM", "fine:FINO" } },
+                     { "CORREÇÃO", { "speed", "amount", "humanize" } }, { "TIMBRE", { "formant" } },
+                     { "HARMONIA", { "harmony:VOZ", "harmonyLevel:NÍVEL" } }, { "GUIA", { "guide:SEGUIR" } },
                      { "VOZ", { "range", "mix" } } };
         if (type == "voicepitch")
             return { { "TOM", { "semitones", "formant" } }, { "VOZ", { "range", "mix" } } };
@@ -116,6 +118,12 @@ namespace
         return {};
     }
 
+    /** Parâmetros que a parte de cima da janela desenha e muda (as 12 notas da afinação): sem knob. */
+    bool drawnByVisual (const juce::String& type, const char* id)
+    {
+        return type == "tune" && juce::String (id).startsWith ("note_");
+    }
+
     constexpr int cellW = ParamControl::cellWidth, cellH = ParamControl::cellHeight;
     constexpr int maxCellsInRow = 9;
 }
@@ -132,7 +140,7 @@ FxEditor::FxEditor (AppController& a, WhynotFxPlugin& p)
     {
         const auto& param = info.params[i];
 
-        if (param.hidden)
+        if (param.hidden || drawnByVisual (plugin.getFxType(), param.id))
             continue;
 
         auto* c = controls.add (new ParamControl (param));
@@ -157,8 +165,15 @@ FxEditor::FxEditor (AppController& a, WhynotFxPlugin& p)
     if (info.sidechain)
     {
         theme::styleComboBox (sidechainBox);
-        sidechainBox.setTooltip ("Disparo (sidechain): outra trilha comanda o efeito (o kick abaixa o 808, a voz abre espaço no beat, "_t
-                                 "o chimbal abre o gate)."_t);
+
+        if (std::string_view (info.type) == "tune")
+            sidechainBox.setTooltip ("Nota guia: a trilha de um synth ou piano tocando a melodia do piano roll. Com \"Seguir a guia\" ligado, "_t
+                                     "a voz vai para a nota que a guia toca, na oitava da voz. Para não ouvir a guia, mande a saída "_t
+                                     "dela para uma trilha com o fader no mínimo."_t);
+        else
+            sidechainBox.setTooltip ("Disparo (sidechain): outra trilha comanda o efeito (o kick abaixa o 808, a voz abre espaço no beat, "_t
+                                     "o chimbal abre o gate)."_t);
+
         sidechainBox.onChange = [this]
         {
             const int i = sidechainBox.getSelectedId() - 1;
@@ -310,10 +325,15 @@ void FxEditor::refresh()
                 if (const int i = info.indexOf (id.toRawUTF8()); i >= 0)
                     reference[(size_t) i] = info.params[(size_t) i].clamp (v);
 
-        // A afinação e a harmonia não guardam o tom no preset: o tom e o "seguir" não contam como mudança.
-        for (auto* id : { "key", "scale", "follow" })
-            if (const int i = info.indexOf (id); i >= 0 && (std::string_view (info.type) == "tune" || std::string_view (info.type) == "harmony"))
-                reference[(size_t) i] = values[(size_t) i];
+        // A afinação e a harmonia não guardam o tom no preset: o tom, o "seguir" e as notas não contam como mudança.
+        for (size_t i = 0; i < info.params.size(); ++i)
+        {
+            const std::string_view id (info.params[i].id);
+
+            if ((std::string_view (info.type) == "tune" || std::string_view (info.type) == "harmony")
+                && (id == "key" || id == "scale" || id == "follow" || id.starts_with ("note_")))
+                reference[i] = values[i];
+        }
 
         for (size_t i = 0; i < info.params.size(); ++i)
             if (! info.params[i].hidden && std::abs (reference[i] - values[i]) > 1.0e-3f)
@@ -333,7 +353,8 @@ void FxEditor::refresh()
         sidechainBox.clear (juce::dontSendNotification);
         sidechainIds.clear();
         sidechainIds.add ({});
-        sidechainBox.addItem ("Sem sidechain", 1);
+        const bool guide = std::string_view (info.type) == "tune";   // na afinação, o sidechain é a nota guia
+        sidechainBox.addItem (guide ? "Sem guia" : "Sem sidechain", 1);
 
         for (auto& m : p.mixer)
         {
@@ -341,7 +362,7 @@ void FxEditor::refresh()
                 continue;
 
             sidechainIds.add (m.id);
-            sidechainBox.addItem ("Disparo: "_t + m.name, sidechainIds.size());
+            sidechainBox.addItem ((guide ? "Guia: "_t : "Disparo: "_t) + m.name, sidechainIds.size());
         }
 
         sidechainBox.setSelectedId (juce::jmax (1, sidechainIds.indexOf (ins->sidechain) + 1), juce::dontSendNotification);

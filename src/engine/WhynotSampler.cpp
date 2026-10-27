@@ -219,7 +219,10 @@ void WhynotSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     if (auto* midi = fc.bufferForMidiMessages)
     {
         if (midi->isAllNotesOff)
+        {
             releaseAll();
+            pendingCount = 0;
+        }
 
         for (auto& m : *midi)
         {
@@ -231,11 +234,24 @@ void WhynotSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
 
             if (m.isNoteOn())
             {
+                const float pan = takePan (sampleClock + when);   // também no swapping, para a fila andar junto
+
                 if (! swapping)
-                    noteOn (m.getNoteNumber(), m.getFloatVelocity(), *ref);
+                    noteOn (m.getNoteNumber(), m.getFloatVelocity(), *ref, pan);
             }
             else if (m.isNoteOff())
                 noteOff (m.getNoteNumber(), *ref);
+            else if (m.isController() && m.getControllerNumber() == 10)
+            {
+                // o pan da nota que vem neste instante (passo, 26/10); fila cheia: o mais velho sai
+                if (pendingCount == (int) pendingPans.size())
+                {
+                    std::move (pendingPans.begin() + 1, pendingPans.end(), pendingPans.begin());
+                    --pendingCount;
+                }
+
+                pendingPans[(size_t) pendingCount++] = { sampleClock + when, juce::jlimit (-1.0f, 1.0f, (m.getControllerValue() - 64) / 63.0f) };
+            }
             else if (m.isAllSoundOff())
                 chokeAll();   // choke (outro canal do grupo tocou) ou parada total: corte de 3 ms
             else if (m.isAllNotesOff())
@@ -244,6 +260,7 @@ void WhynotSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     }
 
     renderVoices (*data, out, numChannels, start + position, num - position);
+    sampleClock += num;
 
     bool anyActive = false;
 
@@ -336,9 +353,33 @@ void WhynotSamplerPlugin::removeHeld (int key) noexcept
     }
 }
 
-void WhynotSamplerPlugin::noteOn (int key, float velocity, const SampleRef& ref) noexcept
+float WhynotSamplerPlugin::takePan (std::int64_t now) noexcept
 {
-    const auto params = voiceParams();
+    // Joga fora o que chegou antes deste instante (um CC sem nota, o "último valor" do começo do play);
+    // o da frente vale se chegou junto com esta nota.
+    int drop = 0;
+
+    while (drop < pendingCount && pendingPans[(size_t) drop].at < now - 8)
+        ++drop;
+
+    float pan = 0.0f;
+
+    if (drop < pendingCount && pendingPans[(size_t) drop].at <= now)
+        pan = pendingPans[(size_t) drop++].pan;
+
+    if (drop > 0)
+    {
+        std::move (pendingPans.begin() + drop, pendingPans.begin() + pendingCount, pendingPans.begin());
+        pendingCount -= drop;
+    }
+
+    return pan;
+}
+
+void WhynotSamplerPlugin::noteOn (int key, float velocity, const SampleRef& ref, float pan) noexcept
+{
+    auto params = voiceParams();
+    params.pan = pan;   // o CC 10 que chegou junto com esta nota vale só para ela
     const auto& data = *ref.data;
 
     // Fatiador: cada tecla toca uma fatia, no tom original do sample, até a fatia seguinte.

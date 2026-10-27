@@ -76,6 +76,15 @@ Em cima ficam as abas **Playlist (F5)**, **Channel rack (F6)** e **Piano roll (F
 
 1. Clique nos passos para ligar; arraste para pintar; botão direito apaga.
 2. **Ctrl + roda do mouse** sobre um passo muda a força (velocity); **Alt + roda** faz roll (2, 3, 4, 6 ou 8 batidas no passo).
+   **Passos mais ricos (26/10):** **Ctrl+Shift + roda** muda o tom do passo (semitons sobre a nota do canal). **Shift + botão direito**
+   num passo abre o menu dele: **chance de tocar** (100% a 10%), **tom** e **pan** (só nos canais de sample). O passo mostra o tom
+   em cima à esquerda, a chance em cima à direita e o pan num traço embaixo. Pela IA: `steps.set` com `chance`, `pitch` e `pan`.
+   - **Chance:** cada volta do padrão sorteia o passo inteiro (o roll junto). O sorteio é fixo: o play, o WAV e o MIDI exportado
+     saem iguais, e cada bloco da playlist sorteia do seu jeito (as duas metades de um bloco cortado, como o bloco inteiro). No PAT
+     com o loop ligado, um padrão com chance toca 8 voltas antes de repetir o sorteio (o relógio conta até lá). No 808, o passo que
+     não saiu não corta a nota anterior.
+   - **Pan:** só no sampler (no synth e no VST3 o comando recusa). Cada nota leva o seu: no centro o som sai bit a bit igual.
+   - **Passar para o piano roll** leva o tom; a chance e o pan ficam de fora (a nota do piano roll ainda não tem esses campos).
 3. **Barra de espaço** toca e para. O padrão repete enquanto o loop (botão ao lado do metrônomo) estiver ligado.
 4. Arraste o BPM para cima ou para baixo (Shift: ajuste fino), use a rodinha, ou dê duplo clique para digitar.
 5. Arraste samples do Explorer para o channel rack para criar canais. Solte em cima do nome de um canal para trocar o sample dele. O app **acha a nota do sample** sozinho (808, baixo, melodia) e a barra de status mostra qual foi; bateria sem nota definida fica em C4 (60).
@@ -122,7 +131,14 @@ Para a IA: `channel.setSampler {channel, rootKey?, rootCents?, tune?, attackMs?,
     - **Levar para a escala**: cada nota fora do tom vai para a nota do tom mais perto.
     - **Encaixar na escala ao desenhar e mover**: desenhar, arrastar e as setas só caem em notas do tom.
     - **Carimbo de acorde**: escolha um acorde e cada clique do Desenhar põe o acorde inteiro, com o baixo na nota clicada. Os "da escala" usam as notas do tom (tríade, com 7ª, com 9ª); as formas fixas são maior, menor, quinta, sus2, sus4, 7ª e outras. **Esc** desliga. Enquanto o carimbo ou o encaixe estão ligados, um aviso fica no canto da grade.
-12. **Importar MIDI**: arraste um `.mid` tipo 0 ou 1 (pacote de acordes, melodia) para o piano roll, ou use Arquivo > Importar MIDI ou Editar > Importar MIDI no piano roll. Um cartão pergunta quais trilhas entram (todas ou uma; no tipo 0, uma por canal MIDI), se as notas trocam ou somam ao que o canal toca no padrão atual, e se começam no começo do padrão ou no compasso da agulha (no PAT, tocando ou pausado com Ctrl+Espaço). Enter importa e Esc cancela. Tom, força e duração vêm convertidos para 960 ticks por tempo; uma nota de força 0 no arquivo é o fim da nota anterior. Compassos vazios no começo do arquivo saem, o padrão cresce até 16 compassos, e o app avisa se o arquivo foi feito em outro BPM. Um Ctrl+Z desfaz tudo. Pela IA: `pianoroll.inspectMidi` lista as trilhas e `pianoroll.importMidi` aceita `track`, `replace` e `at`.
+12. **Importar MIDI**: arraste um `.mid` tipo 0 ou 1 (pacote de acordes, melodia) para o piano roll, ou use Arquivo > Importar MIDI ou Editar > Importar MIDI no piano roll. Um cartão pergunta quais trilhas entram (todas ou uma; no tipo 0, uma por canal MIDI), se as notas trocam ou somam ao que o canal toca no padrão atual, e se começam no começo do padrão ou no compasso da agulha (no PAT, tocando ou pausado com Ctrl+Espaço). Enter importa e Esc cancela. Tom, força e duração vêm convertidos para 960 ticks por tempo; uma nota de força 0 no arquivo é o fim da nota anterior. Compassos vazios no começo do arquivo saem, o padrão cresce até 16 compassos, e o app avisa se o arquivo foi feito em outro BPM. Um Ctrl+Z desfaz tudo. Pela IA: `pianoroll.inspectMidi` lista as trilhas e `pianoroll.importMidi` aceita `track`, `replace` e `at`. O pitch bend e o mod wheel (CC1) do arquivo voltam como as curvas das notas (item 13).
+13. **Pitch bend e mod wheel na nota**: a faixa de baixo tem três abas, à esquerda, embaixo do teclado: **Força**, **Pitch** e **Mod**.
+    - **Pitch**: desenhe a curva de cada nota, do começo ao fim dela. O meio da faixa é o tom da nota e as bordas são o alcance do instrumento (o número embaixo das abas, como ±2 st). O valor cai em semitons inteiros; com **Alt**, fica livre (em cents). Desenhar numa nota sem curva sai do tom dela e segura até onde o arrasto começou (clicar no fim da nota e puxar faz o bend só no fim). **Botão direito** apaga pontos (arrastando, apaga vários) e o **duplo clique** tira a curva da nota. Com notas selecionadas, só elas mudam.
+    - **O alcance**: clique no ±2 st para trocar entre 2, 7, 12 e 24 semitons. No WHYNOT Synth é o parâmetro Pitch bend dele. Num instrumento VST3, deixe o mesmo valor que o plugin usa (o padrão dos plugins é 2).
+    - **Mod**: a roda de modulação (CC1), de 0 embaixo até a roda toda em cima. O que ela faz depende do timbre (no WHYNOT Synth, a fonte Mod wheel da matriz).
+    - O pitch wheel e o CC1 valem para o canal inteiro: quando duas notas soam juntas, manda a curva da que começou por último (num acorde que começa junto, a que tem curva). Toda nota manda o valor dela no começo, então a nota sem curva depois de um dive volta ao tom, inclusive na volta do loop; depois do fim de uma nota, o valor fica até a próxima (a cauda do release não pula de volta). Cortar uma nota leva a curva para o pedaço da direita; copiar e colar, esticar a seleção, juntar (Ctrl+G) e o strum levam a curva junto.
+    - Tocar, renderizar e exportar mandam os mesmos eventos ao instrumento. O sampler e o WHYNOT Piano ainda não dobram o tom: a curva fica guardada e sai no MIDI exportado, e a faixa avisa.
+    - Pela IA: `pianoroll.setNoteCurve` (`curve` "pitch" ou "mod", `points` [{ t, v }] desde o começo da nota, `unit` como nas notas) e `channel.setBendRange`. O `pianoroll.addNotes` e o `pianoroll.updateNotes` também aceitam `pitch` e `mod` em cada nota.
 
 ## 6b. WHYNOT Piano
 
@@ -189,7 +205,7 @@ Um diálogo só, como o render do FL. **Ctrl+R** abre em WAV, **Ctrl+Shift+R** e
 |---|---|
 | WAV | 48 kHz / 24 bits, com os efeitos do mixer e do master |
 | MP3 | 44,1 kHz, codificado com o LAME: 128, 192, 256 ou 320 kbps (padrão 320), ou taxa variável (VBR V0). Leva o título do projeto na tag e toca sem silêncio a mais no começo nos players que leem o quadro do LAME |
-| MIDI | Uma faixa por canal, com o nome do canal, mais o andamento e o compasso. As notas saem como o motor toca: passos viram notas, o padrão repete e o mono/slide do 808 vale. Canais de áudio ficam de fora |
+| MIDI | Uma faixa por canal, com o nome do canal, mais o andamento e o compasso. As notas saem como o motor toca: passos viram notas, o padrão repete e o mono/slide do 808 vale. O glide do 808 sai como uma nota só com pitch bend (não mais notas sobrepostas), e as curvas de pitch e mod desenhadas saem como pitch wheel e CC1; com bend maior que 2 semitons, a faixa começa com o alcance (RPN 0). Canais de áudio ficam de fora |
 | Stems | Um WAV por trilha do mixer, escolhendo quais. Vêm marcadas as que recebem som de um canal que toca. Cada stem é a saída da própria trilha, como no FL: o envio para o bus de reverb sai no stem do bus, não no da trilha. Por padrão os efeitos do master ficam de fora (volume e pan do master continuam), como nos stems para mixar ou masterizar em outro lugar. Assim, somando os stems de trilhas paralelas, dá a mixagem sem a cadeia do master. A caixa "Com os efeitos do master" (ou `masterChain: true` no comando) passa cada stem pela cadeia do master, sozinho |
 
 "O que sai" escolhe entre **Padrão atual** (repetido 1, 2, 4, 8 ou 16 vezes) e **Música inteira** (a playlist até o fim do último bloco).
@@ -363,6 +379,8 @@ O autoteste é dividido por área, um arquivo por área em `src/app/selftest/`. 
 - Mixing: os efeitos nativos, o estilo trap e salvar e reabrir a mixagem;
 - Plugins (3.3);
 - Finishing (3.4);
+- ... e as áreas das outras frentes, na ordem do `SelfTest.cpp`;
+- PitchBend (26/10): as contas das curvas, os comandos e o desfazer, o `.wnl` igual nos dois escritores, o render medido (a nota com +2 st toca 123,47 Hz em vez de 110, igual à nota 2 st acima), o glide do 808 que sai como uma nota com pitch bend no MIDI, a curva que vai e volta pelo MIDI, e a raia desenhada com o mouse (capturas `pitch-raia.png` e `pitch-raia-mod.png`);
 - "Arquivos inválidos", sempre por último.
 
 O `ctest --test-dir build` roda dois testes, sem abrir o app:

@@ -286,8 +286,11 @@ public:
             leavingLoop = true;
     }
 
-    /** Soma a voz em out[canal][frame]. Não sobrescreve o que já está no buffer. */
-    void render (const SampleData& sample, float* const* out, int numOutChannels, int numFrames) noexcept
+    /** Soma a voz em out[canal][frame]. Não sobrescreve o que já está no buffer.
+        `pitchOffset` (27/10): o desvio de tom do canal em semitons, um por frame (o pitch wheel e o vibrato do
+        CC1, ChannelPitch.h); nulo = nenhum, e o som sai bit a bit igual ao de antes. */
+    void render (const SampleData& sample, float* const* out, int numOutChannels, int numFrames,
+                 const float* pitchOffset = nullptr) noexcept
     {
         const auto length = sample.numFrames();
         const int srcChannels = sample.numChannels();
@@ -352,7 +355,10 @@ public:
             }
 
             // Sem afinação nem queda de tom a soma é exata: o som fica igual ao de antes.
-            const float semis = currentSemis + params.tuneSemis + pitchEnvOffset;
+            float semis = currentSemis + params.tuneSemis + pitchEnvOffset;
+
+            if (pitchOffset != nullptr)   // o bend e o vibrato do canal: só a velocidade da leitura muda, sem salto
+                semis += pitchOffset[i];
 
             if (semis != ratioSemis)
             {
@@ -408,6 +414,13 @@ public:
                         decaying = false;
                         startRamp (0.0f, (float) (left * 1000.0 / outRate));
                     }
+                }
+                else if (pitchOffset != nullptr && env > 0.0f)
+                {
+                    // Com o bend do canal o tom pode subir no meio do fade: a rampa é refeita para o que falta, e
+                    // ainda chega a zero no fim da fatia (sem bend, a rampa de sempre, bit a bit).
+                    const double left = (regionTo - position) / ratio;
+                    envStep = -env / (float) std::max (1.0, left);
                 }
             }
 

@@ -286,7 +286,7 @@ void registerCompositionCommands (CommandRegistry& r)
 
                  auto& steps = pat->steps[channel];
                  auto& notes = pat->notes[channel];
-                 const int swing = ch->swingTicks();   // as notas ficam onde os passos soavam
+                 const int swing = p.stepSwingTicks (*ch);   // as notas ficam onde os passos soavam (com o swing global, 29/10)
 
                  for (size_t i = 0; i < steps.size(); ++i)
                  {
@@ -1013,6 +1013,8 @@ void registerCompositionCommands (CommandRegistry& r)
                        { "muted", "boolean", false, "Bloco mudo"_t },
                        { "stretch", "number", false, "Áudio esticado no tempo: segundos na playlist por segundo do arquivo (1 = normal, de 0,25 a 4)"_t },
                        { "tape", "boolean", false, "Áudio: o esticar muda o tom junto, como uma fita"_t },
+                       { "file", "string", false, "Áudio: o arquivo próprio do bloco no lugar do sample do canal (o consolidado; copiar um bloco leva ele)"_t },
+                       { "pan", "number", false, "Áudio: o pan do bloco, de -1 a 1"_t },
                        { "unit", "string", false, "Unidade de start/length: ticks (padrão), steps, beats ou bars"_t } }), true,
              [] (CommandContext& c, const juce::var& a)
              {
@@ -1055,7 +1057,10 @@ void registerCompositionCommands (CommandRegistry& r)
                      item.ref = ref;
                      item.stretch = clampStretch (params::number (a, "stretch", 1.0));
                      item.tape = params::boolean (a, "tape", false);
-                     const double seconds = c.app.fileDurationSeconds (c.model.resolveSample (ch->samplePath));
+                     // playlist fatia 6: a cópia de um consolidado leva o arquivo dele e o pan (o normalise limita)
+                     item.file = params::string (a, "file").trim();
+                     item.pan = (float) params::number (a, "pan", 0.0);
+                     const double seconds = c.app.fileDurationSeconds (c.model.resolveSample (item.file.isNotEmpty() ? item.file : ch->samplePath));
                      const int fileTicks = juce::roundToInt (seconds * item.stretch * p.bpm / 60.0 * ticksPerBeat);
                      item.length = params::has (a, "length") ? toTicks (a, params::number (a, "length", 0))
                                                              : juce::jmax (ticksPerStep, fileTicks);

@@ -62,6 +62,8 @@ public:
     bool isPlaying() const override;
     void setPlayStart (int ticks) override;
     int playStart() const override              { return needleTicks; }
+    void setPatternStart (int ticks) override;
+    int patternStart() const override;
     juce::File recordingsFolder() const override   { return takeFolder(); }
     juce::Result renderRange (const Project&, double fromSeconds, double toSeconds, const juce::File&) override;
     Project soloTrackProject (const Project&, const juce::String& mixerId, bool masterChain) const override;
@@ -232,8 +234,8 @@ public:
     std::function<void (const juce::String&)> onTogglePanel;
 
     /** A seleção de tempo da playlist (estado da tela, não vai para o .wnl): a janela Exportar oferece o trecho. */
-    void setTimeSelection (juce::Range<int> r);
-    juce::Range<int> getTimeSelection() const noexcept     { return timeSelection; }
+    void setTimeSelection (juce::Range<int> r) override;
+    juce::Range<int> getTimeSelection() const noexcept override     { return timeSelection; }
 
 private:
     struct ScanThread;
@@ -257,7 +259,7 @@ private:
     // Gravar voz (21/10): de onde o play começa (a agulha, a seleção de tempo), a contagem e o loop.
     juce::Range<int> songSelection() const;     // a seleção de tempo, só no modo SONG (vazia no PAT)
     te::TimeRange transportLoopRange() const;   // a seleção no SONG; sem ela, o padrão (PAT) ou a música inteira
-    record::StartPlan startPlan (int countInBars) const;
+    record::StartPlan startPlan (int countInBars, bool forTake = false) const;   // forTake: gravando (no PAT, do começo)
     void applyTransportLoop (bool starting = false);
     void serviceTransport();
 
@@ -304,6 +306,8 @@ private:
     bool syncPending = false;
     juce::Range<int> timeSelection;
     int needleTicks = 0;                            // a agulha: o play do modo SONG começa aqui e o stop volta para cá
+    int patternStartTicks = 0;                      // (29/10) o começo do play no PAT, dentro do padrão patternStartFor
+    juce::String patternStartFor;
     std::optional<double> loopHoldUntil;            // a contagem começou antes do loop: ele liga quando a agulha chegar aqui (s)
 
     void requestBeatKeys();

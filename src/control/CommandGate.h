@@ -46,6 +46,11 @@ juce::String canonicalJson (const juce::var&);
 /** Texto de até 4 KB e listas de até 5.000 itens nos parâmetros. Vazio = dentro dos limites. */
 juce::String checkParamLimits (const juce::var& params);
 
+/** (29/10) O bloco travado da playlist não muda pela IA: nem lugar, nem tamanho, nem raia, nem apara, nem some, nem
+    destrava (a pessoa destrava pela tela). Ganho, fades, tom e mudo podem, como no painel. Vazio = nada travado mudou;
+    senão, o motivo. A ponte liga no CommandRegistry::vetoChange enquanto roda um comando ou lote da IA. */
+juce::String lockedItemsVeto (const Project& before, const Project& after);
+
 /** O projeto em JSON, com o estado dos plugins (base64) trocado pelo tamanho. `sections` vazio = tudo;
     `pattern` e `channel` filtram os padrões e os canais (e as raias dos padrões). */
 juce::var inspectProject (const Project&, const juce::String& pattern, const juce::String& channel, const juce::StringArray& sections);

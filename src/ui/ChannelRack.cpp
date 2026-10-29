@@ -37,6 +37,22 @@ ChannelRack::ChannelRack (AppController& a) : app (a)
 {
     setOpaque (true);   // pinta o fundo inteiro: a agulha repinta só as colunas dela (fluidez, 21/10)
     setRepaintsOnMouseActivity (false);
+
+    // O swing global (29/10): soma ao swing de cada canal nos passos. Um arrasto = um passo de desfazer.
+    swingKnob.setRange (0.0, 100.0, 1.0);
+    swingKnob.setDoubleClickReturnValue (true, 0.0);
+    swingKnob.setTooltip ("Swing de todos os canais: atrasa os passos dos contratempos para o beat ficar menos quadrado "
+                          "(100% = sensação de tercina). Soma ao swing de cada canal (botão direito no nome). Duplo clique zera."_t);
+    swingKnob.onDragStart = [this] { swingDragging = true; app.getCommands().beginGesture ("Swing"_t); };
+    swingKnob.onDragEnd = [this] { swingDragging = false; app.getCommands().endGesture(); };
+    swingKnob.onValueChange = [this]
+    {
+        if (std::abs (swingKnob.getValue() - (double) swing) < 0.5)
+            return;   // o refresh pondo o valor do projeto, ou o mesmo número
+
+        app.run ("project.setSwing", args ({ { "amount", swingKnob.getValue() } }));
+    };
+    addAndMakeVisible (swingKnob);
 }
 
 int ChannelRack::getIdealHeight() const
@@ -48,6 +64,15 @@ void ChannelRack::refresh (const Project& p)
 {
     const auto* pattern = p.currentPatternPtr();
     numSteps = pattern != nullptr ? pattern->lengthSteps : 16;
+
+    if (std::abs (p.swing - swing) > 0.01f)
+    {
+        swing = p.swing;
+        repaint (swingBounds());
+    }
+
+    if (! swingDragging || std::abs (swingKnob.getValue() - (double) swing) >= 0.5)
+        swingKnob.setValue (swing, juce::dontSendNotification);
     patternTicks = numSteps * ticksPerStep;
     const auto& problems = app.getProjector().sampleProblems();
 
@@ -173,9 +198,20 @@ void ChannelRack::setPlayheadStep (int step)
     }
 }
 
+void ChannelRack::setPatternStart (int ticks)
+{
+    if (ticks == startTicks)
+        return;
+
+    startTicks = ticks;
+    repaint (stepRulerBounds().expanded (4, 2));
+}
+
 void ChannelRack::resized()
 {
     layoutRows();
+    const auto s = swingBounds();
+    swingKnob.setBounds (s.getX(), s.getCentreY() - 14, 28, 28);
 }
 
 void ChannelRack::layoutRows()
@@ -236,10 +272,40 @@ juce::Rectangle<int> ChannelRack::lengthBounds() const
     return { getWidth() - 16 - 136, 8, 136, 32 };
 }
 
+juce::Rectangle<int> ChannelRack::swingBounds() const
+{
+    // depois do título "Channel rack", antes dos números dos tempos (que começam em stepsLeft)
+    return { tapeLeft + 70, 6, 120, headerHeight - 12 };
+}
+
+juce::Rectangle<int> ChannelRack::stepRulerBounds() const
+{
+    const auto first = stepBounds (0, 0), last = stepBounds (0, juce::jmax (0, numSteps - 1));
+    return { first.getX() - 2, headerHeight - 22, last.getRight() - first.getX() + 4, 22 };
+}
+
+int ChannelRack::stepAtX (int x) const
+{
+    // o passo debaixo do x, ou o mais perto (o espaço entre os grupos de 4 conta para o da esquerda)
+    int best = 0;
+
+    for (int s = 0; s < numSteps; ++s)
+        if (stepBounds (0, s).getX() - 2 <= x)
+            best = s;
+
+    return best;
+}
+
+juce::Point<int> ChannelRack::stepRulerPoint (int step) const
+{
+    return { stepBounds (0, juce::jlimit (0, juce::jmax (0, numSteps - 1), step)).getCentreX(), stepRulerBounds().getCentreY() };
+}
+
 ChannelRack::Hit ChannelRack::hitTest (juce::Point<int> p) const
 {
     if (addButtonBounds().contains (p))   return { Hit::Kind::addButton, -1, -1 };
     if (lengthBounds().contains (p))      return { Hit::Kind::lengthBox, -1, -1 };
+    if (! rows.empty() && stepRulerBounds().contains (p))   return { Hit::Kind::stepRuler, -1, stepAtX (p.x) };
 
     for (int row = 0; row < (int) rows.size(); ++row)
     {
@@ -287,6 +353,37 @@ void ChannelRack::paint (juce::Graphics& g)
     {
         const auto b = stepBounds (0, beat * 4);
         g.drawText (juce::String (beat + 1), b.getX() + 2, headerHeight - 18, stepSize, 14, juce::Justification::centredLeft);
+    }
+
+    // a faixa dos tempos marca de onde o padrão começa a tocar no PAT (29/10): com o mouse, um aro no passo; a
+    // marca é o triângulo da agulha da playlist, sobre o passo escolhido (só quando não é o começo)
+    if (hover.kind == Hit::Kind::stepRuler && startTicks >= 0)
+    {
+        const auto b = stepBounds (0, hover.step);
+        g.setColour (colour::raised);
+        g.fillRoundedRectangle (juce::Rectangle<float> ((float) b.getX(), (float) headerHeight - 4.0f, (float) b.getWidth(), 2.0f), 1.0f);
+    }
+
+    if (startTicks > 0)
+    {
+        const auto b = stepBounds (0, juce::jlimit (0, juce::jmax (0, numSteps - 1), startTicks / ticksPerStep));
+        const float x = (float) b.getCentreX(), y = (float) headerHeight - 7.0f;
+        juce::Path marker;
+        marker.addTriangle (x - 5.0f, y - 1.0f, x + 5.0f, y - 1.0f, x, y + 6.0f);
+        g.setColour (colour::text);
+        g.fillPath (marker);
+    }
+
+    // o swing global: o knob (filho) e, ao lado, o nome e o valor
+    {
+        const auto s = swingBounds().withTrimmedLeft (34);
+        g.setColour (colour::textDim);
+        g.setFont (captionFont());
+        g.drawText ("Swing", s.withHeight (s.getHeight() / 2), juce::Justification::bottomLeft, false);
+        g.setColour (swing > 0.0f ? colour::text : colour::textDim);
+        g.setFont (numberFont (13.0f));
+        g.drawText (swing > 0.0f ? juce::String (juce::roundToInt (swing)) + "%" : juce::String ("Desligado"),
+                    s.withTrimmedTop (s.getHeight() / 2), juce::Justification::topLeft, false);
     }
 
     {
@@ -417,9 +514,10 @@ void ChannelRack::paint (juce::Graphics& g)
 
                 if (step.chance < 100)
                 {
-                    // com o tom também escrito, o número da chance só cabe num passo largo
-                    if (roomy && (step.pitch == 0 || b.getWidth() >= 34.0f))
-                        g.drawText (juce::String (step.chance), b.reduced (3.0f, 1.0f).withHeight (11.0f), juce::Justification::topRight, false);
+                    // Com o "%", a chance não se confunde com o tom (revisão de 28/10: "-12 75" não dizia o que era o 75).
+                    // Com o tom também escrito, o número só cabe num passo largo; senão, o ponto.
+                    if (b.getWidth() >= (step.pitch == 0 ? 28.0f : 44.0f))
+                        g.drawText (juce::String (step.chance) + "%", b.reduced (3.0f, 1.0f).withHeight (11.0f), juce::Justification::topRight, false);
                     else
                         g.fillEllipse (b.getRight() - 5.0f, b.getY() + 2.0f, 3.0f, 3.0f);
                 }
@@ -584,6 +682,20 @@ void ChannelRack::mouseDown (const juce::MouseEvent& e)
             app.run ("channel.setMute", args ({ { "channel", rows[(size_t) h.row].id } }));
             break;
 
+        case Hit::Kind::stepRuler:
+        {
+            // de onde o padrão começa a tocar no PAT (29/10), como o clique na régua da playlist; no SONG, quem manda é a agulha
+            if (app.getModel().get().songMode)
+            {
+                if (onStatus) onStatus ("No SONG o play começa da agulha da playlist. No PAT, o clique aqui escolhe de onde o padrão toca."_t, false);
+                break;
+            }
+
+            const auto r = app.run ("transport.setPatternStart", args ({ { "at", h.step }, { "unit", "steps" } }));
+            if (! r.ok && onStatus) onStatus (r.error, true);
+            break;
+        }
+
         case Hit::Kind::arm:
         {
             const auto& r = rows[(size_t) h.row];
@@ -741,6 +853,9 @@ void ChannelRack::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWh
 
 juce::String ChannelRack::getTooltip()
 {
+    if (hover.kind == Hit::Kind::stepRuler)
+        return "Clique para o padrão começar a tocar deste passo (no PAT); o stop volta para cá. Alt+← e Alt+→ andam um tempo"_t;
+
     if (hover.kind == Hit::Kind::tape && juce::isPositiveAndBelow (hover.row, (int) rows.size()))
     {
         const auto& r = rows[(size_t) hover.row];
@@ -926,14 +1041,14 @@ void ChannelRack::showTapeMenu (int row)
         menu.addSubMenu (r.chokeGroup > 0 ? "Grupo de corte: "_t + juce::String (r.chokeGroup) : "Grupo de corte"_t, choke);
 
         // Swing: atrasa os passos dos contratempos (100% = sensação de tercina); passos fixos, mais fáceis.
-        juce::PopupMenu swing;
+        juce::PopupMenu swingMenu;
         const float swings[] = { 0.0f, 25.0f, 50.0f, 66.0f, 75.0f };
 
         for (int i = 0; i < (int) std::size (swings); ++i)
-            swing.addItem (60 + i, i == 0 ? juce::String ("Sem swing") : juce::String (juce::roundToInt (swings[i])) + "%", true,
+            swingMenu.addItem (60 + i, i == 0 ? juce::String ("Sem swing") : juce::String (juce::roundToInt (swings[i])) + "%", true,
                            std::abs (r.swing - swings[i]) < 0.5f);
 
-        menu.addSubMenu (r.swing > 0.0f ? "Swing: "_t + juce::String (juce::roundToInt (r.swing)) + "%" : "Swing"_t, swing);
+        menu.addSubMenu (r.swing > 0.0f ? "Swing: "_t + juce::String (juce::roundToInt (r.swing)) + "%" : "Swing"_t, swingMenu);
     }
 
     // congelar: a trilha do mixer por onde o canal sai (e os canais que saem por ela) vira um WAV

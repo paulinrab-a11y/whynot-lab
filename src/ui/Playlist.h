@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 
 #include "AutomationLanes.h"
+#include "BlockProperties.h"
 #include "Controls.h"
 #include "TimeGrid.h"
 #include "../model/PlaylistEdit.h"
@@ -46,8 +47,9 @@ public:
     juce::String getBrushName() const;
 
     /** Ferramentas, com as teclas do FL (pedido do usuário, 21/10): P desenhar, B pintar, C cortar,
-        D apagar, E selecionar, T mudo, S slip (o conteúdo anda dentro do bloco), Y tocar daqui. */
-    enum class Tool { draw, paint, slice, erase, select, mute, slip, play };
+        D apagar, E selecionar, T mudo, S slip (o conteúdo anda dentro do bloco), Y tocar daqui.
+        Z zoom (playlist fatia 6): arrastar uma caixa dá zoom no trecho, o clique aproxima, o botão direito volta. */
+    enum class Tool { draw, paint, slice, erase, select, mute, slip, play, zoom };
     void setTool (Tool);
     Tool getTool() const noexcept   { return tool; }
     std::function<void()> onToolChanged;
@@ -73,6 +75,26 @@ public:
     /** Blocos selecionados (Ctrl+arrastar ou a ferramenta Selecionar faz a caixa; Shift soma). */
     const std::set<juce::String>& getSelection() const noexcept   { return selection; }
     void selectAll();
+
+    /** Playlist fatia 6 (27/10 noite): o painel de propriedades do bloco de áudio (duplo clique, ou o menu dele). */
+    void showProperties (const juce::String& item);
+
+    /** Zoom (fatia 6). `zoomToRange` enquadra o trecho na largura da grade (com uma folga); `zoomBack` volta ao
+        enquadramento de antes (sem histórico, a música inteira). Shift+Z: na seleção (o trecho, ou os blocos
+        selecionados); Alt+Z: a música inteira. Cada um guarda o enquadramento de antes no histórico. */
+    void zoomToRange (int from, int to);
+    bool zoomToSelection();
+    void zoomToSong();
+    void zoomBack();
+    /** O trecho de ticks que cabe na grade agora. */
+    juce::Range<double> visibleTicks() const;
+
+    /** Marcadores (fatia 6): Alt+→ e Alt+← pulam para o próximo e o anterior (pelo playlist.gotoMarker);
+        Shift+clique num segundo marcador seleciona o trecho entre os dois (Ctrl+Shift+clique, o laço). */
+    bool gotoMarker (bool next);
+    bool selectBetweenMarkers (const juce::String& from, const juce::String& to, bool loop);
+    /** Seleciona os blocos que tocam no trecho [from, to) (o trecho entre dois marcadores). */
+    int selectBlocksIn (juce::Range<int>);
 
     /** false com o teclado-piano ligado (Ctrl+T): as letras tocam nota em vez de trocar a ferramenta. */
     static inline bool singleKeyShortcuts = true;
@@ -120,7 +142,7 @@ public:
 private:
     // stretchEnd e stretchStart: segurar A e arrastar a borda direita ou esquerda de um áudio estica no tempo
     enum class Drag { none, move, resize, trimStart, erase, moveMany, select, slice, mute, slip, paint, timeSelect,
-                      stretchEnd, stretchStart, fadeIn, fadeOut, gain, marker };
+                      stretchEnd, stretchStart, fadeIn, fadeOut, gain, marker, zoomBox };
 
     /** Miniatura de um padrão: posição em ticks e faixa vertical (0..1) de cada nota ou passo. */
     struct Mark { int start, length; float y, h; };
@@ -225,15 +247,28 @@ private:
     void renameMarker (const juce::String& id, const juce::String& current);
     void selectMarkerRange (const juce::String& id);
     void addMarkerMenu (juce::PopupMenu&, int at);
+    juce::String anchorMarker;             // o último marcador clicado: o Shift+clique no outro faz o trecho entre os dois
+
+    // playlist fatia 6: o painel aberto, a trava e o histórico do zoom
+    juce::Component::SafePointer<BlockProperties> properties;
+    bool isLocked (const juce::String& id) const;
+    bool lockedFrom (int tick) const;   // algum travado passa por `tick` ou vem depois (o ripple mexeria nele)
+    void lockedNotice();
+    struct View { double scrollTicks; float pxPerTick; };
+    std::vector<View> zoomHistory;
+    void pushZoom();
+    void applyView (double scroll, float px);
 
     AppController& app;
     std::vector<PlaylistTrack> tracks;
     std::vector<Block> blocks;
     std::map<juce::String, Preview> previews;
     juce::AudioThumbnailCache thumbCache { 32 };
-    std::map<juce::String, Thumb> thumbs;   // por canal de áudio
+    std::map<juce::String, Thumb> thumbs;   // por canal de áudio, e "f:" + o arquivo próprio de um bloco (fatia 6)
+    static juce::String thumbKeyOf (const PlaylistItem& i)   { return i.file.isNotEmpty() ? "f:" + i.file : i.ref; }
 
     juce::String brushKind { "pattern" }, brushRef, brushName, currentPattern;
+    juce::String brushFile;                  // o arquivo próprio do bloco que virou pincel (o consolidado, fatia 6)
     juce::String selectedItem;               // o último bloco clicado (o pincel sai dele)
     std::set<juce::String> selection, selectionBefore;
     std::vector<PlaylistItem> originals;     // os blocos no começo de um arrasto de vários

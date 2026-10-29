@@ -42,7 +42,7 @@ namespace
     juce::String centsText (float cents)
     {
         const int c = juce::roundToInt (cents);
-        return (c > 0 ? "+" : "") + juce::String (c) + "c";
+        return (c > 0 ? "+" : "") + juce::String (c) + " ct";   // "ct", como no painel do bloco e no Tune (revisão de 28/10)
     }
 }
 
@@ -796,8 +796,9 @@ void NoteTuneEditor::paint (juce::Graphics& g)
         const int key = (int) std::lround (n.targetMidi());
         auto label = noteNamePt (key);
 
-        if (r.getWidth() > 90.0f)
-            label << " " << centsText ((n.targetMidi() - (float) key) * 100.0f);
+        // os cents só quando a nota não está no centro: "Ré4" basta, "Mi4 -3 ct" avisa (revisão de 28/10)
+        if (const float off = (n.targetMidi() - (float) key) * 100.0f; r.getWidth() > 90.0f && juce::roundToInt (off) != 0)
+            label << " " << centsText (off);
 
         const float w = juce::jmin (r.getWidth() - 4.0f, juce::GlyphArrangement::getStringWidth (labelFont, label) + 8.0f);
         const auto plate = juce::Rectangle<float> (r.getX() + 2.0f, r.getY() + 2.0f, w, r.getHeight() - 4.0f);

@@ -151,7 +151,7 @@ void PianoRollGrid::refresh (const Project& p, const juce::String& newChannel)
     notifyGridChange();   // a fórmula de compasso muda o nome da grade automática
     glideTicks = ch != nullptr ? ch->glideMs / 1000.0 * p.bpm / 60.0 * ticksPerBeat : 0.0;
     bendRange = ch != nullptr ? curves::bendRangeFor (*ch) : 2.0f;
-    channelBends = ch != nullptr && (ch->isSynth() || ch->isPlugin());
+    channelBends = ch != nullptr && ! ch->isAudio();   // synth, VST3, sampler e WHYNOT Piano (estes dois desde 27/10)
 
     notes.clear();
     stepNotes.clear();
@@ -243,6 +243,20 @@ juce::Rectangle<int> PianoRollGrid::gridArea() const
 {
     return { keyboardWidth, rulerHeight, juce::jmax (0, getWidth() - keyboardWidth - scrollSize),
              juce::jmax (0, getHeight() - rulerHeight - velocityHeight - scrollSize) };
+}
+
+void PianoRollGrid::setPatternStart (int ticks)
+{
+    if (ticks == patternStart)
+        return;
+
+    patternStart = ticks;
+    repaint();   // a marca na régua e a linha na grade (muda só com um clique ou Alt+setas)
+}
+
+juce::Point<float> PianoRollGrid::rulerPoint (int ticks) const
+{
+    return { tickToX (ticks), (float) rulerArea().getCentreY() };
 }
 
 juce::Rectangle<int> PianoRollGrid::keyboardArea() const   { return { 0, rulerHeight, keyboardWidth, gridArea().getHeight() }; }
@@ -489,6 +503,18 @@ void PianoRollGrid::paint (juce::Graphics& g)
 
     if (dirty.intersects (velocityArea().withX (0).withWidth (getWidth())))
         paintVelocity (g);
+
+    // parado no PAT, a linha fina de onde o play vai começar (como a agulha parada da playlist)
+    if (playhead < 0.0 && patternStart > 0)
+    {
+        const float x = tickToX (patternStart);
+
+        if (x >= (float) area.getX() && x <= (float) area.getRight())
+        {
+            g.setColour (colour::textDim.withAlpha (0.6f));
+            g.fillRect (x - 0.5f, (float) area.getY(), 1.0f, (float) area.getHeight());
+        }
+    }
 
     if (playhead >= 0.0)
     {
@@ -766,8 +792,11 @@ void PianoRollGrid::paintNotes (juce::Graphics& g, juce::Rectangle<int> area)
             drawNote (n, true);
 
     // Glide (canal mono): a curva sai da altura da nota que estava soando e chega na nota
-    // com slide no tempo do glide. É exatamente o que o sampler faz.
-    if (channelMono && ! clip.isEmpty())
+    // com slide no tempo do glide. É exatamente o que o sampler faz. Sem nenhuma nota com slide não há curva: pula a
+    // cópia e a ordenação de todas as notas, que rodavam a cada quadro da agulha (desempenho, 29/10).
+    auto hasSlide = [] (const std::vector<Note>& list) { return std::any_of (list.begin(), list.end(), [] (const Note& n) { return n.slide; }); };
+
+    if (channelMono && ! clip.isEmpty() && (hasSlide (notes) || hasSlide (stepNotes)))
     {
         std::vector<Note> all (notes);
         all.insert (all.end(), stepNotes.begin(), stepNotes.end());
@@ -897,6 +926,16 @@ void PianoRollGrid::paintRuler (juce::Graphics& g)
     marker.addTriangle (endX - 6.0f, (float) r.getY() + 4.0f, endX, (float) r.getY() + 4.0f, endX, (float) r.getY() + 12.0f);
     g.setColour (colour::textDim);
     g.fillPath (marker);
+
+    // o começo do play no PAT (29/10): o triângulo da agulha da playlist; branco quando não é o começo do padrão
+    if (patternStart >= 0)
+    {
+        const float x = tickToX (patternStart);
+        juce::Path start;
+        start.addTriangle (x - 5.0f, (float) r.getY() + 3.0f, x + 5.0f, (float) r.getY() + 3.0f, x, (float) r.getY() + 11.0f);
+        g.setColour (patternStart > 0 ? colour::text : colour::textDim);
+        g.fillPath (start);
+    }
 
     // a alça de esticar a seleção, no fim dela: um triângulo claro que se arrasta para os lados
     if (const auto handle = stretchHandle(); ! handle.isEmpty())
@@ -1131,7 +1170,7 @@ void PianoRollGrid::paintCurves (juce::Graphics& g, juce::Rectangle<int> lane)
     for (auto& n : notes) if (selected.count (n.id) == 0) drawNote (n, colour::signal);
     for (auto& n : notes) if (selected.count (n.id) != 0) drawNote (n, colour::text);
 
-    // o sampler ainda não dobra o tom nem lê o CC1: a curva fica guardada e sai no MIDI
+    // um canal que não toca o pitch bend nem lê o CC1: a curva fica guardada e sai no MIDI
     if (! channelBends && ! notes.empty())
     {
         g.setColour (colour::textFaint);
@@ -1901,6 +1940,23 @@ void PianoRollGrid::mouseDown (const juce::MouseEvent& e)
         return;
     }
 
+    // o clique na régua (29/10): de onde o padrão começa a tocar no PAT, como a agulha na régua da playlist (Alt: sem a grade)
+    if (rulerArea().toFloat().contains (pos) && ! e.mods.isPopupMenu())
+    {
+        if (app.getModel().get().songMode)
+        {
+            if (onStatus) onStatus ("No SONG o play começa da agulha da playlist. No PAT, o clique na régua escolhe de onde o padrão toca."_t, false);
+            return;
+        }
+
+        const double t = juce::jmax (0.0, xToTick (pos.x));
+        const int snap = getSnapTicks();
+        const int at = e.mods.isAltDown() || snap <= 1 ? juce::roundToInt (t) : juce::roundToInt (t / snap) * snap;
+        const auto r = app.run ("transport.setPatternStart", args ({ { "at", at } }));
+        if (! r.ok && onStatus) onStatus (r.error, true);
+        return;
+    }
+
     if (! gridArea().toFloat().contains (pos))
         return;
 
@@ -2350,6 +2406,7 @@ juce::String PianoRollGrid::getTooltip()
 
     if (rulerArea().toFloat().contains (hoverPos))
         return (hint != nullptr ? beatHintTooltip (*hint, beatHintFlats) + "\n" : juce::String())
+               + "Clique: de onde o padrão começa a tocar no PAT (Alt+← e Alt+→ andam um tempo; Alt no clique, sem a grade). "_t
                + "Rodinha aqui (ou Ctrl+rodinha na grade): zoom. Na grade Auto, de perto ela fica mais fina."_t;
 
     bool edge = false;
@@ -2426,6 +2483,20 @@ PianoRoll::PianoRoll (AppController& a) : app (a), grid (a), ideas (a)
     glideButton.setShowsMenuArrow (true);
     glideButton.onClick = [this] { showGlideMenu(); };
 
+    // groove (29/10): swing e humanizar das notas só na hora de tocar; as notas continuam na grade
+    grooveButton.setTooltip ("Groove: swing (as notas do contratempo atrasam) e humanizar (tempo e força um pouco ao acaso), só "
+                             "na hora de tocar. As notas continuam na grade e a quantização não muda."_t);
+    grooveButton.setShowsMenuArrow (true);
+    grooveButton.onClick = [this]
+    {
+        makeGrooveMenu().showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&grooveButton),
+                                        [safe = juce::Component::SafePointer<PianoRoll> (this)] (int choice)
+                                        {
+                                            if (safe != nullptr && choice > 0)
+                                                safe->chooseGroove (choice);
+                                        });
+    };
+
     // as ferramentas do FL (bloco 1, 22/10): num menu, com os atalhos ao lado, e o carimbo de acorde
     editButton.setTooltip ("Editar: legato (Ctrl+L), juntar notas (Ctrl+G), mudo (Alt+M), humanizar, levar para a escala, "
                            "carimbo de acorde e importar MIDI. Vale nas notas selecionadas; sem seleção, em todas."_t);
@@ -2492,6 +2563,7 @@ PianoRoll::PianoRoll (AppController& a) : app (a), grid (a), ideas (a)
     for (juce::Component* c : { (juce::Component*) &channelBox, (juce::Component*) &toolSwitch, (juce::Component*) &snapBox,
                                 (juce::Component*) &slideButton,
                                 (juce::Component*) &monoButton, (juce::Component*) &glideButton,
+                                (juce::Component*) &grooveButton,
                                 (juce::Component*) &editButton, (juce::Component*) &keyBox,
                                 (juce::Component*) &scaleBox, (juce::Component*) &ideasButton })
     {
@@ -2545,11 +2617,22 @@ void PianoRoll::refresh (const Project& p)
     const bool editable = ch != nullptr && ! ch->isAudio();
     monoButton.setToggleState (editable && ch->mono, juce::dontSendNotification);
     glideButton.setLabel (juce::String (editable ? juce::roundToInt (ch->glideMs) : 0) + " ms");
+
+    // o groove aceso quando o canal tem swing ou humanizar; com swing, o valor no botão
+    const float noteSwing = editable ? ch->noteSwing : 0.0f, humanize = editable ? ch->humanize : 0.0f;
+    grooveButton.setToggleState (noteSwing > 0.0f || humanize > 0.0f, juce::dontSendNotification);
+
+    if (const auto label = noteSwing > 0.0f ? "Swing "_t + juce::String (juce::roundToInt (noteSwing)) + "%" : juce::String ("Groove");
+        grooveLabel != label)
+    {
+        grooveLabel = label;
+        resized();   // a largura do botão muda com o texto
+    }
     keyBox.setSelectedItemIndex (p.keyRoot, juce::dontSendNotification);
     scaleBox.setSelectedItemIndex (scaleIds.indexOf (p.scale), juce::dontSendNotification);
 
     for (juce::Component* c : { (juce::Component*) &toolSwitch, (juce::Component*) &slideButton, (juce::Component*) &monoButton,
-                                (juce::Component*) &glideButton, (juce::Component*) &editButton })
+                                (juce::Component*) &glideButton, (juce::Component*) &grooveButton, (juce::Component*) &editButton })
         c->setEnabled (editable);
 
     grid.refresh (p, channel);
@@ -2910,6 +2993,44 @@ void PianoRoll::showGlideMenu()
     });
 }
 
+juce::PopupMenu PianoRoll::makeGrooveMenu()
+{
+    const auto* ch = app.getModel().get().findChannel (channel);
+    const float swing = ch != nullptr ? ch->noteSwing : 0.0f, humanize = ch != nullptr ? ch->humanize : 0.0f;
+    juce::PopupMenu menu;
+
+    menu.addSectionHeader ("Swing das notas (só ao tocar)"_t);
+
+    for (int i = 0; i < (int) std::size (grooveSwings); ++i)
+        menu.addItem (100 + i, i == 0 ? "Sem swing"_t : juce::String (juce::roundToInt (grooveSwings[i])) + "%" + (grooveSwings[i] >= 66.0f ? " (tercina)"_t : juce::String()),
+                      true, std::abs (swing - grooveSwings[i]) < 0.5f);
+
+    menu.addSeparator();
+    menu.addSectionHeader ("Humanizar ao tocar (as notas não mudam)"_t);
+    const char* const names[] = { "Desligado", "Leve", "Médio", "Forte" };
+
+    for (int i = 0; i < (int) std::size (grooveHumanize); ++i)
+        menu.addItem (200 + i, juce::String::fromUTF8 (names[i]) + (i == 0 ? juce::String() : " (" + juce::String (juce::roundToInt (grooveHumanize[i])) + "%)"),
+                      true, std::abs (humanize - grooveHumanize[i]) < 0.5f);
+
+    return menu;
+}
+
+void PianoRoll::chooseGroove (int menuId)
+{
+    CommandResult r;
+
+    if (menuId >= 100 && menuId < 100 + (int) std::size (grooveSwings))
+        r = app.run ("channel.setGroove", args ({ { "channel", channel }, { "swing", grooveSwings[menuId - 100] } }));
+    else if (menuId >= 200 && menuId < 200 + (int) std::size (grooveHumanize))
+        r = app.run ("channel.setGroove", args ({ { "channel", channel }, { "humanize", grooveHumanize[menuId - 200] } }));
+    else
+        return;
+
+    if (! r.ok && onStatus)
+        onStatus (r.error, true);
+}
+
 void PianoRoll::paint (juce::Graphics& g)
 {
     using namespace theme;
@@ -2965,13 +3086,24 @@ void PianoRoll::resized()
     monoButton.setBounds (bar.removeFromLeft (monoButton.getIdealWidth (c)));
     bar.removeFromLeft (2);
     glideButton.setBounds (bar.removeFromLeft (glideButton.getIdealWidth (c)));
+    bar.removeFromLeft (2);
+    ideasButton.setLabel (narrow ? juce::String() : "Ideias");
+
+    // o tom e a escala à direita têm prioridade: sem espaço, o Groove fica só com o ícone, e depois o Editar
+    const int rightMin = ideasButton.getIdealWidth (c) + gap + 84 + 4 + 100 + (beatHintsButton.isVisible() ? 48 : 0);
+    editButton.setLabel ({});
+    const int editIconWidth = editButton.getIdealWidth (c);
+    grooveButton.setLabel (grooveLabel);
+
+    if (narrow || bar.getWidth() - grooveButton.getIdealWidth (c) - gap - editIconWidth < rightMin)
+        grooveButton.setLabel ({});
+
+    grooveButton.setBounds (bar.removeFromLeft (grooveButton.getIdealWidth (c)));
     bar.removeFromLeft (gap / 2);
     dividers.add (bar.getX());
     bar.removeFromLeft (gap / 2);
-    ideasButton.setLabel (narrow ? juce::String() : "Ideias");
 
-    // Editar com o nome se couber; senão só o ícone: o tom e a escala à direita têm prioridade
-    const int rightMin = ideasButton.getIdealWidth (c) + gap + 84 + 4 + 100 + (beatHintsButton.isVisible() ? 48 : 0);
+    // Editar com o nome se couber; senão só o ícone
     editButton.setLabel ("Editar");
 
     if (narrow || bar.getWidth() - editButton.getIdealWidth (c) < rightMin)
@@ -3004,7 +3136,8 @@ void PianoRoll::resized()
         hintsWidth += 8;
     }
 
-    scaleBox.setBounds (bar.removeFromRight (juce::jlimit (100, 150, bar.getWidth() - 4 - keyWidth - hintsWidth)));
+    // a 1240 px, com o Groove na barra, a escala chega a 68 para o tom ficar com os 84 inteiros
+    scaleBox.setBounds (bar.removeFromRight (juce::jlimit (68, 150, bar.getWidth() - 4 - keyWidth - hintsWidth)));
     bar.removeFromRight (4);
     keyBox.setBounds (bar.removeFromRight (keyWidth));
 

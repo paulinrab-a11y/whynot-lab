@@ -179,8 +179,15 @@ struct Channel
 
     PluginRef plugin;             // kind "plugin": o instrumento
 
-    /** Atraso dos passos ímpares (os 16 avos do contratempo), em ticks. */
-    int swingTicks() const noexcept  { return juce::roundToInt (swing / 100.0f * (float) ticksPerStep / 3.0f); }
+    /** Atraso dos passos ímpares (os 16 avos do contratempo), em ticks, só com o swing do canal. Para tocar, use
+        Project::stepSwingTicks, que soma o swing global. */
+    int swingTicks() const noexcept  { return swingTicksFor (swing); }
+    static int swingTicksFor (float percent) noexcept   { return juce::roundToInt (percent / 100.0f * (float) ticksPerStep / 3.0f); }
+
+    // Groove das notas do piano roll (29/10): só na hora de tocar (play, export e MIDI); as notas não mudam de lugar
+    // no modelo e a grade continua a mesma. Campos opcionais ("noteSwing" e "humanize"; não sobem o esquema).
+    float noteSwing = 0.0f;       // 0 a 100 %: as notas no contratempo dos 16 avos atrasam como os passos com swing
+    float humanize = 0.0f;        // 0 a 100 %: tempo (até 40 ticks) e força (até 20) ao acaso, com semente fixa, nos passos e nas notas
     // kind "synth": o WHYNOT Synth (src/synth). Valores por id de parâmetro (synth::allParams);
     // ausente = padrão. Mono e glide do synth são os campos mono e glideMs acima.
     std::map<juce::String, float> synthParams;
@@ -420,6 +427,11 @@ struct PlaylistItem
     int fadeOutCurve = 0;
     float pitch = 0.0f;                // tom do bloco em semitons (-24 a +24), sem mudar o tempo e sem canal novo
     bool reversed = false;             // o bloco toca o trecho de trás para frente (o arquivo "_invertido" ao lado), sem canal novo
+    // playlist fatia 6 (27/10, noite), todos opcionais:
+    float pan = 0.0f;                  // áudio: o pan do bloco, de -1 (esquerda) a 1 (direita), antes do canal
+    bool locked = false;               // travado: o mouse não move, não apara, não corta nem apaga o bloco
+    juce::String file;                 // áudio: o arquivo que o bloco toca no lugar do sample do canal (o consolidado ao
+                                       // lado do original, sem canal novo); relativo à pasta do projeto, ou absoluto
 
     int end() const noexcept   { return start + length; }
 
@@ -488,6 +500,7 @@ struct Project
     bool loop = true;
     bool songMode = false;             // false = toca o padrão atual (PAT); true = toca a playlist (SONG)
     juce::String currentPattern;
+    float swing = 0.0f;                // swing global (29/10), 0 a 100 %: soma ao swing de cada canal nos passos (campo opcional)
 
     // Gravação (3.5): com o punch ligado, só fica o que foi gravado entre punchIn e punchOut (ticks da música).
     bool punchOn = false;
@@ -559,6 +572,9 @@ struct Project
 
     /** O bloco toca: ele não está mudo e a raia dele toca. */
     bool itemSounds (const PlaylistItem& item) const   { return ! item.muted && laneSounds (item.track); }
+
+    /** O swing que os passos do canal tocam: o global somado ao do canal, até 100 % (29/10). */
+    int stepSwingTicks (const Channel& c) const noexcept   { return Channel::swingTicksFor (juce::jmin (100.0f, swing + c.swing)); }
 
     Pattern* currentPatternPtr()               { return findPattern (currentPattern); }
     const Pattern* currentPatternPtr() const   { return findPattern (currentPattern); }

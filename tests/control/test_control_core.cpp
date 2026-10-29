@@ -801,8 +801,16 @@ static void testCommandPolicy()
 {
     std::printf ("Tabela de risco dos comandos\n");
 
-    CHECK (ruleCount() == 258, "258 comandos classificados: os 220 do main d27a974 (23/10), os 18 do bloco 4, as 2 das raias sem teto, as 2 do pitch bend, os 3 da "
-                               "automação completa (26/10), os 6 da voz na playlist e os 7 da afinação nota a nota (27/10) (%zu)", ruleCount());
+    CHECK (ruleCount() == 264, "264 comandos classificados: os 220 do main d27a974 (23/10), os 18 do bloco 4, as 2 das raias sem teto, as 2 do pitch bend, os 3 da "
+                               "automação completa (26/10), os 6 da voz na playlist, os 7 da afinação nota a nota e os 3 da playlist fatia 6 (27/10) "
+                               "e os 3 do swing e do começo do play no PAT (29/10) (%zu)",
+           ruleCount());
+    CHECK (ruleFor ("project.setSwing").risk == Risk::free && ruleFor ("channel.setGroove").risk == Risk::free
+           && ruleFor ("transport.setPatternStart").risk == Risk::free,
+           "swing e começo do play no PAT: os 3 comandos são livres (o projeto, com desfazer, e o transporte)");
+    CHECK (ruleFor ("audio.setProperties").risk == Risk::free && ruleFor ("playlist.gotoMarker").risk == Risk::free
+           && ruleFor ("playlist.selectMarkers").risk == Risk::free,
+           "playlist fatia 6: o painel do bloco, pular de marcador e o trecho entre dois são livres (só o projeto e a agulha)");
     CHECK (ruleFor ("audio.analyzeNotes").risk == Risk::free && ruleFor ("audio.setNoteTune").risk == Risk::free
            && ruleFor ("audio.editNotes").risk == Risk::free && ruleFor ("audio.splitNote").risk == Risk::free
            && ruleFor ("audio.mergeNotes").risk == Risk::free && ruleFor ("audio.tuneToScale").risk == Risk::free

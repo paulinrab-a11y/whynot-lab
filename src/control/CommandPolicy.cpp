@@ -84,6 +84,7 @@ namespace
         Entry { "audio.setGain",              ok() },
         Entry { "audio.setNoteTune",          ok() },   // afinação nota a nota (27/10)
         Entry { "audio.setPitch",             ok() },
+        Entry { "audio.setProperties",        ok() },   // playlist fatia 6 (27/10, noite): o painel do bloco
         Entry { "audio.splitNote",            ok() },   // afinação nota a nota (27/10)
         Entry { "audio.toMidi",               reading ("path") },
         Entry { "audio.tuneToScale",          ok() },   // afinação nota a nota (27/10)
@@ -119,6 +120,7 @@ namespace
         Entry { "channel.setCutItself",       ok() },
         Entry { "channel.setFrozen",          ok() },
         Entry { "channel.setGlide",           ok() },
+        Entry { "channel.setGroove",          ok() },   // swing e humanizar das notas (29/10): só o projeto
         Entry { "channel.setLayer",           reading ("path") },
         Entry { "channel.setMono",            ok() },
         Entry { "channel.setMute",            ok() },
@@ -240,6 +242,7 @@ namespace
         Entry { "playlist.chopItem",          ok() },
         Entry { "playlist.clear",             ok() },
         Entry { "playlist.cutAt",             ok() },
+        Entry { "playlist.gotoMarker",        ok() },   // playlist fatia 6: só a agulha
         Entry { "playlist.insertSpace",       ok() },
         Entry { "playlist.moveTrack",         ok() },
         Entry { "playlist.removeItem",        ok() },
@@ -247,6 +250,7 @@ namespace
         Entry { "playlist.removeSpace",       ok() },
         Entry { "playlist.removeTrack",       ok() },
         Entry { "playlist.renameTrack",       ok() },
+        Entry { "playlist.selectMarkers",     ok() },   // playlist fatia 6: o trecho e o laço
         Entry { "playlist.setLaneInput",      blocked (recording) },
         Entry { "playlist.setTrack",          ok() },
         Entry { "playlist.splitItem",         ok() },
@@ -275,6 +279,7 @@ namespace
         Entry { "project.save",               overProject (writing ("path", ".wnl")) },
         Entry { "project.saveNewVersion",     ok() },   // nunca grava por cima: pula os nomes que existem
         Entry { "project.setKey",             ok() },
+        Entry { "project.setSwing",           ok() },   // o swing global do rack (29/10)
         Entry { "record.arm",                 blocked (recording) },
         Entry { "record.cancel",              blocked (recording) },
         Entry { "record.captureMidi",         ok() },
@@ -314,6 +319,7 @@ namespace
         Entry { "transport.setBpm",           ok() },
         Entry { "transport.setLoop",          ok() },
         Entry { "transport.setMetronome",     ok() },
+        Entry { "transport.setPatternStart",  ok() },   // o começo do play no PAT (29/10), como a agulha
         Entry { "transport.setPosition",      ok() },
         Entry { "transport.setSongMode",      ok() },
         Entry { "transport.setTimeSignature", ok() },

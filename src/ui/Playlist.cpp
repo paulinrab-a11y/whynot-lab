@@ -140,15 +140,21 @@ void PlaylistGrid::refresh (const Project& p)
     tracks = p.playlistTracks;
 
     // voz na playlist (27/10): o crossfade automático de cada áudio sobreposto, para desenhar como o motor toca
+    // (todos de uma vez: um a um era O(n²) com a voz picotada, a cada passo de um arraste)
     crossfades.clear();
+    const auto allCrossfades = playlistedit::autoCrossfades (p);
 
-    for (auto& i : p.playlistItems)
-        if (const auto x = playlistedit::autoCrossfade (p, i); x.in > 0.0 || x.out > 0.0)
-            crossfades[i.id] = x;
+    for (size_t k = 0; k < p.playlistItems.size(); ++k)
+        if (const auto& x = allCrossfades[k]; x.in > 0.0 || x.out > 0.0)
+            crossfades[p.playlistItems[k].id] = x;
 
-    // projeto novo ou aberto: o app zerou a seleção de tempo (ela é o loop e o começo do play no SONG)
-    if (drag != Drag::timeSelect && app.getTimeSelection().isEmpty() && ! timeSelection.isEmpty())
-        timeSelection = {};
+    // projeto novo ou aberto: o app zerou a seleção de tempo (ela é o loop e o começo do play no SONG); um comando
+    // (o trecho entre marcadores, fatia 6) pode ter posto outra
+    if (drag != Drag::timeSelect)
+        timeSelection = app.getTimeSelection();
+
+    if (properties != nullptr)
+        properties->refresh (p);   // o painel de propriedades acompanha (o desfazer com ele aberto)
 
     // O pincel acompanha o padrão escolhido no transporte, como no FL.
     if (currentPattern != p.currentPattern)
@@ -156,6 +162,7 @@ void PlaylistGrid::refresh (const Project& p)
         currentPattern = p.currentPattern;
         brushKind = "pattern";
         brushRef = currentPattern;
+        brushFile = {};
     }
 
     const bool brushOk = brushKind == "audio" ? (p.findChannel (brushRef) != nullptr && p.findChannel (brushRef)->isAudio())
@@ -164,6 +171,7 @@ void PlaylistGrid::refresh (const Project& p)
     {
         brushKind = "pattern";
         brushRef = p.currentPattern;
+        brushFile = {};
     }
 
     if (brushKind == "audio")
@@ -176,12 +184,21 @@ void PlaylistGrid::refresh (const Project& p)
     for (auto& pat : p.patterns)
         previews[pat.id] = buildPreview (p, pat);
 
-    // miniaturas de onda dos canais de áudio (carregam em segundo plano)
+    // miniaturas de onda dos canais de áudio (carregam em segundo plano); um bloco com arquivo próprio (o consolidado,
+    // fatia 6) tem a dele, pela chave "f:" + o caminho
+    std::set<juce::String> ownFiles;
+
+    for (auto& i : p.playlistItems)
+        if (i.kind == "audio" && i.file.isNotEmpty())
+            ownFiles.insert (i.file);
+
     for (auto it = thumbs.begin(); it != thumbs.end();)
     {
-        auto* ch = p.findChannel (it->first);
+        const bool own = it->first.startsWith ("f:");
+        auto* ch = own ? nullptr : p.findChannel (it->first);
 
-        if (ch == nullptr || ! ch->isAudio() || app.getModel().resolveSample (ch->samplePath) != it->second.file)
+        if (own ? (ownFiles.count (it->first.substring (2)) == 0 || app.getModel().resolveSample (it->first.substring (2)) != it->second.file)
+                : (ch == nullptr || ! ch->isAudio() || app.getModel().resolveSample (ch->samplePath) != it->second.file))
         {
             if (it->second.thumbnail != nullptr)
                 it->second.thumbnail->removeChangeListener (this);
@@ -194,13 +211,13 @@ void PlaylistGrid::refresh (const Project& p)
         }
     }
 
-    for (auto& ch : p.channels)
+    auto addThumb = [this] (const juce::String& key, const juce::File& file)
     {
-        if (! ch.isAudio() || thumbs.count (ch.id) != 0)
-            continue;
+        if (thumbs.count (key) != 0)
+            return;
 
         Thumb t;
-        t.file = app.getModel().resolveSample (ch.samplePath);
+        t.file = file;
         t.seconds = app.fileDurationSeconds (t.file);
         t.thumbnail = std::make_unique<juce::AudioThumbnail> (512, app.getEngine().getAudioFileFormatManager().readFormatManager, thumbCache);
 
@@ -208,8 +225,15 @@ void PlaylistGrid::refresh (const Project& p)
             t.thumbnail->setSource (new juce::FileInputSource (t.file));
 
         t.thumbnail->addChangeListener (this);
-        thumbs[ch.id] = std::move (t);
-    }
+        thumbs[key] = std::move (t);
+    };
+
+    for (auto& ch : p.channels)
+        if (ch.isAudio())
+            addThumb (ch.id, app.getModel().resolveSample (ch.samplePath));
+
+    for (auto& f : ownFiles)
+        addThumb ("f:" + f, app.getModel().resolveSample (f));
 
     blocks.clear();
     groupTakes.clear();
@@ -383,6 +407,13 @@ void PlaylistGrid::setPlayhead (double ticks)
 
 void PlaylistGrid::setNeedle (int ticks)
 {
+    // a seleção de tempo que um comando mudou sem mexer no projeto (o trecho entre marcadores): o timer da tela passa aqui
+    if (drag != Drag::timeSelect && app.getTimeSelection() != timeSelection)
+    {
+        timeSelection = app.getTimeSelection();
+        repaint();
+    }
+
     if (ticks == needle)
         return;
 
@@ -692,6 +723,11 @@ void PlaylistGrid::showBlockMenu (const juce::String& id)
     juce::PopupMenu menu;
     const bool grouped = item->takeGroup.isNotEmpty();
 
+    // playlist fatia 6 (27/10 noite): as propriedades e a trava, no topo (ids 28 e 29, livres na faixa da gravação de voz)
+    menu.addItem (28, "Propriedades... (duplo clique)"_t);
+    menu.addItem (29, "Travar o bloco"_t, true, item->locked);
+    menu.addSeparator();
+
     if (! grouped)
     {
         menu.addSectionHeader ("Esticar no tempo (segure A e arraste a borda)"_t);
@@ -764,7 +800,19 @@ void PlaylistGrid::showBlockMenu (const juce::String& id)
 
         CommandResult result;
 
-        if (choice == 5 || choice == 6)
+        if (choice == 28)
+        {
+            safe->showProperties (id);
+            return;
+        }
+
+        // travado: o que corta, apaga ou muda o tamanho do bloco fica de fora (o ganho, o reverso e o MIDI valem)
+        if (now->locked && (choice == 2 || choice == 3 || choice == 22 || (choice >= 25 && choice <= 27) || (choice >= 40 && choice <= 42)))
+            return safe->lockedNotice();
+
+        if (choice == 29)
+            result = safe->app.run ("audio.setProperties", args ({ { "item", id }, { "locked", ! now->locked } }));
+        else if (choice == 5 || choice == 6)
         {
             // áudio para MIDI (bloco 4e): um padrão novo, escolhido; o áudio fica como estava
             result = safe->app.run ("audio.toMidi", args ({ { "item", id }, { "mode", choice == 5 ? "drums" : "melody" } }));
@@ -815,7 +863,12 @@ void PlaylistGrid::showBlockMenu (const juce::String& id)
             for (auto& i : safe->app.getModel().get().playlistItems)
                 if (i.kind == "audio" && (now->takeGroup.isNotEmpty() ? (i.takeGroup == now->takeGroup && ! i.muted)
                                                                       : (i.id == id || safe->selection.count (i.id) != 0)))
+                {
+                    if (i.locked)
+                        return safe->lockedNotice();   // consolidar apaga os blocos de origem (fatia 6)
+
                     items.add (i.id);
+                }
 
             result = safe->app.run ("audio.consolidate", args ({ { "items", items } }));
         }
@@ -1031,7 +1084,7 @@ void PlaylistGrid::paint (juce::Graphics& g)
             }
         }
 
-        if (drag == Drag::select && ! rubberBand.isEmpty())
+        if ((drag == Drag::select || drag == Drag::zoomBox) && ! rubberBand.isEmpty())
         {
             g.setColour (colour::text.withAlpha (0.06f));
             g.fillRect (rubberBand);
@@ -1092,7 +1145,9 @@ void PlaylistGrid::paint (juce::Graphics& g)
         const float pxPerBar = (float) barTicks * pxPerTick;
         const int labelEvery = pxPerBar >= 36.0f ? 1 : (pxPerBar >= 18.0f ? 2 : (pxPerBar >= 9.0f ? 4 : 8));
         const auto dirtyRuler = dirty.getIntersection (ruler);
-        const int firstBar = juce::jmax (0, (int) std::floor (xToTick ((float) dirtyRuler.getX() - 46.0f) / barTicks));
+        // 190 px para trás: o número de um compasso pode ter andado para depois da bandeirinha de um marcador (até 140 px)
+        const int firstBar = juce::jmax (0, (int) std::floor (xToTick ((float) dirtyRuler.getX() - 190.0f) / barTicks));
+        const auto barFont = font (13.0f, Weight::medium);
         const int lastBar = (int) std::ceil (xToTick ((float) dirtyRuler.getRight() + 1.0f) / barTicks);
 
         for (int bar = firstBar; bar <= lastBar && ! dirtyRuler.isEmpty(); ++bar)
@@ -1103,10 +1158,23 @@ void PlaylistGrid::paint (juce::Graphics& g)
 
             if (bar % labelEvery == 0)
             {
-                g.setColour (colour::text);
-                g.setFont (font (13.0f, Weight::medium));
-                g.drawText (juce::String (bar + 1), juce::Rectangle<float> (x + 4.0f, (float) ruler.getY(), 40.0f, (float) ruler.getHeight() - 4.0f),
-                            juce::Justification::centredLeft, false);
+                // A bandeirinha de um marcador no começo do compasso cobria o número (revisão de 28/10): o número
+                // passa para depois dela. Se não couber antes do número seguinte, fica só a bandeirinha.
+                const auto text = juce::String (bar + 1);
+                const float textWidth = juce::GlyphArrangement::getStringWidth (barFont, text);
+                float labelX = x + 4.0f;
+
+                for (auto& mk : markers)
+                    if (const auto flag = markerBounds (mk); flag.getX() < labelX + textWidth && flag.getRight() > labelX)
+                        labelX = flag.getRight() + 4.0f;
+
+                if (labelX + textWidth <= tickToX ((double) (bar + labelEvery) * barTicks) - 2.0f)
+                {
+                    g.setColour (colour::text);
+                    g.setFont (barFont);
+                    g.drawText (text, juce::Rectangle<float> (labelX, (float) ruler.getY(), textWidth + 4.0f, (float) ruler.getHeight() - 4.0f),
+                                juce::Justification::centredLeft, false);
+                }
             }
         }
 
@@ -1307,15 +1375,20 @@ void PlaylistGrid::paintBlock (juce::Graphics& g, const Block& b, juce::Rectangl
     // o esticar no fim do cabeçalho ("×1,50", e "fita" se o tom vai junto), e o ganho do bloco ("+3,0 dB")
     // voz na playlist (27/10): o tom do bloco ("+2 st") e o "inv" do invertido também
     const bool gained = b.audio && b.item.gainDb != 0.0f;
-    const bool voiced = b.audio && (b.item.pitch != 0.0f || b.item.reversed);
-    const bool stretched = b.audio && (b.item.stretch != 1.0 || gained || voiced);
+    const bool voiced = b.audio && (b.item.pitch != 0.0f || b.item.reversed || b.item.pan != 0.0f);
+    const bool stretched = (b.audio && (b.item.stretch != 1.0 || gained || voiced)) || b.item.locked;
     auto pitchText = [] (float st) { return juce::String (st > 0.0f ? "+" : "") + juce::String (st, 2).trimCharactersAtEnd ("0").trimCharactersAtEnd (".").replaceCharacter ('.', ',') + " st"; };
     const auto stretchText = ((b.audio && b.item.stretch != 1.0 ? stretchLabel (b.item.stretch) + (b.item.tape ? " fita" : "") : juce::String())
                              + (gained ? (b.item.stretch != 1.0 ? "  " : "") + juce::String (b.item.gainDb > 0.0f ? "+" : "")
                                              + juce::String (b.item.gainDb, 1).replaceCharacter ('.', ',') + " dB"
                                        : juce::String())
                              + (b.audio && b.item.pitch != 0.0f ? "  " + pitchText (b.item.pitch) : juce::String())
-                             + (b.audio && b.item.reversed ? "  inv" : "")).trim();
+                             + (b.audio && b.item.reversed ? "  inv" : "")
+                             // playlist fatia 6: o pan do bloco ("E 30", "D 30") e a trava
+                             + (b.audio && b.item.pan != 0.0f ? juce::String (b.item.pan < 0.0f ? "  E " : "  D ")
+                                                                    + juce::String (juce::roundToInt (std::abs (b.item.pan) * 100.0f))
+                                                              : juce::String())
+                             + (b.item.locked ? "  trava"_t : juce::String())).trim();
 
     // takes: a pílula "3 takes" (fundo raised, seta de abrir; aberta, a pílula de escolhido)
     const auto pill = pillBounds (b);
@@ -1337,18 +1410,26 @@ void PlaylistGrid::paintBlock (juce::Graphics& g, const Block& b, juce::Rectangl
 
     const bool pillAlone = onlyPill (r, pill);
 
+    // As marcas ("+2 st  trava") reservam a largura delas, não 52 px fixos, e só aparecem se o nome ainda couber (ao
+    // menos 40 px dele): num bloco curto o nome ganha. Antes, "voz-curvas +2 st" virava "…" (revisão de 28/10).
+    const auto nameFont = font (12.5f, Weight::semibold), badgeFont = font (11.0f, Weight::medium);
+    const float badgeWidth = stretched ? juce::GlyphArrangement::getStringWidth (badgeFont, stretchText) : 0.0f;
+    const float nameWidth = juce::GlyphArrangement::getStringWidth (nameFont, b.name);
+    const bool showBadge = stretched && ! b.item.muted && ! pillAlone
+                           && nameArea.getWidth() - badgeWidth - 6.0f >= juce::jmin (nameWidth, 40.0f);
+
     if (! pillAlone)
     {
         g.setColour (colour::text);
-        g.setFont (font (12.5f, Weight::semibold));
-        g.drawText (b.name, nameArea.withTrimmedRight (stretched && ! b.item.muted && pill.isEmpty() ? 52.0f : 0.0f).getIntersection (clip),
+        g.setFont (nameFont);
+        g.drawText (b.name, nameArea.withTrimmedRight (showBadge ? badgeWidth + 6.0f : 0.0f).getIntersection (clip),
                     juce::Justification::centredLeft, true);
     }
 
-    if (stretched && ! b.item.muted && ! pillAlone)
+    if (showBadge)
     {
         g.setColour (colour::textDim);
-        g.setFont (font (11.0f, Weight::medium));
+        g.setFont (badgeFont);
         g.drawText (stretchText, nameArea.getIntersection (clip), juce::Justification::centredRight, false);
     }
 
@@ -1396,8 +1477,8 @@ void PlaylistGrid::paintBlock (juce::Graphics& g, const Block& b, juce::Rectangl
                 }
             }
         }
-        else if (auto it = thumbs.find (b.item.ref); it != thumbs.end() && it->second.thumbnail != nullptr
-                                                      && it->second.thumbnail->getTotalLength() > 0.0)
+        else if (auto it = thumbs.find (thumbKeyOf (b.item)); it != thumbs.end() && it->second.thumbnail != nullptr
+                                                              && it->second.thumbnail->getTotalLength() > 0.0)
         {
             // só o pedaço à vista: de perto, um clipe longo passa de 100 mil pixels de largura. Esticado, a onda
             // acompanha: cada segundo da playlist mostra 1 / stretch do arquivo.
@@ -1434,7 +1515,7 @@ void PlaylistGrid::paintBlock (juce::Graphics& g, const Block& b, juce::Rectangl
         {
             g.setColour (colour::textDim);
             g.setFont (font (12.0f));
-            g.drawText (thumbs.count (b.item.ref) != 0 && ! thumbs.at (b.item.ref).file.existsAsFile() ? "arquivo não encontrado"_t : "carregando"_t,
+            g.drawText (thumbs.count (thumbKeyOf (b.item)) != 0 && ! thumbs.at (thumbKeyOf (b.item)).file.existsAsFile() ? "arquivo não encontrado"_t : "carregando"_t,
                         body, juce::Justification::centredLeft, true);
         }
     }
@@ -1564,7 +1645,7 @@ void PlaylistGrid::paintTakePiece (juce::Graphics& g, const Block& b, juce::Rect
         g.fillRect (r.withHeight (headH).withTrimmedTop (headH * 0.5f));
     }
 
-    if (auto it = thumbs.find (b.item.ref); it != thumbs.end() && it->second.thumbnail != nullptr && it->second.thumbnail->getTotalLength() > 0.0)
+    if (auto it = thumbs.find (thumbKeyOf (b.item)); it != thumbs.end() && it->second.thumbnail != nullptr && it->second.thumbnail->getTotalLength() > 0.0)
     {
         const auto body = r.withTrimmedTop (headH).reduced (3.0f, 2.0f);
         const auto shown = body.getIntersection (clip).toNearestInt();
@@ -1616,7 +1697,7 @@ bool PlaylistGrid::placeBrush (juce::Point<float> pos)
     const int track = yToTrack (pos.y);
     const int start = snapDown (xToTick (pos.x));
     const auto params = brushKind == "audio"
-        ? args ({ { "kind", "audio" }, { "ref", brushRef }, { "track", track + 1 }, { "start", start } })
+        ? args ({ { "kind", "audio" }, { "ref", brushRef }, { "track", track + 1 }, { "start", start }, { "file", brushFile } })
         : args ({ { "kind", "pattern" }, { "ref", brushRef.isNotEmpty() ? brushRef : currentPattern }, { "track", track + 1 }, { "start", start } });
 
     const auto result = app.run ("playlist.addItem", params);
@@ -1657,6 +1738,9 @@ void PlaylistGrid::eraseAt (juce::Point<float> pos)
 
             return;
         }
+
+        if (b->item.locked)
+            return lockedNotice();   // a borracha passa por cima do travado
 
         const auto id = b->item.id;
         app.run ("playlist.removeItem", args ({ { "item", id } }));
@@ -1892,7 +1976,8 @@ juce::String PlaylistGrid::addCopy (const PlaylistItem& i, int start, int trackI
     const auto result = app.run ("playlist.addItem", args ({ { "kind", i.kind }, { "ref", i.ref }, { "track", trackIndex + 1 },
                                                              { "start", juce::jmax (0, start) }, { "length", i.length },
                                                              { "offsetSeconds", i.offsetSeconds }, { "patternOffset", i.patternOffset },
-                                                             { "muted", i.muted }, { "stretch", i.stretch }, { "tape", i.tape } }));
+                                                             { "muted", i.muted }, { "stretch", i.stretch }, { "tape", i.tape },
+                                                             { "file", i.file }, { "pan", i.pan } }));
     if (! result.ok && onStatus)
         onStatus (result.error, true);
 
@@ -1901,7 +1986,12 @@ juce::String PlaylistGrid::addCopy (const PlaylistItem& i, int start, int trackI
 
 void PlaylistGrid::deleteSelection()
 {
-    const auto items = selectedItems();
+    auto items = selectedItems();
+    const auto before = items.size();
+    std::erase_if (items, [] (const PlaylistItem& i) { return i.locked; });   // o travado fica (fatia 6)
+
+    if (items.size() < before)
+        lockedNotice();
 
     if (items.empty())
         return;
@@ -2026,7 +2116,14 @@ void PlaylistGrid::duplicateSelection()
 
 void PlaylistGrid::moveSelectionBy (int deltaTicks, int deltaTracks)
 {
-    const auto items = selectedItems();
+    auto items = selectedItems();
+    std::set<juce::String> lockedGroups;   // o travado não anda, nem os takes do grupo dele (fatia 6)
+
+    for (auto& i : items)
+        if (i.locked && i.takeGroup.isNotEmpty())
+            lockedGroups.insert (i.takeGroup);
+
+    std::erase_if (items, [&lockedGroups] (const PlaylistItem& i) { return i.locked || lockedGroups.count (i.takeGroup) != 0; });
 
     if (items.empty())
         return;
@@ -2066,7 +2163,7 @@ void PlaylistGrid::sliceAt (juce::Point<float> pos)
 
     for (auto& i : app.getModel().get().playlistItems)
     {
-        if (i.track == trackId && sliceTick > i.start && sliceTick < i.end() && (i.takeGroup.isEmpty() || ! i.muted))
+        if (i.track == trackId && sliceTick > i.start && sliceTick < i.end() && (i.takeGroup.isEmpty() || ! i.muted) && ! i.locked)
         {
             id = i.id;
             group = i.takeGroup;
@@ -2133,6 +2230,7 @@ void PlaylistGrid::updateCursor()
         {
             case Tool::slice:   newCursor = juce::MouseCursor::IBeamCursor; break;
             case Tool::play:    newCursor = juce::MouseCursor::PointingHandCursor; break;
+            case Tool::zoom:    newCursor = juce::MouseCursor::CrosshairCursor; break;
             case Tool::slip:    newCursor = onBlock ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor; break;
             case Tool::erase:
             case Tool::mute:    newCursor = onBlock ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor; break;
@@ -2190,6 +2288,15 @@ void PlaylistGrid::mouseDown (const juce::MouseEvent& e)
                 return;
             }
 
+            // Shift+clique num segundo marcador: o trecho entre os dois (com Ctrl, o laço) (fatia 6)
+            if (const auto id = m->id; e.mods.isShiftDown() && anchorMarker.isNotEmpty() && anchorMarker != id
+                                       && app.getModel().get().findMarker (anchorMarker) != nullptr)
+            {
+                selectBetweenMarkers (anchorMarker, id, e.mods.isCommandDown());
+                return;
+            }
+
+            anchorMarker = m->id;
             dragMarker = m->id;
             drag = Drag::marker;
             setTimeSelection ({});
@@ -2254,6 +2361,22 @@ void PlaylistGrid::mouseDown (const juce::MouseEvent& e)
 
     if (! gridArea().toFloat().contains (pos) || tracks.empty())
         return;
+
+    // a ferramenta Zoom (fatia 6): arrastar uma caixa enquadra o trecho, o clique aproxima, o botão direito volta
+    if (tool == Tool::zoom)
+    {
+        if (e.mods.isPopupMenu())
+        {
+            zoomBack();
+        }
+        else
+        {
+            drag = Drag::zoomBox;
+            rubberBand = { pos, pos };
+        }
+
+        return;
+    }
 
     if (e.mods.isPopupMenu())
     {
@@ -2338,7 +2461,9 @@ void PlaylistGrid::mouseDown (const juce::MouseEvent& e)
             return;
 
         case Tool::slip:
-            if (hitPtr != nullptr)
+            if (hitPtr != nullptr && hitPtr->item.locked)
+                lockedNotice();
+            else if (hitPtr != nullptr)
             {
                 beginEdit ("Deslizar o conteúdo"_t);
                 startDrag (hitPtr->item, Drag::slip);
@@ -2348,6 +2473,7 @@ void PlaylistGrid::mouseDown (const juce::MouseEvent& e)
         case Tool::draw:
         case Tool::paint:
         case Tool::select:
+        case Tool::zoom:   // tratado antes do botão direito, lá em cima
             break;
     }
 
@@ -2370,6 +2496,7 @@ void PlaylistGrid::mouseDown (const juce::MouseEvent& e)
         selectedItem = hit.item.id;
         brushKind = hit.item.kind;
         brushRef = hit.item.ref;
+        brushFile = hit.item.file;   // o pincel de um consolidado pinta o WAV dele (fatia 6)
         brushName = hit.name;
         if (onBrushChanged) onBrushChanged();
 
@@ -2392,11 +2519,23 @@ void PlaylistGrid::mouseDown (const juce::MouseEvent& e)
                 if (i.takeGroup == hit.item.takeGroup)
                     selection.insert (i.id);
 
-        // vários blocos selecionados: o arrasto leva todos juntos (com Shift, leva as cópias)
+        // vários blocos selecionados: o arrasto leva todos juntos (com Shift, leva as cópias); o travado fica (fatia 6)
         if (selection.size() > 1 && part == Drag::move)
         {
             beginEdit (e.mods.isShiftDown() ? "Copiar blocos" : "Mover blocos");
             originals = selectedItems();
+
+            if (! e.mods.isShiftDown())
+            {
+                // um take travado segura o grupo inteiro (senão os takes desalinhariam)
+                std::set<juce::String> lockedGroups;
+
+                for (auto& o : originals)
+                    if (o.locked && o.takeGroup.isNotEmpty())
+                        lockedGroups.insert (o.takeGroup);
+
+                std::erase_if (originals, [&lockedGroups] (const PlaylistItem& i) { return i.locked || lockedGroups.count (i.takeGroup) != 0; });
+            }
 
             if (e.mods.isShiftDown())
             {
@@ -2422,6 +2561,14 @@ void PlaylistGrid::mouseDown (const juce::MouseEvent& e)
             return;
         }
 
+        // travado (fatia 6): seleciona, mas não move, não apara, nem mexe nas alças; Shift+arrasto ainda copia
+        if (hit.item.locked && ! (e.mods.isShiftDown() && part == Drag::move))
+        {
+            lockedNotice();
+            repaint();
+            return;
+        }
+
         // segurar A na borda de um áudio: estica no tempo em vez de aparar (como no FL 2026)
         const bool stretching = hit.audio && (part == Drag::resize || part == Drag::trimStart) && stretchHeld();
 
@@ -2437,7 +2584,8 @@ void PlaylistGrid::mouseDown (const juce::MouseEvent& e)
             const auto result = app.run ("playlist.addItem", args ({ { "kind", hit.item.kind }, { "ref", hit.item.ref },
                                                                       { "track", hit.trackIndex + 1 }, { "start", hit.item.start },
                                                                       { "length", hit.item.length },
-                                                                      { "stretch", hit.item.stretch }, { "tape", hit.item.tape } }));
+                                                                      { "stretch", hit.item.stretch }, { "tape", hit.item.tape },
+                                                                      { "file", hit.item.file }, { "pan", hit.item.pan } }));
             if (result.ok)
             {
                 selectedItem = result.value["item"].toString();
@@ -2522,6 +2670,11 @@ void PlaylistGrid::mouseDrag (const juce::MouseEvent& e)
 
             break;
         }
+
+        case Drag::zoomBox:
+            rubberBand = juce::Rectangle<float> (dragStart, pos);
+            repaint();
+            break;
 
         case Drag::select:
         {
@@ -2736,11 +2889,196 @@ void PlaylistGrid::mouseUp (const juce::MouseEvent&)
         return;
     }
 
+    if (drag == Drag::zoomBox)
+    {
+        // a caixa enquadra o trecho dela; um clique (sem arrastar) aproxima em volta dele
+        const auto box = rubberBand;
+        drag = Drag::none;
+        rubberBand = {};
+
+        if (box.getWidth() >= 6.0f)
+            zoomToRange (juce::jmax (0, (int) std::floor (xToTick (box.getX()))), (int) std::ceil (xToTick (box.getRight())));
+        else
+        {
+            pushZoom();
+            zoomBy (4.0f, dragStart.x);
+        }
+
+        repaint();
+        return;
+    }
+
     drag = Drag::none;
     rubberBand = {};
     originals.clear();
     endEdit();
     repaint();
+}
+
+//==============================================================================
+// Zoom (playlist fatia 6, 27/10 noite)
+juce::Range<double> PlaylistGrid::visibleTicks() const
+{
+    return { scrollTicks, scrollTicks + juce::jmax (1, gridArea().getWidth()) / (double) pxPerTick };
+}
+
+void PlaylistGrid::pushZoom()
+{
+    zoomHistory.push_back ({ scrollTicks, pxPerTick });
+
+    if (zoomHistory.size() > 32)
+        zoomHistory.erase (zoomHistory.begin());
+}
+
+void PlaylistGrid::applyView (double scroll, float px)
+{
+    pxPerTick = juce::jlimit (minPxPerTick, maxPxPerTick, px);
+    scrollTicks = scroll;
+    clampScroll();
+    updateScrollBars();
+    notifyGridChange();
+    repaint();
+}
+
+void PlaylistGrid::zoomToRange (int from, int to)
+{
+    if (to <= from)
+        return;
+
+    pushZoom();
+    const double span = (double) (to - from), margin = span * 0.02;   // uma folga pequena dos dois lados
+    applyView (juce::jmax (0.0, from - margin), (float) (juce::jmax (1, gridArea().getWidth()) / (span + 2.0 * margin)));
+}
+
+bool PlaylistGrid::zoomToSelection()
+{
+    juce::Range<int> range = timeSelection;
+
+    if (range.isEmpty())
+        for (auto& i : selectedItems())
+            range = range.isEmpty() ? juce::Range<int> (i.start, i.end()) : range.getUnionWith ({ i.start, i.end() });
+
+    if (range.isEmpty())
+    {
+        if (onStatus)
+            onStatus ("Zoom na seleção: selecione um trecho (Ctrl+arrastar na régua) ou blocos antes."_t, false);
+
+        return false;
+    }
+
+    zoomToRange (range.getStart(), range.getEnd());
+    return true;
+}
+
+void PlaylistGrid::zoomToSong()
+{
+    int end = 0;
+
+    for (auto& b : blocks)
+        end = juce::jmax (end, b.item.end());
+
+    zoomToRange (0, end > 0 ? end : 8 * stepsPerBar * ticksPerStep);   // sem blocos, os 8 primeiros compassos
+}
+
+void PlaylistGrid::zoomBack()
+{
+    if (zoomHistory.empty())
+    {
+        zoomToSong();
+        return;
+    }
+
+    const auto v = zoomHistory.back();
+    zoomHistory.pop_back();
+    applyView (v.scrollTicks, v.pxPerTick);
+}
+
+//==============================================================================
+// Marcadores com ações (playlist fatia 6, 27/10 noite)
+bool PlaylistGrid::gotoMarker (bool next)
+{
+    // tocando, conta da posição do som; parado, da agulha. O trecho selecionado sai, como no clique no marcador.
+    auto a = args ({ { "direction", next ? "next" : "previous" } });
+
+    if (playhead >= 0.0)
+        a.getDynamicObject()->setProperty ("from", juce::roundToInt (playhead));
+
+    const auto r = app.run ("playlist.gotoMarker", a);
+
+    if (! r.ok)
+    {
+        if (onStatus)
+            onStatus (r.error, false);
+
+        return false;   // sem marcador para lá: o trecho selecionado fica
+    }
+
+    setTimeSelection ({});
+    app.setPlayStart ((int) r.value["at"]);   // sem a seleção, a agulha é o marcador
+
+    const int at = (int) r.value["at"];
+    anchorMarker = r.value["marker"].toString();
+
+    if (playhead < 0.0)
+        setNeedle (at);
+
+    if (const auto v = visibleTicks(); at < v.getStart() || at > v.getEnd() - v.getLength() * 0.05)
+    {
+        scrollTicks = juce::jmax (0.0, at - v.getLength() * 0.1);   // o marcador fora da vista: a vista anda até ele
+        clampScroll();
+        updateScrollBars();
+        repaint();
+    }
+
+    if (onStatus)
+        onStatus (r.value["name"].toString() + " (" + positionName (at) + ")", false);
+
+    return true;
+}
+
+bool PlaylistGrid::selectBetweenMarkers (const juce::String& from, const juce::String& to, bool loop)
+{
+    auto a = args ({ { "from", from }, { "loop", loop } });
+
+    if (to.isNotEmpty())
+        a.getDynamicObject()->setProperty ("to", to);
+
+    const auto r = app.run ("playlist.selectMarkers", a);
+
+    if (! r.ok)
+    {
+        if (onStatus)
+            onStatus (r.error, true);
+
+        return false;
+    }
+
+    const int start = (int) r.value["from"], end = (int) r.value["to"];
+    timeSelection = { start, end };   // o app já tem (o comando pôs); a tela acompanha agora
+    anchorMarker = from;
+
+    if (playhead < 0.0)
+        setNeedle (start);
+
+    repaint();
+
+    if (onStatus)
+        onStatus ((loop ? "Laço de "_t : "Trecho de "_t) + positionName (start) + " a "_t + positionName (end)
+                      + (loop ? ": a playlist toca em volta dele (SONG)."_t : ". O play toca em loop, e Exportar oferece só ele."_t), false);
+
+    return true;
+}
+
+int PlaylistGrid::selectBlocksIn (juce::Range<int> range)
+{
+    selection.clear();
+
+    for (auto& b : blocks)
+        if (! b.takeRow && b.item.start < range.getEnd() && range.getStart() < b.item.end())
+            selection.insert (b.item.id);
+
+    repaint();
+    return (int) selection.size();
 }
 
 //==============================================================================
@@ -2813,6 +3151,51 @@ void PlaylistGrid::showMarkerMenu (const Marker& m)
 
     menu.addSectionHeader (name + " (" + positionName (m.t) + ")");
     addAction (menu, 1, "Selecionar o trecho até o próximo (loop e exportação)"_t, [safe, id] { if (safe != nullptr) safe->selectMarkerRange (id); });
+
+    // fatia 6: o laço, o trecho até outro marcador e os blocos do trecho (ids de 10 em diante)
+    addAction (menu, 10, "Laço até o próximo (toca em volta, no SONG)"_t,
+               [safe, id] { if (safe != nullptr) safe->selectBetweenMarkers (id, {}, true); });
+
+    if (markers.size() > 1)
+    {
+        juce::PopupMenu range, loop;
+        int n = 100;
+
+        for (auto& other : markers)
+        {
+            if (other.id == id)
+                continue;
+
+            const auto otherId = other.id;
+            const auto label = other.name + " (" + positionName (other.t) + ")";
+            addAction (range, n, label, [safe, id, otherId] { if (safe != nullptr) safe->selectBetweenMarkers (id, otherId, false); });
+            addAction (loop, 1000 + n, label, [safe, id, otherId] { if (safe != nullptr) safe->selectBetweenMarkers (id, otherId, true); });
+            ++n;
+        }
+
+        menu.addSubMenu ("Trecho até... (Shift+clique no outro)"_t, range);
+        menu.addSubMenu ("Laço até... (Ctrl+Shift+clique no outro)"_t, loop);
+    }
+
+    addAction (menu, 11, "Selecionar os blocos do trecho"_t, [safe, id]
+    {
+        if (safe == nullptr)
+            return;
+
+        const auto& p = safe->app.getModel().get();
+
+        if (auto* mk = p.findMarker (id))
+        {
+            const int n = safe->selectBlocksIn ({ mk->t, p.markerEnd (*mk) });
+
+            if (safe->onStatus)
+                safe->onStatus (juce::String (n) + (n == 1 ? " bloco selecionado"_t : " blocos selecionados"_t)
+                                    + " no trecho (Ctrl+C copia, Delete apaga, Shift+setas movem)."_t, false);
+        }
+    });
+    addAction (menu, 12, "Ir ao próximo marcador (Alt+→)"_t, [safe] { if (safe != nullptr) safe->gotoMarker (true); });
+    addAction (menu, 13, "Ir ao marcador anterior (Alt+←)"_t, [safe] { if (safe != nullptr) safe->gotoMarker (false); });
+    menu.addSeparator();
     addAction (menu, 2, "Renomear..."_t, [safe, id, name] { if (safe != nullptr) safe->renameMarker (id, name); });
     addAction (menu, 3, "Apagar o marcador"_t, [safe, id]
     {
@@ -2986,6 +3369,47 @@ void PlaylistGrid::mouseDoubleClick (const juce::MouseEvent& e)
 
     if (auto* b = blockAt (e.position, part); b != nullptr && ! b->audio && onOpenPattern)
         onOpenPattern (b->item.ref);
+    else if (b != nullptr && b->audio && ! b->takeRow && (tool == Tool::draw || tool == Tool::paint || tool == Tool::select))
+        showProperties (b->item.id);   // playlist fatia 6: o duplo clique no áudio abre as propriedades dele
+}
+
+void PlaylistGrid::showProperties (const juce::String& id)
+{
+    const auto* b = findBlock (id);
+
+    if (b == nullptr || ! b->audio)
+        return;
+
+    if (properties != nullptr)
+        if (auto* box = properties->findParentComponentOfClass<juce::CallOutBox>())
+            box->dismiss();
+
+    auto panel = std::make_unique<BlockProperties> (app, id);
+    properties = panel.get();
+    const auto area = localAreaToGlobal (blockBounds (*b).getIntersection (gridArea().toFloat()).toNearestInt());
+
+    if (isShowing())
+        juce::CallOutBox::launchAsynchronously (std::move (panel), area, nullptr);
+    else
+        properties = nullptr;   // sem tela (o autoteste monta o painel sozinho)
+}
+
+bool PlaylistGrid::lockedFrom (int tick) const
+{
+    const auto& items = app.getModel().get().playlistItems;
+    return std::any_of (items.begin(), items.end(), [tick] (const PlaylistItem& i) { return i.locked && i.end() > tick; });
+}
+
+bool PlaylistGrid::isLocked (const juce::String& id) const
+{
+    const auto* i = modelItem (id);
+    return i != nullptr && i->locked;
+}
+
+void PlaylistGrid::lockedNotice()
+{
+    if (onStatus)
+        onStatus ("Bloco travado: destrave nas propriedades (duplo clique) ou no menu dele."_t, false);
 }
 
 void PlaylistGrid::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
@@ -3036,6 +3460,12 @@ bool PlaylistGrid::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
+    // playlist fatia 6: zoom na seleção (Shift+Z) e na música inteira (Alt+Z); pular de marcador (Alt+setas)
+    if (key == juce::KeyPress ('z', juce::ModifierKeys::shiftModifier, 0))   { zoomToSelection(); return true; }
+    if (key == juce::KeyPress ('z', juce::ModifierKeys::altModifier, 0))     { zoomToSong(); return true; }
+    if (key == juce::KeyPress (juce::KeyPress::rightKey, juce::ModifierKeys::altModifier, 0))   { gotoMarker (true); return true; }
+    if (key == juce::KeyPress (juce::KeyPress::leftKey, juce::ModifierKeys::altModifier, 0))    { gotoMarker (false); return true; }
+
     if (key == juce::KeyPress ('a', ctrl, 0))   { selectAll(); return true; }
     if (key == juce::KeyPress ('c', ctrl, 0))   { copySelection(); return true; }
     if (key == juce::KeyPress ('x', ctrl, 0))   { copySelection(); deleteSelection(); return true; }
@@ -3077,7 +3507,8 @@ bool PlaylistGrid::keyPressed (const juce::KeyPress& key)
         return false;   // teclado-piano ligado: a letra vira nota (no MainComponent)
 
     const std::pair<juce::juce_wchar, Tool> keys[] = { { 'p', Tool::draw }, { 'b', Tool::paint }, { 'c', Tool::slice }, { 'd', Tool::erase },
-                                                       { 'e', Tool::select }, { 't', Tool::mute }, { 's', Tool::slip }, { 'y', Tool::play } };
+                                                       { 'e', Tool::select }, { 't', Tool::mute }, { 's', Tool::slip }, { 'y', Tool::play },
+                                                       { 'z', Tool::zoom } };
 
     for (auto& [letter, t] : keys)
     {
@@ -3261,6 +3692,7 @@ void PlaylistGrid::filesDropped (const juce::StringArray& files, int x, int y)
         selectedItem = result.value["item"].toString();
         brushKind = "audio";
         brushRef = result.value["ref"].toString();
+        brushFile = {};
         track = juce::jmin (track + 1, juce::jmax (0, (int) tracks.size() - 1));
     }
 
@@ -3345,8 +3777,10 @@ Playlist::Playlist (AppController& a) : app (a), grid (a), lanes (a)
         { "Selecionar", Icon::select, "Selecionar (E): arraste uma caixa, Shift soma. Ctrl+C, Ctrl+V, Ctrl+B duplica, Delete apaga."_t },
         { "Mudo",     Icon::speaker, "Mudo (T): clique ou arraste por cima para calar só esses blocos."_t },
         { "Deslizar", Icon::slip,    "Deslizar (S): arraste para andar com o conteúdo dentro do bloco, sem mexer nas bordas."_t },
-        { "Tocar",    Icon::play,    "Tocar (Y): clique para tocar a partir dali."_t } });
-    toolSwitch.setLabels (SegmentedControl::Labels::selected);   // oito ícones: só a ferramenta escolhida mostra o nome
+        { "Tocar",    Icon::play,    "Tocar (Y): clique para tocar a partir dali."_t },
+        { "Zoom",     Icon::search,  "Zoom (Z): arraste uma caixa para enquadrar o trecho, o clique aproxima, o botão direito volta. "
+                                     "Shift+Z: zoom na seleção; Alt+Z: a música inteira."_t } });
+    toolSwitch.setLabels (SegmentedControl::Labels::selected);   // nove ícones: só a ferramenta escolhida mostra o nome
     toolSwitch.setSelected (0);
     toolSwitch.onChange = [this] (int index) { grid.setTool ((PlaylistGrid::Tool) index); };
     toolSwitch.setWantsKeyboardFocus (false);
@@ -3494,7 +3928,20 @@ void PlaylistGrid::cutAtNeedle()
     juce::Array<juce::var> only;
 
     for (auto& id : selection)
-        only.add (id);
+        if (! isLocked (id))
+            only.add (id);
+
+    // o travado não é cortado (fatia 6): sem seleção, a lista vira todos os outros
+    const auto& all = app.getModel().get().playlistItems;
+    const bool anyLocked = std::any_of (all.begin(), all.end(), [] (const PlaylistItem& i) { return i.locked; });
+
+    if (only.isEmpty() && selection.empty() && anyLocked)
+        for (auto& i : all)
+            if (! i.locked)
+                only.add (i.id);
+
+    if (only.isEmpty() && (anyLocked || ! selection.empty()))
+        return lockedNotice();
 
     app.getCommands().beginGesture ("Cortar aqui"_t);
     int pieces = 0;
@@ -3539,6 +3986,10 @@ void PlaylistGrid::removeTimeSelection()
     }
 
     const auto range = timeSelection;
+
+    if (lockedFrom (range.getStart()))
+        return lockedNotice();   // o apagar por trecho cortaria ou puxaria um bloco travado (fatia 6)
+
     const auto r = app.run ("playlist.removeSpace", args ({ { "from", range.getStart() }, { "to", range.getEnd() } }));
     selection.clear();
     setTimeSelection ({});
@@ -3561,6 +4012,10 @@ void PlaylistGrid::insertTimeSelection()
     }
 
     const auto range = timeSelection;
+
+    if (lockedFrom (range.getStart()))
+        return lockedNotice();   // abrir espaço cortaria ou empurraria um bloco travado (fatia 6)
+
     const auto r = app.run ("playlist.insertSpace", args ({ { "at", range.getStart() }, { "length", range.getLength() } }));
 
     if (onStatus)
@@ -3663,6 +4118,9 @@ void PlaylistGrid::showSilenceTool (const juce::String& item)
     if (b == nullptr)
         return;
 
+    if (b->item.locked)
+        return lockedNotice();   // tirar o silêncio corta o bloco
+
     auto panel = std::make_unique<SilenceTool> (app, *this, item);
     juce::Component::SafePointer<PlaylistGrid> safe (this);
     panel->onDone = [safe] (bool ok, const juce::String& message) { if (safe != nullptr && safe->onStatus) safe->onStatus (message, ! ok); };
@@ -3723,7 +4181,11 @@ SilenceTool::SilenceTool (AppController& a, PlaylistGrid& g, const juce::String&
                                 (juce::Component*) &summary, (juce::Component*) &lower, (juce::Component*) &cancel, (juce::Component*) &remove })
         addAndMakeVisible (c);
 
-    setSize (360, 176);
+    // Cancelar é a saída, Tirar é a ação: o texto do Cancelar fica mais apagado (revisão de 28/10)
+    cancel.setColour (juce::TextButton::textColourOffId, colour::textDim);
+
+    // a altura soma as linhas do resized() (com 176 px, os botões saíam achatados: revisão de 28/10)
+    setSize (360, 2 * metric::gap + 22 + 4 + 2 * (metric::control + 4) + 24 + 20 + metric::gap + metric::control);
     updatePreview();
 }
 
@@ -3755,7 +4217,8 @@ void SilenceTool::resized()
 
     lower.setBounds (r.removeFromTop (24));
     summary.setBounds (r.removeFromTop (20));
-    auto buttons = r.removeFromBottom (metric::control);
+    r.removeFromTop (metric::gap);
+    auto buttons = r.removeFromTop (metric::control);
     remove.setBounds (buttons.removeFromRight (90));
     buttons.removeFromRight (metric::gap);
     cancel.setBounds (buttons.removeFromRight (90));

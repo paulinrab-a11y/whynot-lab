@@ -129,3 +129,53 @@ Os cliques do beat de 1 minuto, depois:
 - **A prévia do navegador** decodifica até 30 s de uma vez: 7 ms num WAV de 40 s, mais num MP3 longo. Tocar o começo enquanto o resto decodifica fica para depois.
 - **O render do congelado fora da thread da tela:** o `AudioTrack::freezeTrack` do Tracktion renderiza o Edit ao vivo, então ele roda na thread da tela, uma vez por trilha depois que a pessoa para. Para tirar dali, o congelar teria de renderizar uma cópia (o caminho do `Exporter`) e trocar o arquivo. Fica para a dona do congelar.
 - **O pisca do REC** (`TransportBar` e `MixerStrip`) ainda liga e desliga de uma vez. A `fluid::Ramp` está pronta para ele e para a logo ao abrir.
+
+## Passada de 29/10: áudio, voz picotada e o motor (frente Desempenho)
+
+Branch `extra-desempenho` (de `teste-integracao-2810` 7c5da8f). Duas medidas novas:
+
+- **`whynot_rt_bench`** (`tests/perf/bench_rt.cpp`, sem JUCE). Mede o custo por bloco de 256 amostras a 48 kHz (orçamento de 5333 µs):
+  - os 6 efeitos novos, a afinação, EQ, compressor, reverb, delay e limitador;
+  - as vozes do sampler, com e sem o bend do canal (`ChannelPitch`);
+  - o Synth 3 OSC.
+
+  Para cada caso dá a mediana, a média, o p99 e o pior bloco, com o som e o silêncio à parte (é na cauda que os denormais aparecem). Também conta as alocações dentro do `process`. O ctest roda `whynot_rt_bench --check`, que falha se algum `process` alocar. Sem argumento, imprime a tabela; `--csv <arquivo>` grava os números.
+- **Seção "Desempenho: voz picotada" do autoteste** (`src/app/selftest/HeavyProject.cpp`). Monta 300 blocos de voz sobrepostos em 3 raias (metade com pan, o que leva à cópia estéreo do `blockfile::stereoOf`) e 2000 notas num canal mono. Depois mede o motor, os crossfades automáticos, a playlist e o piano roll.
+
+### O que estava lento
+
+1. **O crossfade automático era O(n²) vezes as raias.** O `playlistedit::autoCrossfade` compara um bloco com todos os outros e, para cada um, percorre as raias (`laneSounds`). A playlist (`refresh`, a cada mudança do projeto e a cada passo de um arraste) e o motor chamavam essa conta bloco a bloco. Com a voz picotada, só ela levava 19 ms.
+   - Agora as duas chamam `playlistedit::autoCrossfades`, que calcula todos de uma vez: agrupa por raia, ordena pelo início e olha só os vizinhos que podem se sobrepor.
+   - O resultado é o mesmo bit a bit. O autoteste compara os dois na voz picotada, num projeto torto (mudos, blocos longos, inícios iguais, camadas, padrões no meio) e com uma raia em solo.
+2. **O motor perguntava ao disco por bloco, a cada sync.** Para cada bloco de áudio, o `Projector` fazia de 2 a 5 consultas: se o arquivo existe, o arquivo invertido ou refeito e, com pan, a data do original e da cópia estéreo. Com 300 blocos do mesmo arquivo, eram centenas de consultas por mudança do projeto.
+   - Agora cada resposta é guardada pelo caminho, dentro de um mesmo sync. O arquivo invertido e o refeito são calculados uma vez por canal; o `anyEdited` das notas afinadas, também.
+   - No sync seguinte ele pergunta de novo, então um arquivo que sumiu continua sendo avisado na hora.
+3. **O piano roll de um canal mono copiava e ordenava todas as notas a cada quadro da agulha**, para desenhar as curvas de glide, mesmo sem nenhuma nota com slide. Agora pula quando não há slide.
+
+### Números (medianas; máquina com 7,6 GB e outras sessões abertas)
+
+| Medida | Antes (7c5da8f) | Depois |
+|---|---|---|
+| Crossfades de todos os blocos (300 de voz) | 19,5 ms (um a um) | 0,12 ms (de uma vez) |
+| Playlist com a voz picotada: atualizar | 17,0 ms | 0,34 ms |
+| Playlist com a voz picotada: pintar inteira / coluna da agulha | 79,4 / 3,73 ms | 62,3 / 2,20 ms (ruído; o paint não mudou) |
+| Motor: mover um bloco da voz e reconciliar (SONG) | 27,4 ms | 1,18 ms |
+| Motor: reconciliar sem mudança | 0,31 ms | 0,18 ms |
+| Piano roll mono, 2000 notas: pintar inteira / coluna | 12,1 / 1,56 ms | 11,2 / 1,41 ms |
+| Banco: projeto pesado (16 synths 3 OSC com os 6 efeitos novos e a afinação), um núcleo | 2350 µs (44%) | sem mudança no áudio; a mesma conta deu 2785 µs (52%) noutra rodada, a margem do banco nesta máquina |
+
+O som não mudou. Os `--render` do antes e do depois saíram iguais amostra por amostra (só o bloco `data`; a data do `bext` muda a cada render) em seis projetos: o Demo 3.2, o Demo Synth, o Grande da Fluidez (em PAT e em SONG) e o Pesado (em PAT e em SONG, com os 300 blocos de voz tocando, pico 0,88).
+
+### A thread de áudio (revisão dos itens novos)
+
+- **Alocações:** nenhuma dentro do `process` nos 17 casos do banco. O `ChannelPitch`, o `SampleVoice`, o `PianoVoice`, o clipper, o lo-fi, o chorus, o flanger, o phaser, o EQ dinâmico e a afinação (PSOLA) usam só memória preparada no `prepare`.
+- **Travas e I/O:** nenhuma no tempo real. A trava do WHYNOT Piano (`streamLock`) só vale no render offline, de propósito: ali ele espera o anel em vez de deixar faltar.
+- **Denormais:** todos os `process` ligam FTZ/DAZ (`DenormalGuard` nos efeitos e no Synth; `ScopedNoDenormals` no `WhynotFx`, no sampler e no piano). No banco, o silêncio depois do som custa o mesmo que o som.
+- **O que pesa:** as vozes do sampler (cerca de 10 µs por voz e por bloco, mais uns 50% com bend e vibrato, que recalculam a razão de leitura com `exp2` a cada amostra), o limitador e o clipper. Os dois últimos sobreamostram 4x em dois meios-banda de 63 e 29 coeficientes, e o clipper ainda chama `tanh` acima do joelho. Reorganizar a sobreamostragem com o mesmo resultado bit a bit não ganhou nada no experimento: a soma em cadeia é o limite. Para ganhar ali, o som mudaria (somas em paralelo, SIMD entre canais, `tanh` aproximado). Isso fica para quem é dono dos efeitos decidir, com o ouvido.
+
+### Ficou de fora
+
+- O `refresh` da playlist ainda remonta as prévias de todos os padrões e repinta a tela inteira a cada mudança (achado 1 da Fluidez). Um cache das prévias por padrão é o próximo passo.
+- O `mixer.setVolume` ainda leva a um sync inteiro do motor (as specs de todos os canais, sem refazer o grafo).
+- O desenho das notas das prévias dos padrões percorre todas as repetições até a borda, mesmo na coluna da agulha.
+- Não ouvido e sem ASIO: as medidas são do render offline e do banco. A carga da placa ao vivo não foi medida.

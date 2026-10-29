@@ -58,6 +58,11 @@ int runSelfTest (const juce::File& reportFile, const juce::File& workFolder)
     runTuneSelfTest (ctx);
     runVoicePlaylistSelfTest (ctx);
     runNoteTuneSelfTest (ctx);
+    runPlaylistBlocksSelfTest (ctx);
+    runSamplerBendSelfTest (ctx);
+    runUxReviewSelfTest (ctx);
+    runHeavyProjectSelfTest (ctx);
+    runGrooveSelfTest (ctx);
     runInvalidFilesSelfTest (ctx);
 
     rep.lines.add ({});

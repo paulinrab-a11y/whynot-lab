@@ -36,6 +36,9 @@ namespace
         if (item->reversed)
             return CommandResult::fail ("O bloco está invertido: desinverta antes de afinar nota a nota."_t);
 
+        if (item->file.isNotEmpty())   // playlist fatia 6: a afinação é do canal, e o consolidado toca o WAV dele
+            return CommandResult::fail ("O bloco é um consolidado (o WAV já leva a afinação): afine nota a nota antes de consolidar."_t);
+
         t.channel = p.findChannel (item->ref);
 
         if (t.channel == nullptr || ! t.channel->isAudio())

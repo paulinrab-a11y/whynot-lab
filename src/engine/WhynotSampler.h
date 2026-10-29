@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 
+#include "../audio/ChannelPitch.h"
 #include "../audio/RtObjectSlot.h"
 #include "../audio/SampleVoice.h"
 
@@ -28,6 +29,7 @@ struct SamplerShape
     float loopEnd = 1.0f;
     float loopXfadeMs = 20.0f;
     float releaseMs = 30.0f;      // rampa de saída quando a nota acaba (num canal one-shot, 5 ms fixos)
+    float bendRange = 2.0f;       // semitons do pitch wheel inteiro (o bendRange do canal, 27/10); o RPN 0 também muda
 };
 
 /** O sampler nativo da WHYNOT, como plugin interno do Tracktion.
@@ -40,6 +42,10 @@ struct SamplerShape
     espera: a thread de áudio as tira em 3 ms (fadeForSwap) e avisa quando ficou em
     silêncio (voicesSilent); o Timer publica o sample novo. Sem isso as vozes passavam
     a ler o sample novo na posição do velho, com um corte seco.
+
+    Pitch bend e mod wheel desenhados na nota (27/10): o pitch wheel (no bendRange do canal, ou no RPN 0 do MIDI)
+    e o CC1 (um vibrato leve) viram um desvio de tom do canal (audio::ChannelPitch) que todas as vozes somam; sem
+    bend nem roda, as vozes não recebem nada e soam como antes, inclusive o glide do 808.
 
     Premissa: o Tracktion processa cada nó do grafo uma vez por bloco, então
     applyToBuffer() nunca roda em duas threads ao mesmo tempo (é o consumidor
@@ -139,6 +145,7 @@ private:
     void releaseAll() noexcept;
     void chokeAll() noexcept;
     void renderVoices (const audio::SampleData&, float* const* out, int numChannels, int start, int num) noexcept;
+    bool anyVoiceActive() const noexcept;
 
     // Só a thread de áudio
     std::array<audio::SampleVoice, numVoices> voices;
@@ -147,6 +154,11 @@ private:
     std::array<juce::uint32, numVoices> voiceStart {};
     juce::uint32 voiceCounter = 0;
     double audioSampleRate = 48000.0;
+
+    // Pitch bend e mod wheel desenhados na nota (27/10): o desvio de tom do canal, em pedaços de até 256 amostras.
+    audio::ChannelPitch pitch;
+    std::array<float, 256> pitchOffsets {};
+    float appliedBendRange = -1.0f;   // o bendRange do canal que a thread de áudio já aplicou
 
     // Mono (808): pilha das teclas seguradas, sem alocação. Nota nova com outra segurada = glide.
     // A força de cada uma fica guardada: voltar deslizando para ela usa a força dela, não 127.
@@ -171,6 +183,7 @@ private:
     std::atomic<float> pitchDropSemis { 0.0f }, pitchDropMs { 60.0f }, startFraction { 0.0f };
     std::atomic<bool> loop { false };
     std::atomic<float> loopStart { 0.0f }, loopEnd { 1.0f }, loopXfadeMs { 20.0f }, releaseMs { 30.0f };
+    std::atomic<float> bendRange { 2.0f };
 
     // Troca de sample com vozes soando (mensagem <-> áudio).
     std::atomic<bool> fadeForSwap { false };     // mensagem -> áudio: tire as vozes, um sample novo espera

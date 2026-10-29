@@ -302,6 +302,7 @@ void normalise (Project& p)
         p.currentPattern = p.patterns.front().id;
 
     p.keyRoot = ((p.keyRoot % 12) + 12) % 12;
+    p.swing = std::isfinite (p.swing) ? std::round (juce::jlimit (0.0f, 100.0f, p.swing) * 10.0f) / 10.0f : 0.0f;   // swing global (29/10)
 
     if (! Project::scaleNames().contains (p.scale))
         p.scale = "minor";
@@ -346,6 +347,11 @@ void normalise (Project& p)
         c.bendRange = juce::jlimit (1, 24, c.bendRange);
         c.chokeGroup = juce::jlimit (0, 8, c.chokeGroup);
         c.swing = std::isfinite (c.swing) ? juce::jlimit (0.0f, 100.0f, c.swing) : 0.0f;
+
+        // groove das notas (29/10): de 0 a 100, com 1 casa (o que o arquivo guarda)
+        auto percent = [] (float v) { return std::isfinite (v) ? std::round (juce::jlimit (0.0f, 100.0f, v) * 10.0f) / 10.0f : 0.0f; };
+        c.noteSwing = percent (c.noteSwing);
+        c.humanize = percent (c.humanize);
 
         // afinação nota a nota (27/10): só no canal de áudio; faixas, ordem e a precisão do arquivo
         if (! c.isAudio())
@@ -500,6 +506,9 @@ void normalise (Project& p)
         i.fadeOutCurve = i.kind == "audio" ? juce::jlimit ((int) fadeCurveLinear, (int) fadeCurveS, i.fadeOutCurve) : 0;
         i.pitch = i.kind == "audio" && std::isfinite (i.pitch) ? std::round (juce::jlimit (-maxClipPitch, maxClipPitch, i.pitch) * 100.0f) / 100.0f : 0.0f;
         i.reversed = i.kind == "audio" && i.reversed;
+        // playlist fatia 6 (27/10, noite): o pan e o arquivo do bloco só no áudio; travar vale em qualquer bloco
+        i.pan = i.kind == "audio" && std::isfinite (i.pan) ? std::round (juce::jlimit (-1.0f, 1.0f, i.pan) * 100.0f) / 100.0f : 0.0f;
+        i.file = i.kind == "audio" ? i.file.trim() : juce::String();
 
         if (i.kind != "audio" || i.takeGroup.isEmpty())
         {
@@ -647,6 +656,9 @@ juce::String toJsonReference (const Project& p)
     set (proj, "songMode", p.songMode);
     set (proj, "currentPattern", p.currentPattern);
 
+    if (p.swing != 0.0f)   // swing global (29/10): opcional
+        set (proj, "swing", roundTo (p.swing, 1));
+
     if (p.punchOn || p.punchIn != 0 || p.punchOut != ticksPerBar4)   // opcional (3.5): projeto sem punch sai igual
     {
         auto punch = obj();
@@ -742,6 +754,12 @@ juce::String toJsonReference (const Project& p)
 
         if (c.swing != 0.0f)
             set (ch, "swing", roundTo (c.swing, 1));
+
+        if (c.noteSwing != 0.0f)   // groove das notas (29/10): opcionais, iguais ao toJsonReference
+            set (ch, "noteSwing", roundTo (c.noteSwing, 1));
+
+        if (c.humanize != 0.0f)
+            set (ch, "humanize", roundTo (c.humanize, 1));
 
         if (! c.tunedNotes.empty())   // afinação nota a nota (27/10): opcional, igual ao toJsonReference
         {
@@ -988,6 +1006,16 @@ juce::String toJsonReference (const Project& p)
 
         if (i.reversed)
             set (io, "reversed", true);
+
+        // playlist fatia 6 (27/10, noite): opcionais, iguais no toJson
+        if (i.pan != 0.0f)
+            set (io, "pan", roundTo (i.pan, 2));
+
+        if (i.locked)
+            set (io, "locked", true);
+
+        if (i.file.isNotEmpty())
+            set (io, "file", i.file);
 
         plItems.add (io);
     }
@@ -1405,6 +1433,9 @@ juce::String toJson (const Project& p)
     w.member ("songMode", p.songMode);
     w.member ("currentPattern", p.currentPattern);
 
+    if (p.swing != 0.0f)   // swing global (29/10): opcional
+        w.member ("swing", rounded (p.swing, 1));
+
     if (p.punchOn || p.punchIn != 0 || p.punchOut != ticksPerBar4)   // opcional (3.5): projeto sem punch sai igual
     {
         w.key ("punch").beginObject();
@@ -1502,6 +1533,12 @@ juce::String toJson (const Project& p)
 
         if (c.swing != 0.0f)
             w.member ("swing", rounded (c.swing, 1));
+
+        if (c.noteSwing != 0.0f)   // groove das notas (29/10): opcionais, iguais ao toJson
+            w.member ("noteSwing", rounded (c.noteSwing, 1));
+
+        if (c.humanize != 0.0f)
+            w.member ("humanize", rounded (c.humanize, 1));
 
         if (! c.tunedNotes.empty())   // afinação nota a nota (27/10): opcional, igual ao toJson
         {
@@ -1767,6 +1804,16 @@ juce::String toJson (const Project& p)
         if (i.reversed)
             w.member ("reversed", true);
 
+        // playlist fatia 6 (27/10, noite): opcionais, iguais no toJsonReference
+        if (i.pan != 0.0f)
+            w.member ("pan", rounded (i.pan, 2));
+
+        if (i.locked)
+            w.member ("locked", true);
+
+        if (i.file.isNotEmpty())
+            w.member ("file", i.file);
+
         w.endObject();
     }
 
@@ -2030,6 +2077,7 @@ juce::Result fromJson (const juce::String& json, Project& out)
     p.loop = getBool (proj, "loop", p.loop);
     p.songMode = getBool (proj, "songMode", p.songMode);
     p.currentPattern = getString (proj, "currentPattern");
+    p.swing = (float) getDouble (proj, "swing", 0.0);   // swing global (29/10): opcional
     p.punchOn = getBool (proj["punch"], "on", p.punchOn);
     p.punchIn = getInt (proj["punch"], "in", p.punchIn);
     p.punchOut = getInt (proj["punch"], "out", p.punchOut);
@@ -2091,6 +2139,8 @@ juce::Result fromJson (const juce::String& json, Project& out)
             c.mute = getBool (co, "mute", c.mute);
             c.chokeGroup = getInt (co, "choke", 0);        // opcionais: o esquema continua 3
             c.swing = (float) getDouble (co, "swing", 0.0);
+            c.noteSwing = (float) getDouble (co, "noteSwing", 0.0);   // groove das notas (29/10): opcionais
+            c.humanize = (float) getDouble (co, "humanize", 0.0);
 
             if (auto* notes = co["noteTune"]["notes"].getArray())   // afinação nota a nota (27/10): opcional; o normalise confere
             {
@@ -2312,6 +2362,9 @@ juce::Result fromJson (const juce::String& json, Project& out)
             i.fadeOutCurve = fadeCurveFromName (getString (io, "fadeOutCurve"));
             i.pitch = (float) getDouble (io, "pitch", 0.0);
             i.reversed = getBool (io, "reversed", false);
+            i.pan = (float) getDouble (io, "pan", 0.0);   // playlist fatia 6 (27/10, noite); o normalise limita
+            i.locked = getBool (io, "locked", false);
+            i.file = getString (io, "file");
 
             if (i.id.isNotEmpty() && p.findItem (i.id) == nullptr)
                 p.playlistItems.push_back (i);
@@ -2486,6 +2539,40 @@ juce::Result save (Project& p, const juce::File& file, bool collectSamples, cons
                 c.originalPath = src.getFullPathName().replaceCharacter ('\\', '/');
 
             c.samplePath = relativeTo (dest, folder);
+        }
+
+        // o arquivo próprio de um bloco (o consolidado sem canal novo, playlist fatia 6) vai junto, como o sample
+        for (auto& i : p.playlistItems)
+        {
+            if (i.file.isEmpty())
+                continue;
+
+            const juce::File src = juce::File::isAbsolutePath (i.file)
+                                     ? juce::File (i.file)
+                                     : (previousFolder != juce::File() ? previousFolder : folder).getChildFile (i.file);
+
+            if (! src.existsAsFile())
+                continue;
+
+            if (src.isAChildOf (folder))
+            {
+                i.file = relativeTo (src, folder);
+                continue;
+            }
+
+            if (! samplesDir.createDirectory())
+                return juce::Result::fail ("Não consegui criar a pasta de samples em "_t + folder.getFullPathName() + "."
+                                           + noPermissionHint (folder, "salve"));
+
+            auto dest = samplesDir.getChildFile (src.getFileName());
+
+            if (dest.existsAsFile() && ! dest.hasIdenticalContentTo (src))
+                dest = samplesDir.getNonexistentChildFile (src.getFileNameWithoutExtension(), src.getFileExtension(), false);
+
+            if (! dest.existsAsFile() && ! src.copyFileTo (dest))
+                return juce::Result::fail ("Não consegui copiar o áudio do bloco "_t + src.getFullPathName());
+
+            i.file = relativeTo (dest, folder);
         }
     }
 

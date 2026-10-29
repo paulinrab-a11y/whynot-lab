@@ -126,6 +126,8 @@ set(WHYNOT_SOURCES
     src/app/selftest/Favorites.cpp
     src/app/selftest/Finishing.cpp
     src/app/selftest/Fluidity.cpp
+    src/app/selftest/Groove.cpp
+    src/app/selftest/HeavyProject.cpp
     src/app/selftest/Ideas.cpp
     src/app/selftest/Library.cpp
     src/app/selftest/Mixing.cpp
@@ -133,6 +135,7 @@ set(WHYNOT_SOURCES
     src/app/selftest/Performance.cpp
     src/app/selftest/Piano.cpp
     src/app/selftest/PitchBend.cpp
+    src/app/selftest/PlaylistBlocks.cpp
     src/app/selftest/Plugins.cpp
     src/app/selftest/Producer.cpp
     src/app/selftest/ProducerPiano.cpp
@@ -140,11 +143,13 @@ set(WHYNOT_SOURCES
     src/app/selftest/RenderPack.cpp
     src/app/selftest/Robustness.cpp
     src/app/selftest/Sampler.cpp
+    src/app/selftest/SamplerBend.cpp
     src/app/selftest/SelfTestKit.cpp
     src/app/selftest/Slicing.cpp
     src/app/selftest/Stretch.cpp
     src/app/selftest/Synth.cpp
     src/app/selftest/Tune.cpp
+    src/app/selftest/UxReview.cpp
     src/app/selftest/Voice.cpp
     src/app/selftest/VoicePlaylist.cpp
     src/app/selftest/WarpCapture.cpp
@@ -158,6 +163,7 @@ set(WHYNOT_SOURCES
     src/commands/DeviceCommands.cpp
     src/commands/ExportCommands.cpp
     src/commands/FavoritesCommands.cpp
+    src/commands/GrooveCommands.cpp
     src/commands/PluginCommands.cpp
     src/commands/MixCommands.cpp
     src/commands/IdeasCommands.cpp
@@ -256,6 +262,7 @@ set(WHYNOT_SOURCES
     src/ui/AiBridgeUi.cpp
     src/ui/AutomationLanes.cpp
     src/ui/BeatKeyNotice.cpp
+    src/ui/BlockProperties.cpp
     src/ui/ChannelRack.cpp
     src/ui/ControlMenu.cpp
     src/ui/Controls.cpp

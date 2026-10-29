@@ -60,13 +60,65 @@ No autoteste, seção "Voz na playlist" (`src/app/selftest/VoicePlaylist.cpp`):
 - normalizar o grupo junto e separado; a prévia do silêncio em -45 e -28 dB; tirar e abaixar, medidos no WAV; a ferramenta na tela;
 - capturas: `voz-playlist-curvas.png` e `voz-playlist-silencio.png`.
 
+## Fatia 6 (noite de 27/10): propriedades, zoom, marcadores e consolidar
+
+Estudado no manual e em vídeos, só por fora; nada copiado.
+
+- **Propriedades do bloco.** Duplo clique num áudio (com o lápis, o pincel ou o Selecionar), ou "Propriedades..." na setinha do bloco, abre um cartão ao lado dele:
+  - **nome** (Enter grava) e **cor** (a paleta dos canais): são do canal do bloco, o nome que aparece no cabeçalho;
+  - **ganho** (-60 a +24 dB), **pan** (E 100 a D 100), **tom** (-24 a +24 semitons) e **fina** (-50 a +50 centésimos);
+  - **fade de entrada e de saída** em ms, cada um com a curva (reta, rápida, lenta, em S);
+  - **inverter**, **mudo** e **travar**.
+  - Arrastar um controle do começo ao fim é um passo de desfazer só; o Ctrl+Z com o cartão aberto atualiza o cartão. Duplo clique num controle volta ao padrão.
+  - O cabeçalho do bloco mostra o pan ("E 30", "D 30") e "trava".
+- **Travar.** Um bloco travado se seleciona, mas o mouse não move, não apara, não estica, não mexe nas alças, não corta nem apaga. O Delete, as Shift+setas, o Ctrl+E e o arrasto de vários deixam ele no lugar. Shift+arrasto ainda tira uma cópia (destravada). Também na setinha: "Travar o bloco".
+- **Ferramenta Zoom (Z),** a nona da barra (a lupa):
+  - arrastar uma caixa enquadra o trecho dela;
+  - um clique aproxima em volta do ponto;
+  - o botão direito volta ao enquadramento de antes (sem histórico, a música inteira);
+  - **Shift+Z**: zoom na seleção (o trecho da régua, ou os blocos selecionados); **Alt+Z**: a música inteira.
+- **Marcadores com ações:**
+  - criar na agulha: **Alt+T** (já existia);
+  - renomear: botão direito no marcador;
+  - **Alt+→** e **Alt+←** pulam para o próximo e o anterior (tocando, o som pula junto);
+  - **Shift+clique** num segundo marcador seleciona o trecho entre os dois (o play toca em loop nele); **Ctrl+Shift+clique** faz o laço (liga o SONG e o loop);
+  - no botão direito do marcador: "Laço até o próximo", "Trecho até..." e "Laço até..." (qualquer outro marcador), "Selecionar os blocos do trecho" e ir ao próximo ou anterior.
+- **Consolidar sem canal novo.** "Consolidar" junta os blocos selecionados de uma raia num WAV só, ao lado do arquivo do primeiro ("Voz_take03_consolidado.wav"), num bloco só **no mesmo canal** (a mesma trilha do mixer e os mesmos efeitos). O canal continua tocando o original nos outros blocos: o arquivo novo é só do bloco. Blocos de raias diferentes são recusados. Um passo de desfazer.
+- **Abaixar com rampa.** No "Tirar silêncio e respiração" com "Abaixar 15 dB em vez de apagar", o trecho abaixado avança 10 ms sobre o vizinho de cada lado, os dois com fade reto: como é o mesmo som do arquivo nos dois, o ganho desce numa rampa reta, sem degrau e sem buraco.
+- **O punch anda com o ripple.** Apagar um trecho (Ctrl+Delete) puxa o punch in/out junto; abrir espaço (Ctrl+Insert) empurra (ou alarga, se o espaço abre dentro dele). Se o trecho apagado cobre o punch inteiro, o punch desliga.
+
+### Comandos novos
+
+| Comando | O que faz |
+|---|---|
+| `audio.setProperties {item, name?, colour?, gainDb?, pan?, semitones?, cents?, fadeIn?, fadeOut?, inCurve?, outCurve?, muted?, locked?}` | O painel inteiro num comando; só muda o que vier. Mudo e travar valem em qualquer bloco |
+| `playlist.gotoMarker {direction: next \| previous, from?}` ou `{marker}` | Leva a agulha ao próximo, ao anterior ou a um marcador |
+| `playlist.selectMarkers {from, to?, loop?}` | O trecho entre dois marcadores vira a seleção de tempo; `loop` liga o SONG e o loop |
+
+O `audio.consolidate` mudou: devolve o mesmo canal em `channel` e o WAV em `path` (o arquivo do bloco), e recusa blocos de raias diferentes.
+
+### No arquivo `.wnl`
+
+Campos opcionais do bloco, iguais no `toJson` e no `toJsonReference`; o esquema não muda:
+
+- `"pan"`: -1 a 1, com duas casas (só no áudio);
+- `"locked": true` (em qualquer bloco);
+- `"file"`: o arquivo que o bloco toca no lugar do sample do canal (o consolidado). Salvar com "coletar samples" copia ele para `samples/` como os outros.
+
+### Por dentro
+
+- `src/record/BlockFile.h`: o arquivo que um bloco toca (o dele ou o do canal, e o invertido). O Tracktion ignora o pan de um clipe mono, então um bloco mono com pan toca uma cópia em dois canais ao lado (`Voz_wnl-estereo.wav`, refeita se o original mudar; num MP3 já sem o atraso do codificador; um arquivo com esse nome que não seja uma cópia nossa não é apagado, e o bloco fica sem pan); o pan segue a lei de potência constante do mixer (+3 dB na ponta, não +6). O `Projector` e os comandos que leem o som do bloco (normalizar, silêncio, picotar, o groove, áudio para MIDI e inverter) passam por ele.
+- `src/ui/BlockProperties.*`: o cartão. A seleção de tempo entrou no `AppServices` (`setTimeSelection`, `getTimeSelection`) para os comandos de marcador.
+- Autoteste: seção "Playlist fatia 6" (`src/app/selftest/PlaylistBlocks.cpp`); capturas `playlist-propriedades.png`, `playlist-zoom.png` e `playlist-marcadores.png`.
+
 ## O que não foi feito
 
-- O painel de propriedades do clipe, a ferramenta de zoom e as ações de marcador (a fatia 6, "se der tempo").
-- O consolidar continua criando um canal novo (o WAV consolidado é outro arquivo).
-- Limites conhecidos (da revisão independente):
+- Limites conhecidos (da revisão independente da frente A):
   - um bloco que passa do fim do arquivo, invertido duas vezes, volta com o começo no zero (o trecho além do fim não tem espelho);
   - um canal invertido do jeito antigo ("X_invertido.wav") invertido de novo escreve "X_invertido_invertido.wav", em vez de voltar ao "X.wav";
-  - "abaixar em vez de apagar" muda o ganho sem rampa nas bordas (o salto cai num trecho quieto);
-  - o Ctrl+E num grupo de takes corta só o take escolhido (a ferramenta Cortar corta o grupo todo);
-  - apagar e abrir espaço não mexem no punch in/out.
+  - o Ctrl+E num grupo de takes corta só o take escolhido (a ferramenta Cortar corta o grupo todo).
+- Da fatia 6:
+  - a afinação nota a nota é do canal: num bloco consolidado ela não vale (o WAV consolidado já leva a afinação de antes);
+  - a trava vale no mouse e no teclado da playlist; os comandos (a IA) mexem num bloco travado; o apagar e o abrir espaço por trecho (Ctrl+Del, Ctrl+Ins) recusam quando um travado vem depois do trecho;
+  - o pan num bloco mono escreve a cópia estéreo ao lado (o dobro do tamanho em disco, uma vez por arquivo);
+  - a ferramenta Zoom só aproxima no tempo (a altura das raias segue no Alt+rodinha).

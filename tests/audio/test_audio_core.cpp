@@ -1,6 +1,7 @@
-// Testes do núcleo de tempo real (sem JUCE): glide do 808 e troca de objetos entre threads.
+// Testes do núcleo de tempo real (sem JUCE): glide do 808, troca de objetos entre threads e o pitch bend do canal.
 // Uso: whynot_audio_tests [arquivo.wav]  (grava o áudio do teste de glide para ouvir)
 
+#include "../../src/audio/ChannelPitch.h"
 #include "../../src/audio/Onsets.h"
 #include "../../src/audio/PianoVoice.h"
 #include "../../src/audio/RtObjectSlot.h"
@@ -1371,6 +1372,310 @@ static void testPianoStreaming()
     }
 }
 
+//==============================================================================
+// Pitch bend e mod wheel no sampler e no WHYNOT Piano (27/10): o desvio de tom do canal (ChannelPitch.h).
+
+// Como o sampler faz: o canal (ChannelPitch) e uma voz, em blocos de 256; `atBlock` manda os eventos do bloco.
+template <typename Events>
+static std::vector<float> renderBent (SampleVoice& voice, ChannelPitch& channel, const SampleData& s, double rate,
+                                      double seconds, Events atBlock)
+{
+    std::vector<float> out ((std::size_t) (seconds * rate), 0.0f);
+    constexpr std::size_t block = 256;
+    float offsets[block];
+
+    for (std::size_t pos = 0; pos < out.size(); pos += block)
+    {
+        atBlock (pos);
+        const int n = (int) std::min (block, out.size() - pos);
+        float* chans[] = { out.data() + pos };
+        voice.render (s, chans, 1, n, channel.fill (offsets, n) ? offsets : nullptr);
+    }
+
+    return out;
+}
+
+static double wheelSemis (int wheel, double range) { return (wheel - 8192) / 8192.0 * range; }
+
+static void testPitchWheel()
+{
+    std::printf ("Pitch bend e mod wheel no sampler e no piano (27/10)\n");
+
+    constexpr double rate = 48000.0;
+    constexpr int root = 57;   // Lá 2, 220 Hz
+    const auto tone = makeTone (rate, keyToHz (root), 2.0, root, 0.5f);
+    const auto steady = [] (const std::vector<float>& x) { return measureHz (x, (std::size_t) (0.2 * rate), (std::size_t) (0.9 * rate), rate); };
+
+    // 1) em descanso o canal não manda nada: a voz soa bit a bit igual à de sempre
+    {
+        ChannelPitch ch;
+        ch.prepare (rate);
+        ch.pitchWheel (8192);
+        ch.controller (1, 0);
+        float buf[16];
+        CHECK (! ch.fill (buf, 16) && ch.atRest(), "wheel no meio e roda em 0: nenhum desvio (fill devolve false)");
+
+        SampleVoice a, b;
+        a.prepare (rate);
+        b.prepare (rate);
+        VoiceParams p;
+        p.pitchEnvSemis = 12.0f;
+        p.tuneSemis = 0.37f;
+        a.noteOn (root + 3, 0.9f, false, p);
+        b.noteOn (root + 3, 0.9f, false, p);
+        const auto plain = renderVoice (a, tone, rate, 0.5, [] (std::size_t) {});
+        const auto viaChannel = renderBent (b, ch, tone, rate, 0.5, [] (std::size_t) {});
+        CHECK (plain == viaChannel, "bend em 0: a saída é bit a bit a de antes (queda de tom e afinação incluídas)");
+    }
+
+    // 2) +2 st no alcance padrão = a nota 2 st acima, em Hz
+    {
+        ChannelPitch ch;
+        ch.prepare (rate);
+        ch.setRange (2.0f);
+        SampleVoice bent, up;
+        bent.prepare (rate);
+        up.prepare (rate);
+        VoiceParams p;
+        const int wheel = 16383;   // o curves::toWheel de +2 st em ±2
+        const auto out = renderBent (bent, ch, tone, rate, 1.0, [&] (std::size_t pos) {
+            if (pos == 0) { ch.pitchWheel (wheel); ch.noteStarts (true); bent.noteOn (root, 1.0f, false, p); } });
+        up.noteOn (root + 2, 1.0f, false, p);
+        const auto ref = renderVoice (up, tone, rate, 1.0, [] (std::size_t) {});
+        const double hz = steady (out), hzRef = steady (ref), expect = keyToHz (root + wheelSemis (wheel, 2.0));
+        CHECK (std::abs (hz - expect) < 0.05, "+2 st: %.3f Hz (esperado %.3f; o wheel de 14 bits fica 0,02 cent abaixo)", hz, expect);
+        CHECK (std::abs (hz - hzRef) < 0.05, "a nota com +2 st soa como a nota 2 st acima: %.3f e %.3f Hz", hz, hzRef);
+        CHECK (maxJump (out) < 0.03f, "sem salto de amplitude (maior salto %.4f)", maxJump (out));
+    }
+
+    // 3) o bend no meio da nota: rampa de 5 ms, sem salto, e chega ao tom pedido
+    {
+        ChannelPitch ch;
+        ch.prepare (rate);
+        float buf[512];
+        ch.pitchWheel (16383);
+        ch.fill (buf, 512);
+        const int ramp = (int) std::lround (ChannelPitch::rampMs * 0.001 * rate);
+        CHECK (buf[0] > 0.0f && buf[0] < 0.05f && std::abs (buf[ramp / 2 - 1] - 1.0f) < 0.02f && buf[ramp - 1] == (float) wheelSemis (16383, 2.0)
+                   && buf[511] == buf[ramp - 1],
+               "o valor novo chega numa rampa reta de %d amostras (5 ms) e para exato no alvo", ramp);
+
+        ch.pitchWheel (8192);   // de volta ao meio; no meio dessa rampa, outro valor parte de onde ela está
+        ch.fill (buf, 10);
+        const float mid = buf[9];
+        ch.pitchWheel (0);
+        ch.fill (buf, 1);
+        CHECK (buf[0] < mid && mid - buf[0] < 0.02f, "um valor novo no meio da rampa parte de onde ela está (%.4f -> %.4f)", mid, buf[0]);
+
+        SampleVoice v;
+        v.prepare (rate);
+        VoiceParams p;
+        ChannelPitch c2;
+        c2.prepare (rate);
+        const auto out = renderBent (v, c2, tone, rate, 1.0, [&] (std::size_t pos) {
+            if (pos == 0) { c2.noteStarts (true); v.noteOn (root, 1.0f, false, p); }
+            if (pos == 256 * 40) c2.pitchWheel (0); });   // -2 st com a nota soando
+        const double hz = measureHz (out, (std::size_t) (0.4 * rate), (std::size_t) (0.95 * rate), rate);
+        CHECK (std::abs (hz - keyToHz (root - 2)) < 0.05, "-2 st no meio da nota: %.3f Hz (esperado %.3f)", hz, keyToHz (root - 2));
+        CHECK (maxJump (out) < 0.03f, "sem salto de amplitude no bend do meio (maior salto %.4f)", maxJump (out));
+
+        // a nota nova pula a rampa: começa já no valor do canal
+        ch.reset();
+        ch.pitchWheel (0);
+        ch.noteStarts (false);
+        ch.fill (buf, 1);
+        CHECK (buf[0] == -2.0f, "a nota que chega junto com o valor começa nele, sem deslizar (%.3f)", buf[0]);
+        ch.reset();
+        CHECK (ch.atRest(), "reset (transporte parado, CC 121): o tom volta ao meio na hora");
+    }
+
+    // 4) o alcance: do canal e do RPN 0 que o MIDI exportado manda
+    {
+        ChannelPitch ch;
+        ch.prepare (rate);
+        ch.setRange (7.0f);
+        ch.pitchWheel (0);
+        ch.noteStarts (true);
+        float buf[4];
+        ch.fill (buf, 4);
+        CHECK (buf[0] == -7.0f, "alcance do canal 7: o wheel todo para baixo = -7 st (%.3f)", buf[0]);
+
+        for (auto [cc, value] : { std::pair { 101, 0 }, { 100, 0 }, { 6, 12 }, { 38, 0 }, { 101, 127 }, { 100, 127 } })
+            ch.controller (cc, value);
+
+        ch.noteStarts (false);
+        ch.fill (buf, 4);
+        CHECK (ch.getRange() == 12.0f && buf[0] == -12.0f, "o RPN 0 (CC 101/100 = 0, CC 6 = 12) troca o alcance: -12 st (%.3f)", buf[0]);
+        ch.controller (101, 0);
+        ch.controller (100, 1);   // RPN 1 (afinação fina): não é o alcance
+        ch.controller (6, 3);
+        CHECK (ch.getRange() == 12.0f, "outro RPN não mexe no alcance");
+        for (auto [cc, value] : { std::pair { 101, 0 }, { 100, 0 }, { 99, 1 }, { 98, 8 }, { 6, 5 } })
+            ch.controller (cc, value);
+        CHECK (ch.getRange() == 12.0f, "um NRPN depois do RPN 0 (sem o nulo) não vira alcance");
+        ch.setRange (std::numeric_limits<float>::quiet_NaN());
+        CHECK (ch.getRange() == ChannelPitch::defaultRange, "alcance NaN vira o padrão (2)");
+        ch.setRange (99.0f);
+        CHECK (ch.getRange() == ChannelPitch::maxRange, "alcance limitado a 24");
+
+        SampleVoice v;
+        v.prepare (rate);
+        ChannelPitch c2;
+        c2.prepare (rate);
+
+        for (auto [cc, value] : { std::pair { 101, 0 }, { 100, 0 }, { 6, 12 }, { 38, 0 } })
+            c2.controller (cc, value);
+
+        VoiceParams p;
+        const auto out = renderBent (v, c2, tone, rate, 1.0, [&] (std::size_t pos) {
+            if (pos == 0) { c2.pitchWheel (16383); c2.noteStarts (true); v.noteOn (root, 1.0f, false, p); } });
+        const double hz = steady (out), expect = keyToHz (root + wheelSemis (16383, 12.0));
+        CHECK (std::abs (hz - expect) < 0.1, "+12 st pelo RPN: %.3f Hz (esperado %.3f, a oitava acima)", hz, expect);
+    }
+
+    // 5) o mod wheel (CC1): vibrato de 5,5 Hz, ±0,5 st com a roda toda, proporcional à roda
+    {
+        ChannelPitch ch;
+        ch.prepare (rate);
+        ch.controller (1, 127);
+        ch.noteStarts (true);
+        std::vector<float> lfo ((std::size_t) rate);
+        ch.fill (lfo.data(), (int) lfo.size());
+        float lo = 0.0f, hi = 0.0f;
+        int ups = 0;
+
+        for (std::size_t i = 1; i < lfo.size(); ++i)
+        {
+            lo = std::min (lo, lfo[i]);
+            hi = std::max (hi, lfo[i]);
+            ups += lfo[i - 1] <= 0.0f && lfo[i] > 0.0f;
+        }
+
+        CHECK (std::abs (hi - 0.5f) < 1.0e-3f && std::abs (lo + 0.5f) < 1.0e-3f && lfo[0] == 0.0f,
+               "roda toda: o tom vai de %.3f a %.3f st, começando no tom da nota", lo, hi);
+        CHECK (ups == 6, "5,5 Hz: %d subidas em 1 s (a do começo e mais 5)", ups);
+
+        ch.controller (1, 64);
+        ch.fill (lfo.data(), (int) lfo.size());
+        hi = 0.0f;
+        for (std::size_t i = (std::size_t) rate / 10; i < lfo.size(); ++i) hi = std::max (hi, lfo[i]);
+        CHECK (std::abs (hi - 0.5f * 64.0f / 127.0f) < 2.0e-3f, "meia roda, meio vibrato (%.3f st)", hi);
+
+        ch.controller (1, 0);
+        ch.fill (lfo.data(), 512);
+        CHECK (ch.atRest(), "a roda volta a 0: o canal volta ao descanso (e a voz ao caminho de antes)");
+
+        // na voz: a frequência média continua a da nota
+        SampleVoice v;
+        v.prepare (rate);
+        ChannelPitch c2;
+        c2.prepare (rate);
+        VoiceParams p;
+        const auto out = renderBent (v, c2, tone, rate, 1.5, [&] (std::size_t pos) {   // antes do fim do sample (sem fade)
+            if (pos == 0) { c2.controller (1, 127); c2.noteStarts (true); v.noteOn (root, 1.0f, false, p); } });
+        const double hz = measureHz (out, 0, (std::size_t) (2.0 / 5.5 * rate), rate);   // 2 ciclos inteiros do LFO
+        CHECK (std::abs (hz - keyToHz (root)) < 0.15, "com vibrato a nota continua no tom dela, em média: %.3f Hz", hz);
+        CHECK (maxJump (out) < 0.03f, "sem salto de amplitude no vibrato (maior salto %.4f)", maxJump (out));
+    }
+
+    // 5b) depois de um bend, o wheel no meio devolve a nota ao tom dela (e o canal ao descanso)
+    {
+        SampleVoice v;
+        v.prepare (rate);
+        ChannelPitch c2;
+        c2.prepare (rate);
+        VoiceParams p;
+        bool rest = false;
+        const auto out = renderBent (v, c2, tone, rate, 1.0, [&] (std::size_t pos) {
+            if (pos == 0) { c2.pitchWheel (16383); c2.noteStarts (true); v.noteOn (root, 1.0f, false, p); }
+            if (pos == 256 * 40) c2.pitchWheel (8192);
+            if (pos == 256 * 60) rest = c2.atRest(); });
+        const double hz = measureHz (out, (std::size_t) (0.4 * rate), (std::size_t) (0.95 * rate), rate);
+        CHECK (rest && std::abs (hz - keyToHz (root)) < 0.05, "o wheel de volta ao meio: a nota volta a %.3f Hz e o canal ao descanso", hz);
+    }
+
+    // 5c) uma fatia com bend subindo no fade do fim ainda sai em zero, sem corte seco
+    {
+        SampleVoice v;
+        v.prepare (rate);
+        ChannelPitch c2;
+        c2.prepare (rate);
+        VoiceParams p;
+        p.regionStart = 0.0f;
+        p.regionEnd = 0.05f;   // 0,1 s do sample: o fade de 4 ms começa perto de 4560 amostras
+        std::vector<float> out (8192, 0.0f);
+        float offsets[64];
+
+        for (std::size_t pos = 0; pos < out.size(); pos += 64)
+        {
+            if (pos == 0) { c2.noteStarts (true); v.noteOn (root, 1.0f, false, p); }
+            if (pos == 4544) { c2.setRange (12.0f); c2.pitchWheel (16383); }   // +12 st bem no começo do fade
+            float* chans[] = { out.data() + pos };
+            v.render (tone, chans, 1, 64, c2.fill (offsets, 64) ? offsets : nullptr);
+        }
+
+        std::size_t last = 0;
+        for (std::size_t i = 0; i < out.size(); ++i) if (out[i] != 0.0f) last = i;
+        const float tail = peakIn (out, last - 7, last + 1);   // o seno vai a 0,5: o envelope no fim é tail / 0,5
+        CHECK (! v.isActive() && tail < 0.02f, "fatia com bend subindo no fade: as últimas 8 amostras vão até %.4f (sem corte seco)", tail);
+    }
+
+    // 6) o glide do 808 (mono, slide) com o bend: a nota de chegada mais o bend
+    {
+        const auto sub = makeTone (rate, keyToHz (36), 2.0, 36, 0.8f);
+        ChannelPitch ch;
+        ch.prepare (rate);
+        SampleVoice v;
+        v.prepare (rate);
+        VoiceParams p;
+        p.glideMs = 80.0f;
+        const auto out = renderBent (v, ch, sub, rate, 1.0, [&] (std::size_t pos) {
+            if (pos == 0) { ch.noteStarts (true); v.noteOn (36, 1.0f, false, p); }
+            if (pos == 256 * 20) { ch.pitchWheel (16383); ch.noteStarts (false); v.noteOn (43, 1.0f, true, p); } });
+        const double hz = measureHz (out, (std::size_t) (0.4 * rate), (std::size_t) (0.95 * rate), rate);
+        const double expect = keyToHz (43 + wheelSemis (16383, 2.0));
+        CHECK (std::abs (hz - expect) < 0.05, "slide de 36 a 43 com +2 st: %.3f Hz (esperado %.3f)", hz, expect);
+        CHECK (maxJump (out) < 0.03f, "sem salto de amplitude no slide com bend (maior salto %.4f)", maxJump (out));
+    }
+
+    // 7) WHYNOT Piano: a mesma conta; a zona sem keytrack (o martelo) não dobra; em descanso, igual ao de antes
+    {
+        std::vector<float> full, fullHammer;
+        PianoSet set;
+        set.zones.push_back (sineZone (440.0, 69, 44100, 44100, full));   // tudo na memória: sem streamer
+        set.zones.push_back (sineZone (440.0, 69, 44100, 44100, fullHammer));
+        set.zones[1].keyTrack = 0.0f;
+        set.buildTables();
+
+        auto play = [&] (int zone, int key, const float* offset)
+        {
+            PianoVoice v;
+            VoiceStream stream;
+            v.prepare (rate);
+            v.start (set, zone, key, 1.0f, 0.0f, 1.0f, stream, 1);
+            std::vector<float> l ((std::size_t) (0.8 * rate)), r (l.size());
+            std::uint32_t miss = 0;
+
+            for (std::size_t pos = 0; pos < l.size(); pos += 256)
+            {
+                float* outs[] = { l.data() + pos, r.data() + pos };
+                v.render (set, stream, outs, 2, (int) std::min<std::size_t> (256, l.size() - pos), miss, offset);
+            }
+
+            return l;
+        };
+
+        std::vector<float> plus2 (256, (float) wheelSemis (16383, 2.0)), zeros (256, 0.0f);
+        const auto bent = play (0, 69, plus2.data());
+        const auto up = play (0, 71, nullptr);
+        const double hz = measureHz (bent, 4800, 33600, rate), hzUp = measureHz (up, 4800, 33600, rate);
+        CHECK (std::abs (hz - hzUp) < 0.05 && std::abs (hz - keyToHz (69 + wheelSemis (16383, 2.0))) < 0.05,
+               "piano +2 st: %.3f Hz, a tecla 2 acima: %.3f Hz", hz, hzUp);
+        CHECK (play (0, 69, zeros.data()) == play (0, 69, nullptr), "piano com desvio 0: bit a bit o de antes");
+        CHECK (play (1, 69, plus2.data()) == play (1, 69, nullptr), "a zona sem keytrack (o martelo) não dobra");
+    }
+}
+
 int main (int argc, char* argv[])
 {
     testGlide (argc > 1 ? argv[1] : nullptr);
@@ -1387,6 +1692,7 @@ int main (int argc, char* argv[])
     testSlideVelocityAndSteal();
     testSlotAcrossThreads();
     testPianoStreaming();
+    testPitchWheel();
 
     std::printf (failures == 0 ? "\nTODOS OS TESTES PASSARAM\n" : "\n%d TESTE(S) FALHARAM\n", failures);
     return failures == 0 ? 0 : 1;

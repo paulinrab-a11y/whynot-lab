@@ -21,6 +21,14 @@ namespace
 
     double nowSeconds()   { return juce::Time::getMillisecondCounterHiRes() / 1000.0; }
 
+    /** Enquanto existe, o registro recusa o comando que mexeria num bloco travado (29/10): vale só para o que a IA roda. */
+    struct ScopedLockGuard
+    {
+        explicit ScopedLockGuard (CommandRegistry& r) : registry (r)   { registry.vetoChange = lockedItemsVeto; }
+        ~ScopedLockGuard()                                               { registry.vetoChange = nullptr; }
+        CommandRegistry& registry;
+    };
+
     juce::var object (std::initializer_list<std::pair<const char*, juce::var>> fields)
     {
         auto* o = new juce::DynamicObject();
@@ -1276,6 +1284,7 @@ juce::String ControlServer::runGated (const Request& request, const juce::String
     {
         // um passo de desfazer próprio, com o nome que você vê no menu: "IA: <título>"
         CommandRegistry::ScopedGesture gesture (registry, aiPrefix + info->title);
+        const ScopedLockGuard locked (registry);
         result = registry.run (id, params);
     }
     else
@@ -1463,6 +1472,7 @@ juce::String ControlServer::runBatch (const Request& request)
         gated.add (object ({ { "id", id }, { "params", gate.params } }));
     }
 
+    const ScopedLockGuard locked (registry);
     const auto result = registry.runBatch (gated, aiPrefix + title);
     outcome = result.ok ? juce::String ("ok") : "erro: "_t + result.error;
     return rpcResult (request.id, describeResult (result, app));

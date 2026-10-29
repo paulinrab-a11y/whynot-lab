@@ -182,6 +182,34 @@ juce::String checkParamLimits (const juce::var& params)
     return limitsIn (params, 0);
 }
 
+juce::String lockedItemsVeto (const Project& before, const Project& after)
+{
+    for (const auto& was : before.playlistItems)
+    {
+        if (! was.locked)
+            continue;
+
+        const auto* now = after.findItem (was.id);
+        juce::String what;
+
+        if (now == nullptr)
+            what = "apagaria"_t;
+        else if (! now->locked)
+            what = "destravaria"_t;
+        else if (now->start != was.start || now->track != was.track)
+            what = "moveria"_t;
+        else if (now->length != was.length || now->offsetSeconds != was.offsetSeconds || now->patternOffset != was.patternOffset
+                 || now->stretch != was.stretch)
+            what = "apararia ou cortaria"_t;
+
+        if (what.isNotEmpty())
+            return "O bloco "_t + was.id + " está travado, e o comando o " + what
+                   + ". A pessoa destrava pela tela (Propriedades do bloco ou o menu dele); ganho, fades, tom e mudo podem mudar travado."_t;
+    }
+
+    return {};
+}
+
 GateDecision evaluate (const juce::String& commandId, const juce::var& params, AppController& app, const AllowedFolders& folders)
 {
     const auto& rule = ruleFor (utf8 (commandId));

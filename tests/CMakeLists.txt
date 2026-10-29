@@ -187,3 +187,52 @@ else()
 endif()
 
 add_test(NAME notetune COMMAND whynot_notetune_tests)
+
+# Desempenho (29/10, frente Desempenho): custo por bloco dos efeitos nativos, da afinação, das vozes do sampler e do
+# WHYNOT Synth, e nenhuma alocação no process. O ctest roda só as checagens (--check); sem argumento, imprime a tabela.
+add_executable(whynot_rt_bench
+    perf/bench_rt.cpp
+    ../src/dsp/Color.cpp
+    ../src/dsp/Console.cpp
+    ../src/dsp/Denoise.cpp
+    ../src/dsp/DynamicEq.cpp
+    ../src/dsp/Dynamics.cpp
+    ../src/dsp/Enhance.cpp
+    ../src/dsp/EqProcessor.cpp
+    ../src/dsp/FxCatalog.cpp
+    ../src/dsp/FxHost.cpp
+    ../src/dsp/Gate.cpp
+    ../src/dsp/Grit.cpp
+    ../src/dsp/LoudnessMeter.cpp
+    ../src/dsp/Master.cpp
+    ../src/dsp/Modulation.cpp
+    ../src/dsp/Multiband.cpp
+    ../src/dsp/NoteTune.cpp
+    ../src/dsp/PitchDetect.cpp
+    ../src/dsp/Space.cpp
+    ../src/dsp/Tune.cpp
+    ../src/dsp/Vintage.cpp
+    ../src/dsp/Vocal.cpp
+    ../src/dsp/VoicePitch.cpp
+    ../src/synth/Presets3Osc.cpp
+    ../src/synth/Presets808Bass.cpp
+    ../src/synth/PresetsFinal.cpp
+    ../src/synth/PresetsGenres.cpp
+    ../src/synth/PresetsKeys.cpp
+    ../src/synth/PresetsLeads.cpp
+    ../src/synth/PresetsMore.cpp
+    ../src/synth/PresetsPads.cpp
+    ../src/synth/Synth.cpp
+    ../src/synth/SynthMeasure.cpp
+    ../src/synth/SynthParams.cpp
+    ../src/synth/SynthPresets.cpp
+    ../src/synth/Wavetables.cpp)
+target_compile_features(whynot_rt_bench PRIVATE cxx_std_20)
+
+if(MSVC)
+    target_compile_options(whynot_rt_bench PRIVATE /W4 /utf-8 /O2)
+else()
+    target_compile_options(whynot_rt_bench PRIVATE -Wall -Wextra -O2)
+endif()
+
+add_test(NAME rt_bench COMMAND whynot_rt_bench --check)

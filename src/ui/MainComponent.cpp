@@ -773,6 +773,11 @@ void MainComponent::timerCallback()
     const bool playing = app.isPlaying();
     playlist.setNeedle (! playing && p.songMode ? app.playStart() : -1);
 
+    // o começo do play no PAT (29/10): a marca na régua do piano roll e sobre os passos do rack
+    const int patternStart = p.songMode ? -1 : app.patternStart();
+    rack.setPatternStart (patternStart);
+    pianoRoll.getGrid().setPatternStart (patternStart);
+
     // a gravação avisa (passou para o SONG, nada armado, take curto...): vai para a barra de status
     if (auto* rec = app.recorder(); rec != nullptr && rec->messageSerial() != recordMessageSerial)
     {
@@ -1084,6 +1089,23 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (auto it = actions.find (id); id.isNotEmpty() && it != actions.end())
     {
         it->second();
+        return true;
+    }
+
+    // Alt+← e Alt+→ no PAT, com o rack ou o piano roll na tela (29/10): o começo do play anda um tempo, como o Alt+setas
+    // da playlist pula a agulha de marcador em marcador
+    if (const bool left = key == juce::KeyPress (juce::KeyPress::leftKey, juce::ModifierKeys::altModifier, 0);
+        (left || key == juce::KeyPress (juce::KeyPress::rightKey, juce::ModifierKeys::altModifier, 0))
+        && showUpper && (view == View::pianoRoll || view == View::channelRack) && ! app.getModel().get().songMode)
+    {
+        // um tempo para trás (o tempo inteiro antes; no meio de um tempo, o começo dele) ou para a frente
+        const int now = app.patternStart();
+        const int target = left ? (now <= 0 ? 0 : (now - 1) / ticksPerBeat * ticksPerBeat) : (now / ticksPerBeat + 1) * ticksPerBeat;
+        const auto* pat = app.getModel().get().currentPatternPtr();
+
+        if (pat != nullptr && target >= 0 && target < pat->lengthTicks())
+            runCommand ("transport.setPatternStart", args ({ { "at", target } }));
+
         return true;
     }
 

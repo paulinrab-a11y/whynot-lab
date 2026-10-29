@@ -108,6 +108,10 @@ CommandResult CommandRegistry::run (const juce::String& id, const juce::var& p)
         auto result = cmd->run (ctx, p);
         wnl::normalise (model.data());
 
+        if (result.ok && vetoChange && ! (model.get() == previous))
+            if (const auto why = vetoChange (previous, model.get()); why.isNotEmpty())
+                result = CommandResult::fail (why);
+
         if (! result.ok)
         {
             if (! (model.get() == previous))
@@ -128,9 +132,18 @@ CommandResult CommandRegistry::run (const juce::String& id, const juce::var& p)
         app.captureLivePluginStates();
 
     const auto before = wnl::toJson (model.get());
+    std::optional<Project> previous;
+
+    if (vetoChange)
+        previous = model.get();
+
     auto result = cmd->run (ctx, p);
     wnl::normalise (model.data());
     const auto after = wnl::toJson (model.get());
+
+    if (result.ok && previous.has_value() && before != after)
+        if (const auto why = vetoChange (*previous, model.get()); why.isNotEmpty())
+            result = CommandResult::fail (why);
 
     if (! result.ok)
     {

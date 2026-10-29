@@ -464,6 +464,7 @@ Tamanhos:
 | problema | contorno `meterHigh` + ícone de aviso na barra de status |
 | gravando agora (REC, armar) | fundo e tinta `meterHigh`, piscando a cada meio segundo |
 | congelado | floco na placa do nome; o botão do floco com a pílula neutra |
+| caixa de marcar de estado que não soa (mudo, travado) | visto branco (`text`), não laranja (revisão de 28/10) |
 
 ## 7. Ao criar uma tela nova
 
@@ -474,7 +475,12 @@ Tamanhos:
 4. Laranja só como no princípio 3. Teste em escala de cinza: a hierarquia tem de continuar clara.
 5. Nada de tamanho solto: use `metric`, `type` e a escala 4/8/12/16/24 (2 px só entre botões irmãos).
 6. Texto com acento usa o sufixo `"..."_t`.
-7. Para ler pixel de uma imagem (teste, captura), use `juce::SoftwareImageType()` e feche o `Graphics` antes de ler.
+7. Diálogo com uma ação: Cancelar com o texto `textDim`, a ação com o texto branco, os dois com 32 px. A altura do
+   cartão é a soma das linhas do `resized()`, nunca um número solto (revisão de 28/10: os botões saíam achatados).
+8. Marcas pequenas dizem a unidade: "50%" (chance), "+2 st" (tom), "-3 ct" (cents), "-3,5 dB". Números com vírgula.
+   O que não cabe some inteiro (vira um ponto), e o nome do bloco tem prioridade sobre as marcas.
+9. Na régua, a bandeirinha do marcador fica por cima; o número do compasso anda para depois dela, ou some se não couber.
+10. Para ler pixel de uma imagem (teste, captura), use `juce::SoftwareImageType()` e feche o `Graphics` antes de ler.
    No Windows, a imagem nativa fica no Direct2D, e a leitura com o desenho aberto trava.
 
 ## 8. Galeria (autoteste)

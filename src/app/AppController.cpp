@@ -436,6 +436,7 @@ AppController::AppController (bool isHeadless, const juce::File& requestedDataFo
     registerPitchBendCommands (registry);
     registerPlaylistEditCommands (registry);
     registerNoteTuneCommands (registry);   // afinação nota a nota (27/10)
+    registerGrooveCommands (registry);     // swing e começo do play no PAT (29/10)
 
     // Prévia do navegador de sons: depende do player daqui, então o comando mora aqui.
     registry.add ({ "browser.preview", "Ouvir prévia"_t,
@@ -693,7 +694,7 @@ void AppController::play()
 
     // A agulha (ou a seleção de tempo) no SONG; o começo do padrão no PAT. Gravando com contagem, o
     // transporte começa N compassos antes, mais meio tempo: o clique sai só no primeiro tempo cheio.
-    auto plan = startPlan (willRecord ? recording->settings().countInBars : 0);
+    auto plan = startPlan (willRecord ? recording->settings().countInBars : 0, willRecord);
     double halfBeat = plan.countIn > 0.0 ? 30.0 / juce::jmax (1.0, model.get().bpm) : 0.0;
     double transportStart = plan.playFrom - halfBeat;
 
@@ -771,6 +772,24 @@ void AppController::setPlayStart (int ticks)
         transport.setPosition (te::TimePosition::fromSeconds (ticksToSeconds (needleTicks, model.get().bpm)));
 }
 
+void AppController::setPatternStart (int ticks)
+{
+    const auto* pat = model.get().currentPatternPtr();
+    patternStartFor = pat != nullptr ? pat->id : juce::String();
+    patternStartTicks = pat != nullptr ? juce::jlimit (0, juce::jmax (ticksPerStep, pat->lengthTicks()) - 1, ticks) : 0;
+
+    // como a agulha do SONG: parado, o transporte já fica no ponto; tocando o padrão, pula para ele
+    if (! model.get().songMode)
+        edit->getTransport().setPosition (te::TimePosition::fromSeconds (ticksToSeconds (patternStartTicks, model.get().bpm)));
+}
+
+int AppController::patternStart() const
+{
+    // vale só no padrão em que foi marcado, e dentro dele (o padrão pode ter encolhido)
+    const auto* pat = model.get().currentPatternPtr();
+    return pat != nullptr && pat->id == patternStartFor && patternStartTicks < pat->lengthTicks() ? patternStartTicks : 0;
+}
+
 int AppController::countInBeatsLeft() const
 {
     if (recording == nullptr || ! recording->isRecording())
@@ -806,14 +825,15 @@ juce::Range<int> AppController::songSelection() const
     return model.get().songMode && timeSelection.getLength() > 0 ? timeSelection : juce::Range<int>();
 }
 
-record::StartPlan AppController::startPlan (int countInBars) const
+record::StartPlan AppController::startPlan (int countInBars, bool forTake) const
 {
     const auto& p = model.get();
     const double barSeconds = ticksToSeconds (juce::jmax (1, p.timeSigNum) * ticksPerBar4 / juce::jmax (1, p.timeSigDen), p.bpm);
 
-    // PAT: o padrão em loop, do começo; o take dura o que a pessoa gravar (o padrão vai junto para a playlist)
+    // PAT: o padrão em loop, do começo do play que a pessoa marcou (29/10; o loop dá a volta no padrão inteiro).
+    // Gravando, do começo do padrão: o take dura o que a pessoa gravar (o padrão vai junto para a playlist).
     if (! p.songMode)
-        return record::planStart (0.0, 0.0, 0.0, record::noLimit, countInBars, barSeconds);
+        return record::planStart (forTake ? 0.0 : ticksToSeconds (patternStart(), p.bpm), 0.0, 0.0, record::noLimit, countInBars, barSeconds);
 
     // Gravando no SONG sem seleção, a música passa do fim em vez de voltar (applyTransportLoop), como
     // no FL: o take segue. Com seleção e o loop ligado, o take vale até a volta.
@@ -902,6 +922,7 @@ juce::Result AppController::newProject()
 {
     cancelMidiLearn();
     needleTicks = 0;
+    patternStartTicks = 0;
     timeSelection = {};
     stop();
     stopAudition();
@@ -970,6 +991,26 @@ namespace
             }
         }
 
+        // o arquivo próprio de um bloco (o consolidado, playlist fatia 6): pelo nome, em samples/ e na pasta do projeto
+        for (auto& i : p.playlistItems)
+        {
+            const auto current = juce::File::isAbsolutePath (i.file) ? juce::File (i.file) : projectFolder.getChildFile (i.file);
+            const auto name = i.file.fromLastOccurrenceOf ("/", false, false).fromLastOccurrenceOf ("\\", false, false);
+
+            if (i.file.isEmpty() || current.existsAsFile() || name.isEmpty())
+                continue;
+
+            for (auto& f : { projectFolder.getChildFile ("samples").getChildFile (name), projectFolder.getChildFile (name) })
+            {
+                if (f.existsAsFile())
+                {
+                    i.file = (f.isAChildOf (projectFolder) ? f.getRelativePathFrom (projectFolder) : f.getFullPathName()).replaceCharacter ('\\', '/');
+                    ++found;
+                    break;
+                }
+            }
+        }
+
         for (auto& c : p.channels)
         {
             if (c.samplePath.isEmpty())
@@ -1022,6 +1063,7 @@ juce::Result AppController::openProject (const juce::File& file)
         return result;
 
     needleTicks = 0;
+    patternStartTicks = 0;
     timeSelection = {};
     relinkMissingSamples (loaded, file.getParentDirectory(), getKitFolder());
 
@@ -2202,6 +2244,10 @@ juce::File AppController::autosaveNow()
             if (l.samplePath.isNotEmpty() && ! juce::File::isAbsolutePath (l.samplePath))
                 l.samplePath = model.resolveSample (l.samplePath).getFullPathName().replaceCharacter ('\\', '/');
     }
+
+    for (auto& i : copy.playlistItems)   // o arquivo próprio do bloco (o consolidado, playlist fatia 6)
+        if (i.file.isNotEmpty() && ! juce::File::isAbsolutePath (i.file))
+            i.file = model.resolveSample (i.file).getFullPathName().replaceCharacter ('\\', '/');
 
     auto saved = target;
 

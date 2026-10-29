@@ -64,10 +64,10 @@ namespace
         if (type == "tune")
             return { { "NOTAS", { "key", "scale", "follow:DO PROJETO" } }, { "AFINAÇÃO", { "reference:LÁ EM", "fine:FINO" } },
                      { "CORREÇÃO", { "speed", "amount", "humanize" } }, { "TIMBRE", { "formant" } },
-                     { "HARMONIA", { "harmony:VOZ", "harmonyLevel:NÍVEL" } }, { "GUIA", { "guide:SEGUIR" } },
-                     { "VOZ", { "range", "mix" } } };
+                     { "HARMONIA", { "harmony:INTERVALO", "harmonyLevel:NÍVEL" } }, { "GUIA", { "guide:SEGUIR" } },
+                     { "VOZ", { "range:TIPO", "mix" } } };
         if (type == "voicepitch")
-            return { { "TOM", { "semitones", "formant" } }, { "VOZ", { "range", "mix" } } };
+            return { { "TOM", { "semitones", "formant" } }, { "VOZ", { "range:TIPO", "mix" } } };
         if (type == "harmony")
             return { { "NOTAS", { "key", "scale", "follow:DO PROJETO" } }, { "VOZES", { "voices", "formant", "level:NÍVEL", "width" } } };
         if (type == "gate")
@@ -103,13 +103,13 @@ namespace
         if (type == "dynEq")
             return { { "BANDA 1", { "b1On:LIGA", "b1Freq:FREQ.", "b1Q:Q", "b1Thr:LIMIAR", "b1Range:FAIXA" } },
                      { "BANDA 2", { "b2On:LIGA", "b2Freq:FREQ.", "b2Q:Q", "b2Thr:LIMIAR", "b2Range:FAIXA" } },
-                     { "TEMPO", { "ratio", "attack", "release" } }, { "SAÍDA", { "output" } } };
+                     { "TEMPO", { "ratio", "attack", "release" } }, { "SAÍDA", { "output:GANHO" } } };
         if (type == "clipper")
-            return { { "CORTE", { "gain", "ceiling", "softness" } }, { "SAÍDA", { "output" } } };
+            return { { "CORTE", { "gain", "ceiling", "softness" } }, { "SAÍDA", { "output:GANHO" } } };
         if (type == "lofi")
             return { { "DIGITAL", { "bits", "rate" } }, { "FITA", { "wow", "noise" } }, { "SAÍDA", { "tone", "mix" } } };
         if (type == "chorus")
-            return { { "MOVIMENTO", { "rate", "depth", "delay" } }, { "CÓPIAS", { "voices", "width", "tone:BRILHO" } }, { "SAÍDA", { "mix" } } };
+            return { { "MOVIMENTO", { "rate", "depth", "delay" } }, { "CÓPIAS", { "voices:QUANTAS", "width", "tone:BRILHO" } }, { "SAÍDA", { "mix" } } };
         if (type == "flanger")
             return { { "MOVIMENTO", { "rate", "depth", "delay" } }, { "COR", { "feedback", "stereo" } }, { "SAÍDA", { "mix" } } };
         if (type == "phaser")
@@ -126,6 +126,7 @@ namespace
 
     constexpr int cellW = ParamControl::cellWidth, cellH = ParamControl::cellHeight;
     constexpr int maxCellsInRow = 9;
+    constexpr int stackGap = 14;   // entre células empilhadas: o valor de uma não encosta no nome da de baixo (revisão 28/10)
 }
 
 FxEditor::FxEditor (AppController& a, WhynotFxPlugin& p)
@@ -209,7 +210,7 @@ FxEditor::FxEditor (AppController& a, WhynotFxPlugin& p)
 
     const bool columns = cells > maxCellsInRow;
     const int contentWidth = columns ? (int) groups.size() * (cellW + 8) : cells * cellW + ((int) groups.size() - 1) * 16;
-    const int contentHeight = groupTitle + (columns ? rows : 1) * cellH;
+    const int contentHeight = groupTitle + (columns ? rows * cellH + (rows - 1) * stackGap : cellH);
     const int visualHeight = visual != nullptr ? FxVisual::heightFor (plugin.getFxType()) + theme::metric::gap : 0;
 
     setSize (juce::jmax (info.sidechain ? 720 : 600, contentWidth + 2 * theme::metric::pad),
@@ -703,7 +704,7 @@ void FxEditor::resized()
             for (auto* c : grp.controls)
             {
                 c->setBounds (x + 4, y, cellW, cellH);
-                y += cellH;
+                y += cellH + stackGap;
             }
 
             x += cellW + 8;

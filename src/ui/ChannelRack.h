@@ -24,6 +24,13 @@ public:
 
     void refresh (const Project&);
     void setPlayheadStep (int step);
+    /** O começo do play no PAT (29/10), em ticks dentro do padrão; a marca fica sobre o passo (só quando não é o
+        começo). -1 esconde (no SONG). */
+    void setPatternStart (int ticks);
+    /** O swing global (29/10), o knob no topo: um gesto de desfazer por arrasto. Público para o autoteste. */
+    juce::Slider& getSwingKnob() noexcept   { return swingKnob; }
+    /** O ponto da faixa de cima dos passos que marca o começo do play no passo `step` (autoteste). */
+    juce::Point<int> stepRulerPoint (int step) const;
     void setSelectedChannel (const juce::String&);
     int getIdealHeight() const;
 
@@ -62,7 +69,7 @@ public:
 private:
     struct Hit
     {
-        enum class Kind { none, mute, arm, tape, output, step, notes, addButton, lengthBox } kind = Kind::none;
+        enum class Kind { none, mute, arm, tape, output, step, notes, addButton, lengthBox, stepRuler } kind = Kind::none;
         int row = -1;
         int step = -1;
     };
@@ -106,6 +113,9 @@ private:
     void paintNotesPreview (juce::Graphics&, int row);
     juce::Rectangle<int> addButtonBounds() const;
     juce::Rectangle<int> lengthBounds() const;
+    juce::Rectangle<int> swingBounds() const;       // o knob do swing global e o texto ao lado
+    juce::Rectangle<int> stepRulerBounds() const;   // a faixa dos números dos tempos: o clique marca o começo do play
+    int stepAtX (int x) const;
 
     void setStep (int row, int step, bool on);
     void showTapeMenu (int row);
@@ -128,6 +138,10 @@ private:
     int numSteps = 16;
     int patternTicks = 16 * ticksPerStep;
     int playhead = -1;
+    int startTicks = -1;          // o começo do play no PAT (-1 = SONG)
+    float swing = 0.0f;           // o swing global, para o texto ao lado do knob
+    juce::Slider swingKnob { juce::Slider::RotaryHorizontalVerticalDrag, juce::Slider::NoTextBox };
+    bool swingDragging = false;
     int stepsLeft = 0, stepSize = 30;
     Hit hover;
     int selectedRow = -1;

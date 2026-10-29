@@ -1,6 +1,7 @@
 #include "Projector.h"
 #include "../record/Takes.h"
 #include "../record/ReversedAudio.h"
+#include "../record/BlockFile.h"
 #include "../record/NoteTuneFiles.h"
 #include "../automation/AutomationTarget.h"
 #include "../model/NoteCurves.h"
@@ -8,6 +9,7 @@
 #include "../plugins/PluginCatalog.h"
 #include "../dsp/Master.h"
 
+#include <map>
 #include <tuple>
 
 // O esticar do áudio (PlaylistItem::stretch) usa o signalsmith-stretch do Tracktion, ligado no CMakeLists.txt.
@@ -236,19 +238,64 @@ bool Projector::usesChance (const Pattern& pattern)
     return false;
 }
 
-bool Projector::chanceHits (int chance, int seed, const juce::String& channelId, int stepIndex, int rollIndex, int loopIndex)
+namespace
 {
-    if (chance >= 100)
-        return true;
-
-    // splitmix64 sobre os números do passo: sem estado, o mesmo resultado no play, no export e no MIDI
-    auto mix = [] (std::uint64_t z)
+    // splitmix64: sem estado, o mesmo resultado no play, no export e no MIDI
+    std::uint64_t mix (std::uint64_t z) noexcept
     {
         z += 0x9e3779b97f4a7c15ull;
         z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
         z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
         return z ^ (z >> 31);
-    };
+    }
+}
+
+bool Projector::humanizes (const Project& p)
+{
+    return std::any_of (p.channels.begin(), p.channels.end(), [] (const Channel& c) { return c.humanize > 0.0f; });
+}
+
+int Projector::swingWarp (int tick, int delayTicks) noexcept
+{
+    if (delayTicks == 0)
+        return tick;
+
+    // dentro da colcheia (dois passos): 0 fica, o meio vai para meio + atraso, o fim (a próxima colcheia) fica
+    constexpr int cell = 2 * ticksPerStep, half = ticksPerStep;
+    const int d = juce::jlimit (0, half - 1, delayTicks);
+    const int base = (tick >= 0 ? tick / cell : -((-tick + cell - 1) / cell)) * cell;
+    const int u = tick - base;
+    const double warped = u <= half ? (double) u * (half + d) / half
+                                    : (double) (half + d) + (double) (u - half) * (half - d) / half;
+    return base + juce::roundToInt (warped);
+}
+
+void Projector::humanizeOffsets (float amount, int seed, const juce::String& channelId, int index, int loopIndex, int& ticks,
+                                 int& velocity) noexcept
+{
+    ticks = velocity = 0;
+
+    if (! (amount > 0.0f))
+        return;
+
+    const double a = juce::jlimit (0.0, 1.0, (double) amount / 100.0);
+    const int maxTicks = juce::roundToInt (a * 40.0), maxVelocity = juce::roundToInt (a * 20.0);   // a escala do Editar > Humanizar
+
+    std::uint64_t h = mix ((std::uint64_t) (std::uint32_t) seed ^ 0x6875u);   // "hu": outro sorteio que o da chance
+    h = mix (h ^ (std::uint64_t) (std::uint32_t) channelId.hashCode());
+    h = mix (h ^ (std::uint64_t) (std::uint32_t) index);
+    h = mix (h ^ (std::uint64_t) (std::uint32_t) loopIndex);
+
+    // dois números de 0 a 1 tirados do mesmo sorteio (32 bits cada); de -max a +max
+    const double r1 = (double) (h & 0xffffffffull) / 4294967295.0, r2 = (double) (h >> 32) / 4294967295.0;
+    ticks = juce::roundToInt ((r1 * 2.0 - 1.0) * maxTicks);
+    velocity = juce::roundToInt ((r2 * 2.0 - 1.0) * maxVelocity);
+}
+
+bool Projector::chanceHits (int chance, int seed, const juce::String& channelId, int stepIndex, int rollIndex, int loopIndex)
+{
+    if (chance >= 100)
+        return true;
 
     std::uint64_t h = mix ((std::uint64_t) (std::uint32_t) seed);
     h = mix (h ^ (std::uint64_t) (std::uint32_t) channelId.hashCode());
@@ -287,7 +334,7 @@ std::vector<Note> Projector::notesFor (const Project& p, const Pattern& pattern,
     if (auto it = pattern.steps.find (channel.id); it != pattern.steps.end())
     {
         const auto& steps = it->second;
-        const int swing = channel.swingTicks();   // passos ímpares atrasam (swing do canal)
+        const int swing = p.stepSwingTicks (channel);   // passos ímpares atrasam (o swing global mais o do canal)
 
         for (size_t i = 0; i < steps.size(); ++i)
         {
@@ -324,10 +371,20 @@ std::vector<Note> Projector::notesFor (const Project& p, const Pattern& pattern,
     const size_t stepNotes = base.size();
     const bool anyChance = std::any_of (origin.begin(), origin.end(), [] (const Origin& o) { return o.chance < 100; });
 
+    // o swing das notas (29/10) entra só aqui: o modelo continua com as notas na grade
+    const int noteSwing = Channel::swingTicksFor (channel.noteSwing);
+
     if (auto* notes = pattern.notesFor (channel.id))
-        for (auto& n : *notes)
+        for (auto n : *notes)
             if (! n.muted)   // nota muda (Alt+M) não toca nem sai no MIDI
             {
+                if (noteSwing > 0)
+                {
+                    const int start = swingWarp (n.start, noteSwing), end = swingWarp (n.end(), noteSwing);
+                    n.start = start;
+                    n.length = juce::jmax (1, end - start);
+                }
+
                 base.push_back (n);
                 origin.push_back ({});
             }
@@ -359,6 +416,17 @@ std::vector<Note> Projector::notesFor (const Project& p, const Pattern& pattern,
             }
 
             n.start += offset;
+
+            // humanizar (29/10): cada nota de cada volta anda um pouco e muda a força, com o sorteio fixo
+            if (channel.humanize > 0.0f)
+            {
+                int dt = 0, dv = 0;
+                // a chave é o passo (e a repetição do roll) ou o id da nota: mexer numa nota não sorteia as outras de novo
+                const int key = b < stepNotes ? origin[b].step * 8 + origin[b].roll : 0x100000 + base[b].id;
+                humanizeOffsets (channel.humanize, seed, channel.id, key, loop, dt, dv);
+                n.start = juce::jmax (0, n.start + dt);
+                n.velocity = juce::jlimit (1, 127, n.velocity + dv);
+            }
 
             if (n.start >= lengthTicks)
                 continue;
@@ -523,6 +591,35 @@ void Projector::syncChannels (const Project& p, const juce::File& projectFolder)
         }
     }
 
+    // Por sync (desempenho, 29/10): os crossfades de todos os blocos de uma vez, e o que já se perguntou ao disco neste
+    // sync guardado pelo caminho. A voz picotada tem centenas de blocos do mesmo arquivo, e cada um perguntava de novo
+    // se ele existe (e a data, na cópia estéreo do pan), a cada mudança do projeto. Dentro de um sync a resposta é a
+    // mesma; no próximo, pergunta de novo (um arquivo que sumiu continua sendo avisado).
+    std::vector<playlistedit::Crossfade> crossfades;
+    bool crossfadesReady = false;
+    std::map<juce::String, bool> existsSeen;
+    std::map<juce::String, juce::String> playedSeen, stereoSeen;
+
+    auto exists = [&existsSeen] (const juce::File& f)
+    {
+        auto [it, isNew] = existsSeen.try_emplace (f.getFullPathName(), false);
+
+        if (isNew)
+            it->second = f.existsAsFile();
+
+        return it->second;
+    };
+
+    auto remembered = [] (std::map<juce::String, juce::String>& seen, const juce::String& key, auto&& compute) -> const juce::String&
+    {
+        auto it = seen.find (key);
+
+        if (it == seen.end())
+            it = seen.emplace (key, compute()).first;
+
+        return it->second;
+    };
+
     for (auto& c : p.channels)
     {
         auto& b = channels[c.id];
@@ -567,32 +664,59 @@ void Projector::syncChannels (const Project& p, const juce::File& projectFolder)
 
         if (c.isAudio())
         {
-            if (! file.existsAsFile())
+            if (! exists (file))
                 problems.set (c.id, "Arquivo de áudio não encontrado: "_t + resolved);
 
+            if (songMode && ! crossfadesReady)
+            {
+                crossfades = playlistedit::autoCrossfades (p);
+                crossfadesReady = true;
+            }
+
+            const bool tuneEdited = notetune::anyEdited (c.tunedNotes);   // percorre as notas: uma vez por canal
+
             if (songMode)
-                for (auto& item : p.playlistItems)
-                    if (item.kind == "audio" && item.ref == c.id && p.itemSounds (item))   // o bloco e a raia (bloco 4)
+                for (size_t itemIndex = 0; itemIndex < p.playlistItems.size(); ++itemIndex)
+                    if (const auto& item = p.playlistItems[itemIndex];
+                        item.kind == "audio" && item.ref == c.id && p.itemSounds (item))   // o bloco e a raia (bloco 4)
                     {
                         const auto edges = takes::edges (p, item);   // comping: o crossfade no corte entre takes
                         // o reverso do bloco (voz na playlist, 27/10) toca o arquivo invertido ao lado, sem canal novo
                         // a afinação nota a nota (27/10) toca o arquivo refeito ao lado, que nunca muda o original
-                        const auto played = item.reversed ? reversed::playedFile (file, true).getFullPathName()
-                                                          : notetune::playedFile (file, c.tunedNotes, c.tuneFormantFollows).getFullPathName();
+                        // o arquivo próprio do bloco (playlist fatia 6, 27/10 noite: o consolidado ao lado, sem canal novo)
+                        // já tem a afinação dentro; o reverso vale nele também
+                        const auto own = item.file.isEmpty() ? juce::File()
+                                                             : juce::File::isAbsolutePath (item.file) ? juce::File (item.file)
+                                                                                                      : projectFolder.getChildFile (item.file);
+                        // (cada um calculado uma vez por sync: o arquivo invertido e o refeito são os mesmos para todos
+                        // os blocos do canal; a chave do refeito é o canal, porque depende das notas afinadas dele)
+                        const auto played = own != juce::File()
+                            ? remembered (playedSeen, own.getFullPathName() + (item.reversed ? "\n1" : "\n0"),
+                                          [&] { return reversed::playedFile (own, item.reversed).getFullPathName(); })
+                            : item.reversed ? remembered (playedSeen, resolved + "\n1", [&] { return reversed::playedFile (file, true).getFullPathName(); })
+                                            : remembered (playedSeen, "canal\n" + c.id,
+                                                          [&] { return notetune::playedFile (file, c.tunedNotes, c.tuneFormantFollows).getFullPathName(); });
                         audio.push_back ({ item.start, item.length, item.offsetSeconds, played, item.stretch, item.tape, edges.in, edges.out,
                                            item.gainDb, item.fadeIn, item.fadeOut });
-                        const auto cross = playlistedit::autoCrossfade (p, item);
+                        const auto& cross = crossfades[itemIndex];
                         auto& spec = audio.back();
                         spec.userFadeInCurve = item.fadeInCurve;
                         spec.userFadeOutCurve = item.fadeOutCurve;
                         spec.autoFadeIn = cross.in;
                         spec.autoFadeOut = cross.out;
                         spec.pitch = item.pitch;
+                        spec.pan = item.pan;
 
-                        if (item.reversed && file.existsAsFile() && ! juce::File (played).existsAsFile())
+                        if (item.pan != 0.0f)   // o Tracktion ignora o pan de um clipe mono: toca a cópia em dois canais
+                            spec.file = remembered (stereoSeen, spec.file, [&] { return blockfile::stereoOf (juce::File (spec.file)).getFullPathName(); });
+
+                        if (own != juce::File() && ! exists (own))
+                            problems.set (c.id, "Arquivo do bloco não encontrado: "_t + own.getFullPathName());
+
+                        if (own == juce::File() && item.reversed && exists (file) && ! exists (juce::File (played)))
                             problems.set (c.id, "Arquivo invertido não encontrado: "_t + played);
 
-                        if (! item.reversed && notetune::anyEdited (c.tunedNotes) && file.existsAsFile() && played == resolved)
+                        if (own == juce::File() && ! item.reversed && tuneEdited && exists (file) && played == resolved)
                             problems.set (c.id, "Não consegui refazer a voz afinada nota a nota; tocando o original: "_t + resolved);
                     }
 
@@ -657,6 +781,7 @@ void Projector::syncChannels (const Project& p, const juce::File& projectFolder)
             shape.loopStart = c.loopStart;
             shape.loopEnd = c.loopEnd;
             shape.loopXfadeMs = c.loopXfadeMs;
+            shape.bendRange = curves::bendRangeFor (c);   // o mesmo alcance com que as curvas viram pitch wheel (27/10)
             b.sampler->setShape (shape);
             b.sampler->setSlices (c.slices, c.sliceKey);
             midi = midiFor (p, c);
@@ -745,6 +870,22 @@ std::vector<Projector::MidiSpec> Projector::midiFor (const Project& p, const Cha
     for (auto& m : midi)
         if (std::any_of (m.notes.begin(), m.notes.end(), [] (const Note& n) { return ! n.pitch.empty(); }))
             m.bendRange = curves::bendRangeFor (c);
+
+    // Um clipe sem curva não manda pitch wheel nem CC1; no SONG, depois de um clipe que terminou num bend, ele tocaria
+    // com o bend do anterior (os clipes emendados não zeram o canal). Num canal que tem curva em algum clipe, o clipe
+    // sem curva manda o descanso no começo da primeira nota (27/10).
+    auto hasCurve = [] (const MidiSpec& m, curves::Kind k)
+    {
+        return std::any_of (m.notes.begin(), m.notes.end(), [k] (const Note& n) { return ! curves::of (n, k).empty() && n.length > 0; });
+    };
+    const bool anyPitch = std::any_of (midi.begin(), midi.end(), [&] (const MidiSpec& m) { return hasCurve (m, curves::Kind::pitch); });
+    const bool anyMod = std::any_of (midi.begin(), midi.end(), [&] (const MidiSpec& m) { return hasCurve (m, curves::Kind::mod); });
+
+    for (auto& m : midi)
+    {
+        m.restPitch = anyPitch && ! hasCurve (m, curves::Kind::pitch);
+        m.restMod = anyMod && ! hasCurve (m, curves::Kind::mod);
+    }
 
     return midi;
 }
@@ -973,8 +1114,15 @@ void Projector::rebuildClips (ChannelBinding& b, const juce::String& name, std::
             clip->setFadeOut (te::TimeDuration::fromSeconds (fadeOut));
         }
 
-        if (spec.gainDb != 0.0f)
-            clip->setGainDB (spec.gainDb);   // o ganho do bloco (a alça de baixo, normalizar)
+        // o pan do bloco (o painel de propriedades, fatia 6) pela mesma lei do mixer: o pan do clipe no
+        // Tracktion é linear como o do VolumeAndPan (+6 dB na ponta); com a lei, o ganho desce até 3 dB
+        const auto law = constantPower (spec.pan);
+
+        if (spec.gainDb != 0.0f || spec.pan != 0.0f)
+            clip->setGainDB (spec.gainDb + (spec.pan != 0.0f ? law.volumeOffsetDb : 0.0f));   // o ganho do bloco (a alça de baixo, normalizar)
+
+        if (spec.pan != 0.0f)
+            clip->setPan (law.enginePan);
 
         if (spec.stretch != 1.0 || spec.pitch != 0.0f)
         {
@@ -1058,6 +1206,23 @@ void Projector::writeMidi (te::MidiClip& clip, const MidiSpec& spec)
 
     for (auto& e : curves::controlEvents (spec.notes, curves::Kind::mod))
         seq.addControllerEvent (te::BeatPosition::fromBeats (e.t / (double) ticksPerBeat), 1, e.value << 7, nullptr);
+
+    // o clipe sem curva num canal que tem curva em outro: o descanso no começo da primeira nota (27/10)
+    if ((spec.restPitch || spec.restMod) && ! spec.notes.empty())
+    {
+        int first = spec.notes.front().start;
+
+        for (auto& n : spec.notes)
+            first = std::min (first, n.start);
+
+        const auto at = te::BeatPosition::fromBeats (first / (double) ticksPerBeat);
+
+        if (spec.restPitch)
+            seq.addControllerEvent (at, te::MidiControllerEvent::pitchWheelType, curves::wheelCentre, nullptr);
+
+        if (spec.restMod)
+            seq.addControllerEvent (at, 1, 0, nullptr);
+    }
 }
 
 void Projector::syncRouting (const Project& p)

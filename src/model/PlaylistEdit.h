@@ -7,7 +7,10 @@
 
 #include "Project.h"
 
+#include <algorithm>
+#include <map>
 #include <set>
+#include <vector>
 
 namespace whynot::playlistedit
 {
@@ -106,6 +109,18 @@ inline SpaceEdit removeSpace (Project& p, int from, int to)
                 pt.t -= gap;
     }
 
+    // o punch anda junto (playlist fatia 6, 27/10 noite): a ponta dentro do trecho vai para a borda dele; se a
+    // faixa inteira estava no trecho, ela some com ele e o punch desliga (fica um passo em `from`)
+    auto shift = [from, to, gap] (int t) { return t >= to ? t - gap : t > from ? from : t; };
+    p.punchIn = shift (p.punchIn);
+    p.punchOut = shift (p.punchOut);
+
+    if (p.punchOut <= p.punchIn)
+    {
+        p.punchOn = false;
+        p.punchOut = p.punchIn + ticksPerStep;
+    }
+
     return e;
 }
 
@@ -132,6 +147,14 @@ inline bool insertSpace (Project& p, int at, int length, SpaceEdit& e)
         for (auto& pt : lane.points)
             if (pt.t >= at)
                 pt.t += length;
+
+    // o punch anda junto (playlist fatia 6): a ponta em `at` ou depois vai para a frente; um espaço aberto no meio
+    // da faixa a alarga, como o trecho que ela cobre
+    if (p.punchIn >= at)
+        p.punchIn = juce::jmin (maxTimelineTicks, p.punchIn + length);
+
+    if (p.punchOut > at)
+        p.punchOut = juce::jmin (maxTimelineTicks, p.punchOut + length);
 
     return true;
 }
@@ -180,6 +203,89 @@ inline Crossfade autoCrossfade (const Project& p, const PlaylistItem& item)
     x.in = juce::jmin (x.in, length);
     x.out = juce::jmin (x.out, length - x.in);
     return x;
+}
+
+/** O autoCrossfade de todos os blocos de uma vez, na ordem de p.playlistItems (desempenho, 29/10). Dá o mesmo
+    resultado, bit a bit, sem comparar cada bloco com todos os outros: agrupa os áudios que tocam por raia, em ordem
+    de início, e cada bloco só olha os vizinhos que podem se sobrepor a ele. Com a voz picotada (centenas de blocos
+    numa raia) a conta de um em um era O(n²) vezes as raias, e roda a cada mudança do projeto, na playlist e no motor. */
+inline std::vector<Crossfade> autoCrossfades (const Project& p)
+{
+    const auto& items = p.playlistItems;
+    std::vector<Crossfade> result (items.size());
+    std::map<juce::String, bool> laneOn;   // laneSounds percorre as raias: uma vez por raia
+    std::vector<int> order;
+
+    for (size_t k = 0; k < items.size(); ++k)
+    {
+        const auto& item = items[k];
+
+        if (item.kind != "audio" || item.muted)
+            continue;
+
+        auto lane = laneOn.find (item.track);
+
+        if (lane == laneOn.end())
+            lane = laneOn.emplace (item.track, p.laneSounds (item.track)).first;
+
+        if (lane->second)
+            order.push_back ((int) k);
+    }
+
+    // por raia e depois por início (a ordem entre iguais não muda o máximo)
+    std::sort (order.begin(), order.end(), [&] (int a, int b)
+    {
+        const auto& x = items[(size_t) a];
+        const auto& y = items[(size_t) b];
+        return x.track != y.track ? x.track < y.track : x.start < y.start;
+    });
+
+    std::vector<int> maxEnd (order.size());
+
+    for (size_t from = 0; from < order.size();)
+    {
+        size_t to = from;
+
+        while (to < order.size() && items[(size_t) order[to]].track == items[(size_t) order[from]].track)
+            ++to;
+
+        // o maior fim até cada posição da raia: para trás, onde ele não passa do início, nada mais se sobrepõe
+        for (size_t k = from; k < to; ++k)
+            maxEnd[k] = k > from ? juce::jmax (maxEnd[k - 1], items[(size_t) order[k]].end()) : items[(size_t) order[k]].end();
+
+        for (size_t k = from; k < to; ++k)
+        {
+            const auto& item = items[(size_t) order[k]];
+            Crossfade x;
+
+            // o outro entra no fim deste: começa depois do início dele e antes do fim (estão logo depois, na ordem)
+            for (size_t j = k + 1; j < to && items[(size_t) order[j]].start < item.end(); ++j)
+            {
+                const auto& o = items[(size_t) order[j]];
+
+                if (o.id != item.id && o.start > item.start && o.end() > item.end())
+                    x.out = juce::jmax (x.out, ticksToSeconds (item.end() - o.start, p.bpm));
+            }
+
+            // este entra no fim do outro: o outro começa antes (estritamente), então está antes, na ordem
+            for (size_t j = k; j-- > from && maxEnd[j] > item.start;)
+            {
+                const auto& o = items[(size_t) order[j]];
+
+                if (o.id != item.id && item.start > o.start && item.start < o.end() && item.end() > o.end())
+                    x.in = juce::jmax (x.in, ticksToSeconds (o.end() - item.start, p.bpm));
+            }
+
+            const double length = ticksToSeconds (item.length, p.bpm);
+            x.in = juce::jmin (x.in, length);
+            x.out = juce::jmin (x.out, length - x.in);
+            result[(size_t) order[k]] = x;
+        }
+
+        from = to;
+    }
+
+    return result;
 }
 
 } // namespace whynot::playlistedit

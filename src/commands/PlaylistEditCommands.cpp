@@ -5,9 +5,14 @@
 // - audio.findSilence e audio.removeSilence: acha (a prévia) e tira o silêncio e a respiração de um clipe de voz,
 //   com o limiar ajustável; tirar corta o clipe e apaga (ou abaixa) os trechos quietos.
 // As contas ficam em PlaylistEdit.h. Cada comando é um passo de desfazer. Dono: Voz na playlist.
+// Playlist fatia 6 (27/10, noite):
+// - audio.setProperties: o painel de propriedades do bloco (nome e cor do canal, ganho, pan, tom e afinação fina,
+//   fades com curva, mudo e travar), tudo num passo de desfazer;
+// - playlist.gotoMarker e playlist.selectMarkers: pular de marcador em marcador, e o trecho (ou o laço) entre dois.
 
 #include "CommandRegistry.h"
 #include "../model/PlaylistEdit.h"
+#include "../record/BlockFile.h"
 #include "../record/ReversedAudio.h"
 
 namespace whynot
@@ -61,7 +66,7 @@ namespace
 
         juce::AudioFormatManager formats;
         formats.registerBasicFormats();
-        const auto file = reversed::playedFile (c.model.resolveSample (channel->samplePath), item.reversed);
+        const auto file = blockfile::playedOf (c.model, *channel, item);
         std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file));
 
         if (reader == nullptr || reader->sampleRate <= 0.0)
@@ -147,6 +152,56 @@ namespace
         return juce::var (o);
     }
 
+    /** Abaixar sem degrau (playlist fatia 6, 27/10 noite): cada pedaço abaixado avança 10 ms sobre o vizinho de cada
+        lado, e os dois fazem ali um fade reto, um descendo e o outro subindo. O som é o mesmo trecho do arquivo nos
+        dois, então a soma é uma rampa reta do ganho cheio para o abaixado (sem o salto, e sem o buraco de um fade
+        até zero). O fade reto um microssegundo mais longo que a sobra vale no lugar do crossfade automático. */
+    template <typename Inside>
+    void rampLowered (Project& p, const std::set<juce::String>& pieces, Inside inside)
+    {
+        const int ramp = juce::jmax (1, juce::roundToInt (secondsToTicks (0.010, p.bpm)));
+        std::vector<size_t> lowered;
+
+        for (size_t k = 0; k < p.playlistItems.size(); ++k)
+            if (pieces.count (p.playlistItems[k].id) != 0 && inside (p.playlistItems[k]))
+                lowered.push_back (k);
+
+        for (auto k : lowered)
+        {
+            auto& low = p.playlistItems[k];
+            const int start = low.start, end = low.end(), length = low.length;
+
+            for (auto& n : p.playlistItems)
+            {
+                if (n.id == low.id || pieces.count (n.id) == 0 || inside (n))
+                    continue;
+
+                // o +1 µs dos dois fades do vizinho cabe nele (um tick é muito mais que 2 µs)
+                const int r = juce::jmin (ramp, (n.length - 1) / 2, (length - 1) / 2);
+                const double seconds = roundToMicroseconds (ticksToSeconds (r, p.bpm)) + 1.0e-6;
+                const double back = low.fileSeconds (ticksToSeconds (r, p.bpm));
+
+                if (r <= 0)
+                    continue;
+
+                if (n.end() == start && low.offsetSeconds >= back)
+                {
+                    low.start -= r;
+                    low.length += r;
+                    low.offsetSeconds = roundToMicroseconds (low.offsetSeconds - back);
+                    low.fadeIn = seconds, low.fadeInCurve = fadeCurveLinear;
+                    n.fadeOut = seconds, n.fadeOutCurve = fadeCurveLinear;
+                }
+                else if (n.start == end)
+                {
+                    low.length += r;
+                    low.fadeOut = seconds, low.fadeOutCurve = fadeCurveLinear;
+                    n.fadeIn = seconds, n.fadeInCurve = fadeCurveLinear;
+                }
+            }
+        }
+    }
+
     juce::var spaceResult (const playlistedit::SpaceEdit& e)
     {
         auto o = new juce::DynamicObject();
@@ -154,6 +209,98 @@ namespace
         o->setProperty ("removed", e.removed);
         o->setProperty ("moved", e.moved);
         return juce::var (o);
+    }
+
+    juce::var markerVar (const Marker& m)
+    {
+        auto o = new juce::DynamicObject();
+        o->setProperty ("marker", m.id);
+        o->setProperty ("name", m.name);
+        o->setProperty ("at", m.t);
+        return juce::var (o);
+    }
+
+    // Marcadores com ações (playlist fatia 6, 27/10 noite). Criar, renomear e apagar já são playlist.addMarker,
+    // updateMarker e removeMarker; o Alt+T cria na agulha.
+    void registerMarkerCommands (CommandRegistry& r)
+    {
+        r.add ({ "playlist.gotoMarker", "Ir ao marcador"_t,
+                 schema ({ { "direction", "string", false, "next (o próximo depois da agulha) ou previous (o anterior); ausente com marker"_t },
+                           { "marker", "string", false, "Id do marcador (no lugar de direction)"_t },
+                           { "from", "number", false, "De onde contar o próximo e o anterior, em ticks (ausente = a agulha; tocando, passe a posição)"_t } }), false,
+                 [] (CommandContext& c, const juce::var& a)
+                 {
+                     const auto& p = c.model.get();
+                     const Marker* found = nullptr;
+
+                     if (params::has (a, "marker"))
+                     {
+                         found = p.findMarker (params::string (a, "marker"));
+
+                         if (found == nullptr)
+                             return CommandResult::fail ("Marcador não encontrado."_t);
+                     }
+                     else
+                     {
+                         const auto direction = params::string (a, "direction");
+                         const int from = params::has (a, "from") ? (int) params::number (a, "from", 0) : c.app.playStart();
+
+                         if (direction != "next" && direction != "previous")
+                             return CommandResult::fail ("Diga direction (next ou previous) ou o marker."_t);
+
+                         // os marcadores estão em ordem: o próximo é o primeiro depois, o anterior o último antes
+                         for (auto& m : p.markers)
+                             if (direction == "next" ? (m.t > from && found == nullptr) : m.t < from)
+                                 found = &m;
+
+                         if (found == nullptr)
+                             return CommandResult::fail (p.markers.empty() ? "A música não tem marcadores (Alt+T cria um na agulha)."_t
+                                                         : direction == "next" ? "Não há marcador depois daqui."_t
+                                                                               : "Não há marcador antes daqui."_t);
+                     }
+
+                     // a agulha vai para lá (o play começa dela); tocando, o som pula junto
+                     c.app.setPlayStart (found->t);
+
+                     return CommandResult::success (markerVar (*found));
+                 } });
+
+        r.add ({ "playlist.selectMarkers", "Trecho entre marcadores"_t,
+                 schema ({ { "from", "string", true, "Id do marcador do começo"_t },
+                           { "to", "string", false, "Id do marcador do fim (ausente = o seguinte, ou o fim da música)"_t },
+                           { "loop", "boolean", false, "true = o trecho vira o laço: liga o loop e o modo SONG (a playlist toca o trecho em volta)"_t } }), true,
+                 [] (CommandContext& c, const juce::var& a)
+                 {
+                     auto& p = c.model.data();
+                     const auto* from = p.findMarker (params::string (a, "from"));
+                     const auto* to = params::has (a, "to") ? p.findMarker (params::string (a, "to")) : nullptr;
+
+                     if (from == nullptr || (params::has (a, "to") && to == nullptr))
+                         return CommandResult::fail ("Marcador não encontrado."_t);
+
+                     int start = from->t, end = to != nullptr ? to->t : p.markerEnd (*from);
+
+                     if (end < start)
+                         std::swap (start, end);   // a ordem dos dois não importa
+
+                     if (end <= start)
+                         return CommandResult::fail ("Os dois marcadores estão no mesmo lugar."_t);
+
+                     if (params::boolean (a, "loop", false))
+                     {
+                         p.songMode = true;
+                         p.loop = true;
+                     }
+
+                     c.app.setTimeSelection ({ start, end });
+                     c.app.setPlayStart (start);
+
+                     auto o = new juce::DynamicObject();
+                     o->setProperty ("from", start);
+                     o->setProperty ("to", end);
+                     o->setProperty ("loop", p.songMode && p.loop);
+                     return CommandResult::success (juce::var (o));
+                 } });
     }
 }
 
@@ -319,6 +466,8 @@ void registerPlaylistEditCommands (CommandRegistry& r)
 
                  if (! reduce)
                      std::erase_if (p.playlistItems, [&] (const PlaylistItem& i) { return pieces.count (i.id) != 0 && inside (i); });
+                 else
+                     rampLowered (p, pieces, inside);
 
                  juce::Array<juce::var> left;
 
@@ -333,6 +482,147 @@ void registerPlaylistEditCommands (CommandRegistry& r)
              } });
 
 #undef WHYNOT_SILENCE_FIELDS
+
+    //==========================================================================
+    // O painel de propriedades do bloco (playlist fatia 6, 27/10 noite). Só muda o que vier nos parâmetros; o nome e a
+    // cor são do canal do bloco (o nome que aparece no cabeçalho). O resto é do bloco: o arquivo não muda.
+    r.add ({ "audio.setProperties", "Propriedades do bloco"_t,
+             schema ({ { "item", "string", true, "Id do bloco (mudo e travar valem em qualquer bloco; o resto, só no áudio)"_t },
+                       { "name", "string", false, "Nome do canal do bloco (o do cabeçalho), até 40 letras"_t },
+                       { "colour", "string", false, "Cor do canal do bloco, \"#RRGGBB\""_t },
+                       { "gainDb", "number", false, "Ganho do bloco em dB, de -60 a +24"_t },
+                       { "pan", "number", false, "Pan do bloco, de -1 (esquerda) a 1 (direita)"_t },
+                       { "semitones", "number", false, "Tom do bloco em semitons inteiros, de -24 a +24 (soma com cents)"_t },
+                       { "cents", "number", false, "Afinação fina em centésimos, de -100 a +100 (soma com semitones)"_t },
+                       { "fadeIn", "number", false, "Fade de entrada, em segundos"_t },
+                       { "fadeOut", "number", false, "Fade de saída, em segundos"_t },
+                       { "inCurve", "string", false, "Curva do fade de entrada: linear, convex (rápida), concave (lenta) ou s"_t },
+                       { "outCurve", "string", false, "Curva do fade de saída: linear, convex, concave ou s"_t },
+                       { "muted", "boolean", false, "Mudo só neste bloco"_t },
+                       { "locked", "boolean", false, "Travado: o mouse não move, não apara, não corta nem apaga"_t } }), true,
+             [] (CommandContext& c, const juce::var& a)
+             {
+                 auto& p = c.model.data();
+                 auto* item = p.findItem (params::string (a, "item"));
+
+                 if (item == nullptr)
+                     return CommandResult::fail ("Bloco não encontrado."_t);
+
+                 const bool audio = item->kind == "audio";
+                 auto* channel = audio ? p.findChannel (item->ref) : nullptr;
+
+                 for (auto* key : { "name", "colour", "gainDb", "pan", "semitones", "cents", "fadeIn", "fadeOut", "inCurve", "outCurve" })
+                     if (params::has (a, key) && channel == nullptr)
+                         return CommandResult::fail ("Só mudo e travar valem num bloco de padrão."_t);
+
+                 if (params::has (a, "name"))
+                 {
+                     const auto name = params::string (a, "name").trim().substring (0, maxMarkerName).trim();
+
+                     if (name.isEmpty())
+                         return CommandResult::fail ("O nome não pode ficar vazio."_t);
+
+                     // a trilha automática acompanha o nome do canal, como no channel.rename
+                     if (auto* mx = p.findMixer (channel->output); mx != nullptr && mx->autoFor == channel->id && mx->name == channel->name)
+                         mx->name = name;
+
+                     channel->name = name;
+                 }
+
+                 if (params::has (a, "colour"))
+                 {
+                     const auto colour = params::string (a, "colour").trim();
+
+                     if (! (colour.length() == 7 && colour.startsWithChar ('#') && colour.substring (1).containsOnly ("0123456789abcdefABCDEF")))
+                         return CommandResult::fail ("A cor vai como \"#RRGGBB\"."_t);
+
+                     channel->colour = colour.toUpperCase();
+                 }
+
+                 auto number = [&a] (const char* key)
+                 {
+                     const double v = params::number (a, key, 0.0);
+                     return std::isfinite (v) ? v : 0.0;
+                 };
+
+                 if (params::has (a, "gainDb"))
+                     item->gainDb = clampClipGain ((float) number ("gainDb"));
+
+                 if (params::has (a, "pan"))
+                     item->pan = (float) (std::round (juce::jlimit (-1.0, 1.0, number ("pan")) * 100.0) / 100.0);
+
+                 if (params::has (a, "semitones") || params::has (a, "cents"))
+                 {
+                     // o tom guarda os dois juntos (semitons com centésimos): o que não veio fica como estava
+                     const double whole = std::round ((double) item->pitch), fine = std::round (((double) item->pitch - whole) * 100.0);
+                     const double st = params::has (a, "semitones") ? std::round (number ("semitones")) : whole;
+                     const double cents = params::has (a, "cents") ? juce::jlimit (-100.0, 100.0, std::round (number ("cents"))) : fine;
+                     const double total = st + cents / 100.0;
+
+                     if (std::abs (total) > maxClipPitch)
+                         return CommandResult::fail ("O tom vai de -24 a +24 semitons."_t);
+
+                     item->pitch = (float) (std::round (total * 100.0) / 100.0);
+                 }
+
+                 const double length = ticksToSeconds (item->length, p.bpm);
+
+                 if (params::has (a, "fadeIn"))
+                     item->fadeIn = roundToMicroseconds (juce::jlimit (0.0, length, number ("fadeIn")));
+
+                 if (params::has (a, "fadeOut"))
+                     item->fadeOut = roundToMicroseconds (juce::jlimit (0.0, length, number ("fadeOut")));
+
+                 if (item->fadeIn + item->fadeOut > length)   // os dois cabem no bloco: o que não veio nos parâmetros cede
+                 {
+                     if (params::has (a, "fadeOut") && ! params::has (a, "fadeIn"))
+                         item->fadeIn = roundToMicroseconds (juce::jmax (0.0, length - item->fadeOut));
+                     else
+                         item->fadeOut = roundToMicroseconds (juce::jmax (0.0, length - item->fadeIn));
+                 }
+
+                 for (auto [key, curve] : { std::pair<const char*, int*> { "inCurve", &item->fadeInCurve }, std::pair<const char*, int*> { "outCurve", &item->fadeOutCurve } })
+                 {
+                     if (! params::has (a, key))
+                         continue;
+
+                     const auto name = params::string (a, key);
+
+                     if (name != "linear" && fadeCurveFromName (name) == fadeCurveLinear)
+                         return CommandResult::fail ("Curva desconhecida: use linear, convex, concave ou s."_t);
+
+                     *curve = fadeCurveFromName (name);
+                 }
+
+                 if (params::has (a, "muted"))
+                     item->muted = params::boolean (a, "muted", false);
+
+                 if (params::has (a, "locked"))
+                     item->locked = params::boolean (a, "locked", false);
+
+                 auto o = new juce::DynamicObject();
+                 o->setProperty ("item", item->id);
+                 o->setProperty ("muted", item->muted);
+                 o->setProperty ("locked", item->locked);
+
+                 if (channel != nullptr)
+                 {
+                     o->setProperty ("name", channel->name);
+                     o->setProperty ("colour", channel->colour);
+                     o->setProperty ("gainDb", item->gainDb);
+                     o->setProperty ("pan", item->pan);
+                     o->setProperty ("semitones", item->pitch);
+                     o->setProperty ("fadeIn", item->fadeIn);
+                     o->setProperty ("fadeOut", item->fadeOut);
+                     o->setProperty ("inCurve", fadeCurveName (item->fadeInCurve));
+                     o->setProperty ("outCurve", fadeCurveName (item->fadeOutCurve));
+                     o->setProperty ("reversed", item->reversed);
+                 }
+
+                 return CommandResult::success (juce::var (o));
+             } });
+
+    registerMarkerCommands (r);
 }
 
 } // namespace whynot

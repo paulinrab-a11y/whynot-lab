@@ -66,7 +66,7 @@ void registerPitchBendCommands (CommandRegistry& r)
     r.add ({ "channel.setBendRange", "Alcance do pitch bend"_t,
              schema ({ { "channel", "string", true, "Id do canal" },
                        { "semitones", "integer", true, "Quantos semitons o pitch wheel inteiro dobra, de 1 a 24. No WHYNOT Synth muda o parâmetro "
-                                                       "Pitch bend dele; num VST3, use o mesmo valor do plugin"_t } }), true,
+                                                       "Pitch bend dele; no sampler e no WHYNOT Piano, o alcance do canal; num VST3, use o mesmo valor do plugin"_t } }), true,
              [] (CommandContext& c, const juce::var& a)
              {
                  auto* ch = c.model.data().findChannel (params::string (a, "channel"));

@@ -104,6 +104,11 @@ void runPitchBendSelfTest (SelfTestContext&);     // pitch bend e mod wheel dese
 void runTuneSelfTest (SelfTestContext&);          // afinação completa (27/10): render, escala nota a nota, guia e a tela (Afinação)
 void runVoicePlaylistSelfTest (SelfTestContext&);  // voz na playlist (27/10): corte sem buraco, ripple, fades, tom e reverso por clipe (Voz na playlist)
 void runNoteTuneSelfTest (SelfTestContext&);       // afinação nota a nota (27/10): análise, editor, edições, render não destrutivo e formante (Afinação nota a nota)
+void runPlaylistBlocksSelfTest (SelfTestContext&); // playlist fatia 6 (27/10 noite): propriedades, zoom, marcadores, consolidar e ripple (Playlist fatia 6)
+void runSamplerBendSelfTest (SelfTestContext&);    // pitch bend e mod wheel no sampler e no WHYNOT Piano (27/10): Hz, bit a bit, 808 e vibrato (Bend no sampler)
+void runUxReviewSelfTest (SelfTestContext&);       // revisão de usabilidade (28/10): rodinha e nome no painel do bloco, a IA e o travado, capturas (Revisão de usabilidade)
+void runHeavyProjectSelfTest (SelfTestContext&);    // desempenho (29/10): voz picotada com 300 blocos e 2000 notas num canal mono, tempos do motor e das telas (Desempenho)
+void runGrooveSelfTest (SelfTestContext&);         // swing global, groove das notas, humanizar e o começo do play no PAT (29/10) (Swing e início do play)
 void runInvalidFilesSelfTest (SelfTestContext&);  // fecha o relatório (núcleo)
 
 } // namespace whynot::selftest

@@ -66,6 +66,7 @@ void WhynotSamplerPlugin::setShape (const SamplerShape& s)
     loopEnd = s.loopEnd;
     loopXfadeMs = s.loopXfadeMs;
     releaseMs = s.releaseMs;
+    bendRange = std::isfinite (s.bendRange) ? juce::jlimit (0.0f, audio::ChannelPitch::maxRange, s.bendRange) : 2.0f;
 }
 
 void WhynotSamplerPlugin::setSlices (const std::vector<float>& starts, int firstKey)
@@ -153,6 +154,7 @@ void WhynotSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         for (auto& v : voices)
             v.prepare (audioSampleRate);
 
+        pitch.prepare (audioSampleRate);
         voiceKey.fill (-1);
         numHeld = 0;
         monoVoice = monoKey = -1;
@@ -165,6 +167,17 @@ void WhynotSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         lastMono = isMono;
         numHeld = 0;
         monoVoice = monoKey = -1;
+    }
+
+    // O alcance do bend: o do canal quando ele muda; entre uma mudança e outra, um RPN 0 do MIDI pode trocar. Parar ou
+    // pular o transporte volta ao do canal (as curvas viram pitch wheel nele).
+    if (fc.bufferForMidiMessages != nullptr && fc.bufferForMidiMessages->isAllNotesOff)
+        appliedBendRange = -1.0f;
+
+    if (const float range = bendRange.load(); range != appliedBendRange)
+    {
+        appliedBendRange = range;
+        pitch.setRange (range);
     }
 
     auto& buffer = *fc.destBuffer;
@@ -222,6 +235,7 @@ void WhynotSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         {
             releaseAll();
             pendingCount = 0;
+            pitch.reset();   // transporte parou ou pulou: o tom volta ao meio (a nota seguinte manda o dela)
         }
 
         for (auto& m : *midi)
@@ -252,10 +266,14 @@ void WhynotSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
 
                 pendingPans[(size_t) pendingCount++] = { sampleClock + when, juce::jlimit (-1.0f, 1.0f, (m.getControllerValue() - 64) / 63.0f) };
             }
+            else if (m.isPitchWheel())
+                pitch.pitchWheel (m.getPitchWheelValue());
             else if (m.isAllSoundOff())
                 chokeAll();   // choke (outro canal do grupo tocou) ou parada total: corte de 3 ms
             else if (m.isAllNotesOff())
                 releaseAll();
+            else if (m.isController())
+                pitch.controller (m.getControllerNumber(), m.getControllerValue());   // CC1, o RPN 0 do alcance, o reset
         }
     }
 
@@ -276,19 +294,33 @@ void WhynotSamplerPlugin::renderVoices (const audio::SampleData& data, float* co
     if (num <= 0)
         return;
 
-    float* offset[2] = { out[0] + start, out[1] + start };
-
-    for (int i = 0; i < numVoices; ++i)
+    // Em pedaços do tamanho do buffer do desvio de tom; em descanso (sem bend nem vibrato) as vozes não recebem
+    // desvio nenhum e soam bit a bit como antes.
+    for (int done = 0; done < num;)
     {
-        if (! voices[(size_t) i].isActive())
-            continue;
+        const int n = juce::jmin (num - done, (int) pitchOffsets.size());
+        const float* bent = pitch.fill (pitchOffsets.data(), n) ? pitchOffsets.data() : nullptr;
+        float* offset[2] = { out[0] + start + done, out[1] + start + done };
 
-        const auto* own = voiceData[(size_t) i];
-        voices[(size_t) i].render (own != nullptr ? *own : data, offset, numChannels, num);
+        for (int i = 0; i < numVoices; ++i)
+        {
+            if (! voices[(size_t) i].isActive())
+                continue;
 
-        if (! voices[(size_t) i].isActive())
-            voiceKey[(size_t) i] = -1;
+            const auto* own = voiceData[(size_t) i];
+            voices[(size_t) i].render (own != nullptr ? *own : data, offset, numChannels, n, bent);
+
+            if (! voices[(size_t) i].isActive())
+                voiceKey[(size_t) i] = -1;
+        }
+
+        done += n;
     }
+}
+
+bool WhynotSamplerPlugin::anyVoiceActive() const noexcept
+{
+    return std::any_of (voices.begin(), voices.end(), [] (const audio::SampleVoice& v) { return v.isActive(); });
 }
 
 int WhynotSamplerPlugin::allocateVoice() noexcept
@@ -391,6 +423,8 @@ void WhynotSamplerPlugin::noteOn (int key, float velocity, const SampleRef& ref,
         if (index < 0 || index >= n)
             return;   // tecla fora das fatias: nada toca
 
+        pitch.noteStarts (! anyVoiceActive());   // o bend e a roda que chegaram junto com a nota valem já (sem a rampa)
+
         auto sliceParams = params;
         sliceParams.regionStart = sliceAt[(size_t) index].load (std::memory_order_relaxed);
         sliceParams.regionEnd = index + 1 < n ? sliceAt[(size_t) index + 1].load (std::memory_order_relaxed) : 1.0f;
@@ -407,6 +441,9 @@ void WhynotSamplerPlugin::noteOn (int key, float velocity, const SampleRef& ref,
         voiceStart[(size_t) chosen] = ++voiceCounter;
         return;
     }
+
+    // O bend e a roda que chegaram junto com a nota valem já, sem a rampa; com o canal calado, o vibrato recomeça.
+    pitch.noteStarts (! anyVoiceActive());
 
     // A camada da força (bloco 4f), e a nota de raiz do canal soa no tom original dela.
     const auto& layer = ref.forVelocity (velocity);

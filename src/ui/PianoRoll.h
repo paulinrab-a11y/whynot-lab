@@ -45,6 +45,10 @@ public:
     void setSlideMode (bool on)              { slideMode = on; }
     bool getSlideMode() const noexcept       { return slideMode; }
     void setPlayhead (double ticks);         // < 0 = parado
+    /** O começo do play no PAT (29/10), em ticks: a marca na régua. -1 esconde (no SONG). */
+    void setPatternStart (int ticks);
+    /** O ponto da régua em cima de um tick (autoteste: o clique que marca o começo do play). */
+    juce::Point<float> rulerPoint (int ticks) const;
 
     /** Rola a grade até as notas do canal (depois de gerar uma ideia, por exemplo). */
     void revealNotes();
@@ -185,7 +189,7 @@ private:
     bool beatHintFlats = false;
     LaneMode laneMode = LaneMode::velocity;
     float bendRange = 2.0f;                  // o alcance do pitch wheel no instrumento do canal (curves::bendRangeFor)
-    bool channelBends = false;               // o instrumento toca o pitch bend (o synth e o VST3; o sampler ainda não)
+    bool channelBends = false;               // o instrumento toca o pitch bend (synth, VST3, sampler e piano; o canal de áudio não)
 
     std::set<int> selected;
     Tool tool = Tool::draw;
@@ -220,6 +224,7 @@ private:
 
     int centreKeyOnResize = -1;
     double playhead = -1.0;
+    int patternStart = -1;                   // o começo do play no PAT (29/10); -1 no SONG
     juce::ScrollBar hScroll { false }, vScroll { true };
     bool updatingScrollBars = false;
 
@@ -262,6 +267,13 @@ public:
     /** O menu Editar e o submenu do carimbo de acorde (públicos para o autoteste abrir sem clicar). */
     juce::PopupMenu makeEditMenu();
     juce::PopupMenu makeChordMenu();
+    /** O menu do botão Groove (29/10): o swing e o humanizar das notas do canal, só na hora de tocar. Os ids são
+        100 + o índice de grooveSwings e 200 + o de grooveHumanize; público para o autoteste. */
+    juce::PopupMenu makeGrooveMenu();
+    void chooseGroove (int menuId);
+    static constexpr float grooveSwings[] = { 0.0f, 25.0f, 50.0f, 66.0f, 75.0f, 100.0f };
+    static constexpr float grooveHumanize[] = { 0.0f, 15.0f, 35.0f, 60.0f };
+    IconButton& getGrooveButton() noexcept   { return grooveButton; }
     void chooseMidiFile();
     /** O cartão de opções do MIDI (trilhas, trocar ou somar, onde começa) antes de importar: o seletor de arquivo,
         o soltar e o menu Arquivo passam por aqui. */
@@ -296,9 +308,11 @@ private:
     IconButton slideButton { "Slide", Icon::slide, "Slide" };
     IconButton monoButton { "Mono", Icon::none, "Mono" };
     IconButton glideButton { "Glide", Icon::timer, "80 ms" };
+    IconButton grooveButton { "Groove", Icon::slip, "Groove" };   // swing e humanizar ao tocar (29/10)
     // legato, juntar, mudo, humanizar, escala, carimbo de acorde e importar MIDI (bloco 1, 22/10); um botão só,
     // para a barra caber numa tela de 1366
     IconButton editButton { "Editar", Icon::pattern, "Editar" };
+    juce::String grooveLabel { "Groove" };
     std::unique_ptr<juce::FileChooser> midiChooser;
     std::unique_ptr<MidiImportDialog> importDialog;
     bool midiDragOver = false;

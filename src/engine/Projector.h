@@ -170,8 +170,21 @@ public:
     int patternLoops (const Project& p, const Pattern& pattern) const noexcept
     {
         // só com o loop ligado: sem ele, o padrão toca uma volta e para, como antes
-        return mode == Mode::followProject && p.loop && usesChance (pattern) ? loops * chanceLoops : loops;
+        return mode == Mode::followProject && p.loop && (usesChance (pattern) || humanizes (p)) ? loops * chanceLoops : loops;
     }
+
+    /** Algum canal humaniza (29/10): como a chance, cada volta do padrão sorteia de novo, então o PAT toca 8 voltas. */
+    static bool humanizes (const Project&);
+
+    /** Swing das notas do piano roll (29/10): o tempo dentro de cada colcheia anda para a nota que cai no contratempo dos
+        16 avos atrasar `delayTicks`, como o passo com swing; o começo e o meio da colcheia ficam onde estão, e o resto
+        estica ou encolhe em linha reta. 0 não muda nada. */
+    static int swingWarp (int tick, int delayTicks) noexcept;
+
+    /** Humanizar (29/10): quanto a nota anda (ticks, de -40 a 40 em 100 %) e quanto a força muda (de -20 a 20), sempre
+        igual para os mesmos números: o play, o export e o MIDI saem iguais. */
+    static void humanizeOffsets (float amount, int seed, const juce::String& channelId, int index, int loopIndex, int& ticks,
+                                 int& velocity) noexcept;
 
     /** A decisão de um passo com chance: o mesmo sorteio para os mesmos números. */
     static bool chanceHits (int chance, int seed, const juce::String& channelId, int stepIndex, int rollIndex, int loopIndex);
@@ -183,6 +196,8 @@ private:
         std::vector<Note> notes;   // relativas ao início do clipe
         std::vector<int> cuts;     // choke: CC 120 nestes ticks, relativos ao início do clipe
         float bendRange = 2.0f;    // pitch bend (26/10): o alcance do instrumento, para as curvas das notas virarem pitch wheel
+        bool restPitch = false;    // clipe sem curva de pitch num canal que tem curva em outro clipe: o tom volta ao meio (27/10)
+        bool restMod = false;      // o mesmo para o mod wheel (CC1 em 0)
         bool operator== (const MidiSpec&) const = default;
     };
 
@@ -203,6 +218,7 @@ private:
         int userFadeInCurve = 0, userFadeOutCurve = 0;
         double autoFadeIn = 0.0, autoFadeOut = 0.0;
         float pitch = 0.0f;
+        float pan = 0.0f;            // playlist fatia 6 (27/10, noite): o pan do bloco (PlaylistItem::pan)
         bool operator== (const AudioSpec&) const = default;
     };
 

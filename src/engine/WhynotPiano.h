@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 
+#include "../audio/ChannelPitch.h"
 #include "../audio/PianoPresets.h"
 #include "../model/Project.h"
 #include "PianoLibrary.h"
@@ -19,6 +20,8 @@ namespace te = tracktion;
     O som de cada nota mora em audio::PianoVoice (sem JUCE, testado à parte). Aqui ficam o MIDI, o
     pedal, a escolha das vozes e o streamer:
     - Thread de mensagem: applyChannel() (atomics) e os medidores.
+    - Pitch bend e mod wheel desenhados na nota (27/10): o pitch wheel (no bendRange do canal, ou no RPN 0) e o
+      vibrato do CC1 viram um desvio de tom do canal (audio::ChannelPitch) que cada voz soma, como no sampler.
     - Streamer (thread própria): enche o anel de cada voz com o resto do sample, lendo os arquivos
       mapeados. Uma passada a cada ~2 ms; o começo de 0,37 s na memória cobre a espera.
     - applyToBuffer(): thread de áudio, sem alocação, trava ou I/O. Só no render offline (exportar)
@@ -32,7 +35,7 @@ public:
     static const char* xmlTypeName;
     static constexpr int maxVoices = 64;
 
-    /** Timbre (preset) e afinação do canal. */
+    /** Timbre (preset), afinação e alcance do pitch bend do canal. */
     void applyChannel (const Channel&);
 
     void setOwner (const juce::String& channelId)        { ownerChannel = channelId; }
@@ -84,7 +87,7 @@ private:
 
     struct Event
     {
-        enum class Type { noteOn, noteOff, sustain, allNotesOff, allSoundOff };
+        enum class Type { noteOn, noteOff, sustain, allNotesOff, allSoundOff, pitchWheel, controller };
         int offset = 0, index = 0;
         Type type = Type::noteOn;
         int key = 0, value = 0;
@@ -121,6 +124,7 @@ private:
     // thread de mensagem → áudio
     std::atomic<float> velocityCurve { 1.0f }, toneHz { 0.0f }, width { 1.0f }, releaseScale { 1.0f }, drive { 0.0f }, tune { 0.0f };
     std::atomic<bool> hammer { true };
+    std::atomic<float> bendRange { 2.0f };
 
     // thread de áudio
     static constexpr int maxEvents = 1024;
@@ -132,6 +136,9 @@ private:
     std::uint32_t generation = 0, blockMissed = 0;
     float lowpass[2][2] {};                     // dois polos por canal
     float lastWidth = 1.0f, lastDrive = 0.0f;
+    audio::ChannelPitch pitch;                  // o bend e o vibrato do canal (27/10)
+    std::array<float, 1024> pitchOffsets {};    // um pedaço do render (renderChunk)
+    float appliedBendRange = -1.0f;
 
     std::atomic<std::uint32_t> missed { 0 };
     std::atomic<int> voicesInUse { 0 };

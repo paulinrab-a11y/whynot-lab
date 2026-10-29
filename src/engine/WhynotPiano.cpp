@@ -76,6 +76,7 @@ void WhynotPianoPlugin::applyChannel (const Channel& c)
     drive.store (p->drive, std::memory_order_relaxed);
     hammer.store (p->hammer, std::memory_order_relaxed);
     tune.store (std::isfinite (c.tune) ? juce::jlimit (-24.0f, 24.0f, c.tune) : 0.0f, std::memory_order_relaxed);
+    bendRange.store ((float) juce::jlimit (1, 24, c.bendRange), std::memory_order_relaxed);   // = curves::bendRangeFor
 }
 
 void WhynotPianoPlugin::initialise (const te::PluginInitialisationInfo& info)
@@ -96,6 +97,7 @@ void WhynotPianoPlugin::initialise (const te::PluginInitialisationInfo& info)
 
         pedalDown = false;
         std::memset (lowpass, 0, sizeof (lowpass));
+        pitch.prepare (preparedRate);
     }
 
     prepared = preparedRate > 0.0;
@@ -168,6 +170,17 @@ void WhynotPianoPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     s.tune = tune.load (std::memory_order_relaxed);
     s.hammer = hammer.load (std::memory_order_relaxed);
 
+    // o alcance do bend: o do canal quando ele muda; entre uma mudança e outra, um RPN 0 do MIDI pode trocar. Parar ou
+    // pular o transporte volta ao do canal (as curvas viram pitch wheel nele).
+    if (fc.bufferForMidiMessages != nullptr && fc.bufferForMidiMessages->isAllNotesOff)
+        appliedBendRange = -1.0f;
+
+    if (const float range = bendRange.load (std::memory_order_relaxed); range != appliedBendRange)
+    {
+        appliedBendRange = range;
+        pitch.setRange (range);
+    }
+
     int numEvents = 0;
 
     auto push = [&] (int offset, Event::Type type, int key, int value)
@@ -187,7 +200,10 @@ void WhynotPianoPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     if (auto* midi = fc.bufferForMidiMessages)
     {
         if (midi->isAllNotesOff)
+        {
             push (0, Event::Type::allNotesOff, 0, 0);
+            push (0, Event::Type::controller, 121, 0);   // o tom volta ao meio (a nota seguinte manda o dela)
+        }
 
         for (auto& m : *midi)
         {
@@ -199,12 +215,21 @@ void WhynotPianoPlugin::applyToBuffer (const te::PluginRenderContext& fc)
                 push (offset, Event::Type::noteOff, m.getNoteNumber(), 0);
             else if (m.isSustainPedalOn())
                 push (offset, Event::Type::sustain, 0, 1);
-            else if (m.isSustainPedalOff() || m.isResetAllControllers())
+            else if (m.isSustainPedalOff())
                 push (offset, Event::Type::sustain, 0, 0);
+            else if (m.isResetAllControllers())
+            {
+                push (offset, Event::Type::sustain, 0, 0);
+                push (offset, Event::Type::controller, 121, 0);
+            }
             else if (m.isAllSoundOff())
                 push (offset, Event::Type::allSoundOff, 0, 0);
             else if (m.isAllNotesOff())
                 push (offset, Event::Type::allNotesOff, 0, 0);
+            else if (m.isPitchWheel())
+                push (offset, Event::Type::pitchWheel, 0, m.getPitchWheelValue());
+            else if (m.isController())
+                push (offset, Event::Type::controller, m.getControllerNumber(), m.getControllerValue());   // CC1 e o RPN 0
         }
 
         // em ordem de tempo; no mesmo quadro, na ordem em que chegaram (std::sort não aloca)
@@ -271,12 +296,16 @@ void WhynotPianoPlugin::renderVoices (float* left, float* right, int from, int t
         float* outs[2] = { left + a, right != nullptr ? right + a : nullptr };
         const int numOut = right != nullptr ? 2 : 1;
 
+        // o bend e o vibrato do canal; em descanso, nada (o som de antes, bit a bit)
+        static_assert (renderChunk <= (int) std::tuple_size_v<decltype (pitchOffsets)>);
+        const float* bent = pitch.fill (pitchOffsets.data(), n) ? pitchOffsets.data() : nullptr;
+
         for (int i = 0; i < maxVoices; ++i)
         {
             auto& v = voices[(size_t) i];
 
             if (v.voice.isActive())
-                v.voice.render (set, v.stream, outs, numOut, n, blockMissed);
+                v.voice.render (set, v.stream, outs, numOut, n, blockMissed, bent);
         }
     }
 }
@@ -380,6 +409,14 @@ void WhynotPianoPlugin::handle (const Event& e, std::int64_t now, const Settings
             }
             break;
 
+        case Event::Type::pitchWheel:
+            pitch.pitchWheel (e.value);
+            break;
+
+        case Event::Type::controller:
+            pitch.controller (e.key, e.value);
+            break;
+
         case Event::Type::allSoundOff:
             pedalDown = false;
 
@@ -423,6 +460,14 @@ void WhynotPianoPlugin::noteOn (int key, int velocity127, std::int64_t now, cons
             o.keyDown = o.held = false;
         }
     }
+
+    // o bend e a roda que chegaram junto com a nota valem já, sem a rampa; com o canal calado, o vibrato recomeça
+    bool sounding = false;
+
+    for (int i = 0; i < maxVoices && ! sounding; ++i)
+        sounding = voices[(size_t) i].voice.isActive();
+
+    pitch.noteStarts (! sounding);
 
     const int slot = allocate();
     auto& v = voices[(size_t) slot];

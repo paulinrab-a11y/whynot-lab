@@ -216,7 +216,9 @@ public:
         gen = generation;
         gain = z.gain * std::pow (v, 2.0f * std::clamp (z.velTrack, 0.0f, 1.0f)) * (std::isfinite (extraGain) ? extraGain : 0.0f);
         const float semis = z.keyTrack * (float) (key - z.rootKey) + (std::isfinite (tuneSemis) ? tuneSemis : 0.0f);
-        ratio = std::exp2 ((double) semis / 12.0) * z.sampleRate / outRate;
+        ratio = baseRatio = std::exp2 ((double) semis / 12.0) * z.sampleRate / outRate;
+        offsetSemis = 0.0f;
+        bendScale = std::isfinite (z.keyTrack) ? std::clamp (z.keyTrack, 0.0f, 1.0f) : 1.0f;
         position = 0.0;
         env = 0.0f;
         envTarget = 1.0f;
@@ -258,12 +260,21 @@ public:
     float level() const noexcept        { return env; }
     float loudness() const noexcept     { return env * gain; }   // para escolher a voz que sai primeiro
 
-    /** Soma a voz em out[canal][quadro]. `underruns` conta os quadros que faltaram no anel. */
+    /** Soma a voz em out[canal][quadro]. `underruns` conta os quadros que faltaram no anel.
+        `pitchOffset` (27/10): o desvio de tom do canal em semitons, um por quadro (o pitch wheel e o vibrato do CC1,
+        ChannelPitch.h), vezes o keyTrack da zona (o martelo, que não segue a tecla, também não dobra); nulo = nenhum,
+        e o som sai bit a bit igual ao de antes. */
     void render (const PianoSet& set, VoiceStream& stream, float* const* out, int numOutChannels, int numFrames,
-                 std::uint32_t& underruns) noexcept
+                 std::uint32_t& underruns, const float* pitchOffset = nullptr) noexcept
     {
         if (! active || numOutChannels <= 0 || zone < 0 || zone >= (int) set.zones.size())
             return;
+
+        if (pitchOffset == nullptr && offsetSemis != 0.0f)   // o canal voltou ao descanso: o tom da nota, exato
+        {
+            offsetSemis = 0.0f;
+            ratio = baseRatio;
+        }
 
         const auto& z = set.zones[(std::size_t) zone];
         const auto total = z.totalFrames;
@@ -343,6 +354,15 @@ public:
             if (missing)
                 ++underruns;
 
+            if (pitchOffset != nullptr)
+            {
+                if (const float semis = pitchOffset[i] * bendScale; semis != offsetSemis)
+                {
+                    offsetSemis = semis;
+                    ratio = semis == 0.0f ? baseRatio : baseRatio * std::exp2 ((double) semis / 12.0);
+                }
+            }
+
             position += ratio;
         }
 
@@ -365,7 +385,8 @@ private:
     }
 
     double outRate = 48000.0;
-    double position = 0.0, ratio = 1.0;
+    double position = 0.0, ratio = 1.0, baseRatio = 1.0;   // baseRatio: sem o bend do canal
+    float offsetSemis = 0.0f, bendScale = 1.0f;            // o desvio que está na razão agora e o keyTrack da zona
     float env = 0.0f, envTarget = 1.0f, envStep = 0.0f, releaseCoeff = 1.0f, gain = 1.0f;
     int zone = -1, noteKey = -1;
     std::uint32_t gen = 0;

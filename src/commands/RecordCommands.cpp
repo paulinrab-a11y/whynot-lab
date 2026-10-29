@@ -1,6 +1,7 @@
 // Comandos da gravação (entrega 3.5): armar, REC, punch, latência, notas com tempo e o take.
 
 #include "CommandRegistry.h"
+#include "../record/BlockFile.h"
 #include "../record/ReversedAudio.h"
 #include "../engine/SampleAnalysis.h"
 #include "../record/BeatTempo.h"
@@ -707,7 +708,7 @@ void registerRecordCommands (CommandRegistry& r)
                      if (item == nullptr || item->kind != "audio" || channel == nullptr)
                          return CommandResult::fail ("Bloco de áudio não encontrado."_t);
 
-                     const float peak = peakOf (reversed::playedFile (c.model.resolveSample (channel->samplePath), item->reversed), item->offsetSeconds,
+                     const float peak = peakOf (blockfile::playedOf (c.model, *channel, *item), item->offsetSeconds,
                                                 item->fileSeconds (ticksToSeconds (item->length, p.bpm)));
 
                      if (peak < 0.0f)
@@ -757,7 +758,7 @@ void registerRecordCommands (CommandRegistry& r)
                  // Voz na playlist (27/10): o bloco vira, sem canal novo (antes cada inverter criava um canal). O
                  // arquivo invertido fica ao lado do original ("Voz_take03_invertido.wav") e o bloco toca ele com
                  // PlaylistItem::reversed; o offsetSeconds passa a contar nele. Inverter de novo volta.
-                 const auto source = c.model.resolveSample (channel->samplePath);
+                 const auto source = blockfile::sourceOf (c.model, *channel, *item);   // o consolidado também (fatia 6)
                  const auto target = reversed::fileFor (source);
                  double seconds = fileSecondsOf (source);
 
@@ -785,9 +786,11 @@ void registerRecordCommands (CommandRegistry& r)
                  return CommandResult::success (juce::var (o));
              } });
 
+    // Playlist fatia 6 (27/10 noite): sem canal novo. Os blocos de uma raia viram um WAV ao lado do arquivo do primeiro
+    // ("Voz_take03_consolidado.wav") e um bloco só, no mesmo canal: o bloco toca o arquivo dele (PlaylistItem::file).
     r.add ({ "audio.consolidate", "Consolidar num WAV"_t,
-             schema ({ { "items", "array", true, "Ids dos blocos de áudio (por exemplo, os pedaços do comp): viram um WAV só, com o ganho, "
-                                                 "os fades e os crossfades, sem os efeitos do mixer"_t } }), true,
+             schema ({ { "items", "array", true, "Ids dos blocos de áudio de uma raia (por exemplo, os pedaços do comp): viram um WAV só, com "
+                                                 "o ganho, os fades e os crossfades, sem os efeitos do mixer, num bloco só no mesmo canal"_t } }), true,
              [] (CommandContext& c, const juce::var& a)
              {
                  auto& p = c.model.data();
@@ -801,6 +804,9 @@ void registerRecordCommands (CommandRegistry& r)
 
                  if (chosen.empty())
                      return CommandResult::fail ("Escolha os blocos de áudio que viram um WAV só."_t);
+
+                 if (std::any_of (chosen.begin(), chosen.end(), [&chosen] (const PlaylistItem& i) { return i.track != chosen.front().track; }))
+                     return CommandResult::fail ("Consolide os blocos de uma raia de cada vez."_t);
 
                  int from = maxTimelineTicks, to = 0;
 
@@ -831,9 +837,19 @@ void registerRecordCommands (CommandRegistry& r)
                  master.name = "Master";
                  solo.mixer = { master };
 
+                 // o WAV fica ao lado do arquivo que o primeiro bloco toca (o original nunca muda); sem pasta que dê para
+                 // escrever, vai para as gravações
                  const auto* first = p.findChannel (chosen.front().ref);
-                 const auto base = juce::File::createLegalFileName ((first != nullptr ? first->name : juce::String ("Voz")).replace (" ", "_") + "_consolidado");
-                 const auto out = c.app.recordingsFolder().getNonexistentChildFile (base, ".wav", false);
+
+                 if (first == nullptr)
+                     return CommandResult::fail ("Canal do clipe não encontrado."_t);
+
+                 const auto source = blockfile::sourceOf (c.model, *first, chosen.front());
+                 const auto folder = source.getParentDirectory().hasWriteAccess() && source.getParentDirectory().isDirectory()
+                                         ? source.getParentDirectory() : c.app.recordingsFolder();
+                 const auto base = juce::File::createLegalFileName ((source.existsAsFile() ? source.getFileNameWithoutExtension()
+                                                                                            : first->name.replace (" ", "_")) + "_consolidado");
+                 const auto out = folder.getNonexistentChildFile (base, ".wav", false);
                  out.getParentDirectory().createDirectory();
 
                  // o render começa na amostra de antes (a grade de 48 kHz do motor), e a fração vai para o corte do bloco
@@ -843,19 +859,11 @@ void registerRecordCommands (CommandRegistry& r)
                  if (const auto rendered = c.app.renderRange (solo, alignedFrom, ticksToSeconds (to, p.bpm), out); rendered.failed())
                      return CommandResult::fail (rendered.getErrorMessage());
 
-                 Channel ch;
-                 ch.id = makeId ("ch");
-                 ch.kind = "audio";
-                 ch.name = (first != nullptr ? first->name : juce::String ("Voz")) + " (consolidado)";
-                 ch.colour = first != nullptr ? first->colour : channelColourForIndex ((int) p.channels.size());
-                 ch.samplePath = out.getFullPathName().replaceCharacter ('\\', '/');
-                 ch.output = first != nullptr ? first->output : masterTrackId;
-                 p.channels.push_back (ch);
-
                  PlaylistItem item;
                  item.id = makeId ("it");
                  item.kind = "audio";
-                 item.ref = ch.id;
+                 item.ref = first->id;   // o mesmo canal: a mesma trilha do mixer, os mesmos efeitos
+                 item.file = out.getFullPathName().replaceCharacter ('\\', '/');
                  item.start = from;
                  item.length = to - from;
                  item.offsetSeconds = roundToMicroseconds (fromSeconds - alignedFrom);
@@ -867,8 +875,8 @@ void registerRecordCommands (CommandRegistry& r)
 
                  auto o = new juce::DynamicObject();
                  o->setProperty ("item", item.id);
-                 o->setProperty ("channel", ch.id);
-                 o->setProperty ("path", ch.samplePath);
+                 o->setProperty ("channel", item.ref);
+                 o->setProperty ("path", item.file);
                  return CommandResult::success (juce::var (o));
              } });
 
@@ -886,7 +894,7 @@ void registerRecordCommands (CommandRegistry& r)
                  if (item == nullptr || item->kind != "audio" || channel == nullptr)
                      return CommandResult::fail ("Bloco de áudio não encontrado."_t);
 
-                 const auto found = detectBpm (c.model.resolveSample (channel->samplePath), channel->name);
+                 const auto found = detectBpm (blockfile::sourceOf (c.model, *channel, *item), channel->name);   // o consolidado lê o WAV dele (fatia 6)
 
                  if (found.bpm <= 0.0)
                      return CommandResult::fail ("Não achei o andamento deste áudio (curto demais, ou sem batida clara)."_t);
@@ -914,7 +922,7 @@ void registerRecordCommands (CommandRegistry& r)
                  if (item == nullptr || item->kind != "audio" || channel == nullptr)
                      return CommandResult::fail ("Bloco de áudio não encontrado."_t);
 
-                 const auto file = c.model.resolveSample (channel->samplePath);
+                 const auto file = blockfile::sourceOf (c.model, *channel, *item);   // o consolidado lê o WAV dele (fatia 6)
                  const double fileSeconds = fileSecondsOf (file);
                  Detected found { params::number (a, "bpm", 0.0), "pedido"_t };
 
@@ -966,7 +974,7 @@ void registerRecordCommands (CommandRegistry& r)
                  if (item == nullptr || item->kind != "audio" || channel == nullptr)
                      return CommandResult::fail ("Bloco de áudio não encontrado."_t);
 
-                 const auto file = c.model.resolveSample (channel->samplePath);
+                 const auto file = blockfile::sourceOf (c.model, *channel, *item);   // o consolidado lê o WAV dele (fatia 6)
                  const double fileSeconds = fileSecondsOf (file);
                  Detected found { params::number (a, "bpm", 0.0), "pedido"_t };
 
@@ -1113,7 +1121,7 @@ void registerRecordCommands (CommandRegistry& r)
 
                  // os ataques no trecho que o bloco toca, em segundos do arquivo, levados para ticks do bloco
                  const double blockSeconds = ticksToSeconds (item->length, p.bpm);
-                 const auto onsets = onsetsIn (reversed::playedFile (c.model.resolveSample (channel->samplePath), item->reversed), item->offsetSeconds,
+                 const auto onsets = onsetsIn (blockfile::playedOf (c.model, *channel, *item), item->offsetSeconds,
                                                item->offsetSeconds + item->fileSeconds (blockSeconds), audio::Sensitivity::medium);
                  const double third = ticksPerStep / 3.0;   // 100% de swing = o contratempo atrasado um terço de passo
                  double sum = 0.0, onSum = 0.0;

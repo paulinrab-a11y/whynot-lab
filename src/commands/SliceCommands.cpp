@@ -7,6 +7,7 @@
 
 #include "CommandRegistry.h"
 #include "../model/PlaylistEdit.h"
+#include "../record/BlockFile.h"
 #include "../record/ReversedAudio.h"
 #include "../engine/SampleAnalysis.h"
 
@@ -441,7 +442,7 @@ void registerSliceCommands (CommandRegistry& r)
                      const double clipSeconds = ticksToSeconds (item->length, p.bpm);
                      const double from = item->offsetSeconds, to = from + item->fileSeconds (clipSeconds);
 
-                     for (double at : onsetsIn (reversed::playedFile (c.model.resolveSample (ch->samplePath), item->reversed), from, to, sensitivityOf (a)))
+                     for (double at : onsetsIn (blockfile::playedOf (c.model, *ch, *item), from, to, sensitivityOf (a)))
                          cuts.push_back (item->start + juce::roundToInt (secondsToTicks ((at - from) * item->stretch, p.bpm)));
                  }
                  else if (mode == "beat" || mode == "bar")

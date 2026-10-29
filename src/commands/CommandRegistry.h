@@ -42,6 +42,13 @@ struct AppServices
     // A agulha (gravar voz, 21/10): no modo SONG o play e a gravação começam dela, e o stop volta para ela.
     virtual void setPlayStart (int /*ticks*/) {}
     virtual int playStart() const   { return 0; }
+    // O começo do play no PAT (29/10): de onde o padrão atual toca, em ticks dentro dele; o stop volta para lá. Vale
+    // para o padrão em que foi marcado (trocar de padrão volta ao começo). Estado do transporte, fora do projeto.
+    virtual void setPatternStart (int /*ticks*/) {}
+    virtual int patternStart() const   { return 0; }
+    // A seleção de tempo da playlist (playlist fatia 6, 27/10 noite: o trecho e o laço entre dois marcadores). Estado da tela.
+    virtual void setTimeSelection (juce::Range<int>) {}
+    virtual juce::Range<int> getTimeSelection() const   { return {}; }
 
     // Gravar voz, fatia 4: onde as gravações e os WAVs feitos a partir delas ficam, e o render de um trecho
     // de um projeto montado só para isso (consolidar: os blocos escolhidos, sem o mixer).
@@ -276,6 +283,11 @@ public:
         volta antes do primeiro knob mexido (um passo de desfazer por volta) e fecha antes de qualquer outra edição. */
     std::function<void (const juce::String& id)> beforeCommand;
 
+    /** (29/10) Chamado depois de cada comando que mudou o modelo e deu certo, com o projeto de antes e o de agora. Um
+        texto não vazio recusa o comando: o projeto volta ao de antes e o run() devolve a falha com esse texto (num lote,
+        o lote inteiro volta). A ponte da IA liga enquanto roda um comando dela: o bloco travado não muda pela IA. */
+    std::function<juce::String (const Project& before, const Project& after)> vetoChange;
+
     /** Vários comandos num passo de desfazer só, tudo ou nada (Fase 4: o command_batch da IA).
         steps = [{ id, params }]. Recusa o lote inteiro, sem rodar nada, se um id não existe, não muda o
         modelo ou é project.new/open (limpam o desfazer). Cada passo é um run() normal (normaliza e projeta
@@ -390,6 +402,8 @@ void registerPitchBendCommands (CommandRegistry&);
 void registerPlaylistEditCommands (CommandRegistry&);
 /** Afinação nota a nota (27/10): audio.analyzeNotes, setNoteTune, editNotes, splitNote, mergeNotes, tuneToScale e clearNoteTune. */
 void registerNoteTuneCommands (CommandRegistry&);
+/** Swing e começo do play no PAT (29/10): project.setSwing, channel.setGroove e transport.setPatternStart. */
+void registerGrooveCommands (CommandRegistry&);
 
 //==============================================================================
 // Ajudas para ler parâmetros com mensagens de erro claras.

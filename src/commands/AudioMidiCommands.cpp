@@ -1,4 +1,5 @@
 #include "CommandRegistry.h"
+#include "../record/BlockFile.h"
 #include "../record/ReversedAudio.h"
 #include "../engine/AudioToMidi.h"
 #include "../engine/SampleAnalysis.h"
@@ -116,7 +117,7 @@ void registerAudioMidiCommands (CommandRegistry& r)
                      if (item == nullptr || item->kind != "audio" || channel == nullptr)
                          return CommandResult::fail ("Bloco de áudio não encontrado."_t);
 
-                     file = reversed::playedFile (c.model.resolveSample (channel->samplePath), item->reversed);   // invertido (27/10)
+                     file = blockfile::playedOf (c.model, *channel, *item);   // invertido (27/10) ou consolidado (fatia 6)
                      from = item->offsetSeconds;
                      to = from + item->fileSeconds (ticksToSeconds (item->length, p.bpm));
                      stretch = item->stretch;

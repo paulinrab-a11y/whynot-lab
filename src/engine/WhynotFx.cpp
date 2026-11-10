@@ -1,5 +1,7 @@
 #include "WhynotFx.h"
 
+#include "../audio/BlockSlices.h"
+
 namespace whynot
 {
 
@@ -150,14 +152,21 @@ void WhynotFxPlugin::applyToBuffer (const te::PluginRenderContext& fc)
 
     if (channels == 1)
     {
-        // Trilha mono: processa como estéreo com uma cópia e devolve o canal esquerdo.
-        if (num > monoScratch.getNumSamples())
-            return;
+        // Trilha mono: processa como estéreo com uma cópia e devolve o canal esquerdo. O Tracktion pode mandar um
+        // bloco maior que o do initialise(): em pedaços do tamanho do rascunho (sem alocar), no lugar de sair sem
+        // processar, o que deixava o som seco e sem o atraso que o PDC já compensou. O bloco que cabe é um pedaço só.
+        if (monoScratch.getNumChannels() == 0)
+            return;   // ainda sem initialise(): o host também não está preparado
 
         float* left = buffer.getWritePointer (0, start);
         float* right = monoScratch.getWritePointer (0);
-        std::copy (left, left + num, right);
-        host.process (left, right, num);
+
+        audio::forEachSlice (num, monoScratch.getNumSamples(), [this, left, right] (int offset, int n)
+        {
+            std::copy (left + offset, left + offset + n, right);
+            host.process (left + offset, right, n);
+        });
+
         return;
     }
 

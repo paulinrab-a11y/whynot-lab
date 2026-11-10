@@ -200,6 +200,10 @@ PromptSettings parsePrompt (std::string_view text)
         { "automotivo", "funk" }, { "bruxaria", "funk" }, { "rap", "rap" }, { "hiphop", "rap" }, { "hip-hop", "rap" },
         { "pop", "pop" }, { "rnb", "rnb" }, { "r&b", "rnb" }, { "soul", "rnb" }, { "phonk", "phonk" },
         { "lofi", "lofi" }, { "lo-fi", "lofi" }, { "boombap", "lofi" },
+        { "afro", "afro" }, { "afrobeat", "afro" }, { "afrobeats", "afro" }, { "amapiano", "afro" },
+        { "reggaeton", "reggaeton" }, { "reggaetton", "reggaeton" }, { "dembow", "reggaeton" },
+        { "house", "house" }, { "eletronica", "house" }, { "plugg", "plugg" }, { "pluggnb", "plugg" },
+        { "jersey", "jersey" }, { "drift", "phonk" },
     };
 
     static const std::pair<const char*, const char*> moodWords[] = {

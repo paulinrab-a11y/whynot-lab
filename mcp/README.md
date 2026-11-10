@@ -24,6 +24,8 @@ Eles usam o `build/` do repositório, ou o caminho em `WHYNOT_EXE`, e são pulad
   `node mcp/dist/src/index.js --headless [--exe <WHYNOT LAB.exe>] [--data <pasta>]`.
   - Sem `--data`, o app usa a sua pasta de dados de verdade, a mesma do app com janela (atalhos, pastas de plugin).
   - Sem janela não há autosave: o projeto só fica salvo com `project.save` ou `project.saveNewVersion`.
+  - Se o app sem janela cair, o servidor abre outro (vazio) no pedido seguinte e avisa a IA uma vez, com o caminho do
+    último projeto salvo; não reabre o projeto sozinho.
 
 ## Ligar no cliente de IA
 
@@ -47,10 +49,10 @@ No Claude Code: `claude mcp add whynot -- node "<pasta do repositório>\mcp\dist
 | Tool | O que faz |
 |---|---|
 | `command_list` | Os comandos do app: sem filtro, compactos por domínio; com `domain`, `query` ou `ids`, com o schema e o risco |
-| `command_run` | Roda um comando. Os que mudam o projeto viram um passo de desfazer "IA: <título>"; os [confirma] pedem o ok da pessoa |
+| `command_run` | Roda um comando (pode apagar e gravar arquivo). Os que mudam o projeto viram um passo de desfazer "IA: <título>"; os [confirma] pedem o ok da pessoa |
 | `command_batch` | Até 200 comandos num passo de desfazer só, tudo ou nada |
-| `render_preview` | Renderiza o padrão ou a música na pasta da IA e devolve as medidas do som (pico, LUFS, cortes, silêncio, RMS por compasso) |
-| `screenshot` | Uma captura da tela em PNG (até 1600 px e ~1 MB), com ou sem janela |
+| `render_preview` | Renderiza o padrão ou a música e devolve as medidas do som (pico, LUFS, cortes, silêncio, RMS por compasso); grava um WAV na pasta da IA |
+| `screenshot` | Uma captura da tela em PNG (até 1600 px e ~1 MB), com ou sem janela; grava um PNG na pasta da IA e pode trocar de tela |
 | `get_project` | O projeto: `resumo` (texto curto) ou `completo` (o JSON do `.wnl`, com filtros) |
 
 A confirmação: com a janela, a WHYNOT pergunta num cartão na tela; sem janela, o `command_run` devolve

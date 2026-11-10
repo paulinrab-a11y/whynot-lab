@@ -1,5 +1,7 @@
 #include "CommandPolicy.h"
 
+#include "ControlPolicy.h"
+
 #include <algorithm>
 #include <array>
 
@@ -49,6 +51,33 @@ namespace
         return r;
     }
 
+    // Mais um parâmetro de caminho no comando: no `path` se ele está vago (regra que confirma), senão no
+    // primeiro `more` vago. Sem vaga, a tabela não compila (o throw não é constante): aumente o maxPathParams.
+    constexpr CommandRule also (CommandRule r, PathParam p)
+    {
+        if (r.path.name.empty())
+        {
+            r.path = p;
+            return r;
+        }
+
+        for (auto& slot : r.more)
+        {
+            if (slot.name.empty())
+            {
+                slot = p;
+                return r;
+            }
+        }
+
+        throw "parâmetros de caminho demais num comando";
+    }
+
+    constexpr PathParam reads (std::string_view param)          { return { param, Access::read, {} }; }
+    constexpr PathParam readsList (std::string_view param)      { PathParam p = reads (param); p.list = true; return p; }
+    constexpr PathParam readsRelative (std::string_view param)  { PathParam p = reads (param); p.relative = true; return p; }
+    constexpr PathParam readsIfPath (std::string_view param)    { PathParam p = reads (param); p.whenPathLike = true; return p; }
+
     constexpr CommandRule unsaved (CommandRule r)      { r.confirmIfUnsaved = true; return r; }
     constexpr CommandRule overProject (CommandRule r)  { r.savesProject = true; return r; }
     constexpr CommandRule intoFolder (CommandRule r)   { r.writesIntoFolder = true; return r; }
@@ -67,7 +96,7 @@ namespace
         Entry { "audio.clearNoteTune",        ok() },   // afinação nota a nota (27/10)
         Entry { "audio.consolidate",          ok() },
         Entry { "audio.detectBpm",            ok() },
-        Entry { "audio.detectKey",            ok() },
+        Entry { "audio.detectKey",            reading ("path") },   // um WAV ou MP3 no lugar do canal
         Entry { "audio.devices",              ok() },
         Entry { "audio.editNotes",            ok() },   // afinação nota a nota (27/10)
         Entry { "audio.extractGroove",        ok() },
@@ -136,19 +165,19 @@ namespace
         Entry { "edit.undoToggle",            blocked ("é o Ctrl+Z da tela, que alterna sozinho; a IA usa edit.undo e edit.redo") },
         Entry { "export.cancel",              ok() },   // exportação em segundo plano (extra-onda1): só para
         Entry { "export.producerTag",         ok() },
-        Entry { "export.setProducerTag",      confirm (preference) },
+        Entry { "export.setProducerTag",      also (confirm (preference), reads ("path")) },
         Entry { "export.status",              ok() },   // e só lê
         Entry { "favorites.list",             ok() },
-        Entry { "favorites.set",              confirm (preference) },
-        Entry { "favorites.toggle",           confirm (preference) },
+        Entry { "favorites.set",              also (confirm (preference), readsIfPath ("id")) },   // sample e folder: o id é o caminho
+        Entry { "favorites.toggle",           also (confirm (preference), readsIfPath ("id")) },
         Entry { "fx.list",                    ok() },
         Entry { "ideas.detectChords",         ok() },
         Entry { "ideas.generate",             ok() },
         Entry { "ideas.options",              ok() },
         Entry { "ideas.parse",                ok() },
         Entry { "ideas.progressions",         ok() },
-        Entry { "library.addFolder",          confirm (libraryData) },
-        Entry { "library.comboAdd",           confirm (libraryData) },
+        Entry { "library.addFolder",          also (confirm (libraryData), reads ("path")) },
+        Entry { "library.comboAdd",           also (confirm (libraryData), reads ("path")) },
         Entry { "library.comboCreate",        confirm (libraryData) },
         Entry { "library.comboDelete",        confirm (libraryData) },
         Entry { "library.comboLatest",        ok() },
@@ -160,23 +189,23 @@ namespace
         Entry { "library.combos",             ok() },
         Entry { "library.deck",               ok() },
         Entry { "library.list",               ok() },
-        Entry { "library.loadDeck",           ok() },
+        Entry { "library.loadDeck",           reading ("path") },
         Entry { "library.loop",               ok() },
         Entry { "library.matchLoudness",      ok() },
         Entry { "library.pause",              ok() },
-        Entry { "library.play",               ok() },
-        Entry { "library.refresh",            ok() },
-        Entry { "library.removeFolder",       confirm (libraryData) },
+        Entry { "library.play",               reading ("path") },
+        Entry { "library.refresh",            also (ok(), readsList ("folders")) },   // varre cada pasta da lista
+        Entry { "library.removeFolder",       also (confirm (libraryData), reads ("path")) },
         Entry { "library.renderPending",      ok() },
-        Entry { "library.renderPreview",      ok() },
+        Entry { "library.renderPreview",      reading ("path") },
         Entry { "library.search",             ok() },
         Entry { "library.seek",               ok() },
         Entry { "library.setActive",          ok() },
-        Entry { "library.setMeta",            confirm (libraryData) },
+        Entry { "library.setMeta",            also (confirm (libraryData), reads ("path")) },
         Entry { "library.setSync",            ok() },
         Entry { "library.stop",               ok() },
         Entry { "library.switchDeck",         ok() },
-        Entry { "library.toggleVersions",     ok() },
+        Entry { "library.toggleVersions",     reading ("path") },
         Entry { "live.note",                  blocked ("nota ao vivo fica pendurada se o \"solta\" não chegar; para ouvir, use o render_preview") },
         Entry { "midi.cancelLearn",           ok() },
         Entry { "midi.inputs",                ok() },
@@ -236,7 +265,7 @@ namespace
         Entry { "pianoroll.stepsToNotes",     ok() },
         Entry { "pianoroll.transform",        ok() },
         Entry { "pianoroll.updateNotes",      ok() },
-        Entry { "playlist.addItem",           reading ("path") },
+        Entry { "playlist.addItem",           also (reading ("path"), readsRelative ("file")) },   // file: o consolidado do bloco
         Entry { "playlist.addMarker",         ok() },
         Entry { "playlist.addTrack",          ok() },
         Entry { "playlist.chopItem",          ok() },
@@ -268,7 +297,7 @@ namespace
         Entry { "project.autosave",           ok() },
         Entry { "project.exportMidi",         writing ("path", ".mid") },
         Entry { "project.exportMp3",          writing ("path", ".mp3") },
-        Entry { "project.exportPack",         intoFolder (writing ("folder", {})) },
+        Entry { "project.exportPack",         also (intoFolder (writing ("folder", {})), reads ("tag")) },   // tag: o áudio que o MP3 leva
         Entry { "project.exportStems",        intoFolder (writing ("folder", {})) },
         Entry { "project.exportWav",          writing ("path", ".wav") },
         Entry { "project.importFrom",         reading ("path") },
@@ -363,6 +392,76 @@ std::string_view riskName (Risk r) noexcept
         case Risk::blocked:  return "blocked";
         default:             return "confirm";
     }
+}
+
+//==============================================================================
+namespace
+{
+    bool isSlash (char c) noexcept   { return c == '\\' || c == '/'; }
+
+    /** Como o juce::File::isAbsolutePath no Windows: começa com barra, ou o segundo caractere é ':'. */
+    bool looksAbsolute (std::string_view s) noexcept
+    {
+        return ! s.empty() && (isSlash (s[0]) || (s.size() >= 2 && s[1] == ':'));
+    }
+
+    PathsCheck refusePaths (std::string_view param, std::string_view reason)
+    {
+        PathsCheck c;
+        c.ok = false;
+        c.reason = "Caminho recusado (" + std::string (param) + "): " + std::string (reason);
+        return c;
+    }
+}
+
+PathsCheck checkPathArguments (const CommandRule& rule, const std::vector<PathArgument>& arguments,
+                               const std::vector<std::string>& readRoots, const std::vector<std::string>& writeRoots,
+                               std::string_view projectFolder)
+{
+    PathsCheck out;
+    std::array<std::size_t, maxPathParams> perParam {};
+
+    for (auto& arg : arguments)
+    {
+        const auto* param = rule.findPathParam (arg.param);
+
+        if (param == nullptr)
+            continue;
+
+        if (arg.index >= 0 && ! param->list)
+            return refusePaths (param->name, "o parâmetro é um caminho só, e veio uma lista.");
+
+        if (arg.value.empty())
+            continue;
+
+        // o id de um favorito só é caminho em sample e folder: o que tem cara de caminho passa pelas regras
+        if (param->whenPathLike && ! looksAbsolute (arg.value))
+            continue;
+
+        for (std::size_t i = 0; i < maxPathParams; ++i)
+            if (rule.pathParam (i) == param && ++perParam[i] > maxPathsPerList)
+                return refusePaths (param->name, "mais de 64 caminhos numa lista.");
+
+        auto value = arg.value;
+
+        if (param->relative && ! looksAbsolute (value))
+        {
+            if (projectFolder.empty())
+                return refusePaths (param->name, "caminho relativo num projeto que ainda não foi salvo.");
+
+            value = std::string (projectFolder) + "\\" + value;
+        }
+
+        const bool writes = param->access == Access::write;
+        const auto checked = checkPath (value, writes ? writeRoots : readRoots);
+
+        if (checked.verdict == PathVerdict::invalid)
+            return refusePaths (param->name, checked.reason);
+
+        out.paths.push_back ({ param->name, arg.index, param->access, checked.path, checked.verdict == PathVerdict::outside });
+    }
+
+    return out;
 }
 
 std::size_t ruleCount() noexcept                       { return table.size(); }

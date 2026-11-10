@@ -221,49 +221,83 @@ GateDecision evaluate (const juce::String& commandId, const juce::var& params, A
         return refuse (why);
 
     GateDecision run { GateDecision::Kind::run, {}, params.getDynamicObject() != nullptr ? params.clone() : juce::var (new juce::DynamicObject()) };
+    const auto& model = app.getModel();
+
+    // Os caminhos primeiro, em todos os parâmetros que a regra marca (inclusive as listas) e também nos comandos
+    // que sempre confirmam: o que é inválido (UNC, fluxo alternativo, nome reservado) nem chega a ser perguntado.
+    std::vector<PathArgument> given;
+
+    for (std::size_t i = 0; i < maxPathParams; ++i)
+    {
+        const auto* param = rule.pathParam (i);
+
+        if (param == nullptr || ! params.isObject())
+            continue;
+
+        const auto& value = params[juce::Identifier (fromUtf8 (param->name))];
+
+        if (auto* list = value.getArray())
+        {
+            for (int n = 0; n < list->size(); ++n)
+                given.push_back ({ param->name, n, utf8 (list->getReference (n).toString()) });
+        }
+        else
+        {
+            given.push_back ({ param->name, -1, utf8 (value.toString()) });
+        }
+    }
+
+    const auto projectFolder = model.projectFolder();
+    const auto checked = checkPathArguments (rule, given, folders.read, folders.write,
+                                             projectFolder != juce::File() ? utf8 (projectFolder.getFullPathName()) : std::string());
+
+    if (! checked.ok)
+        return refuse (fromUtf8 (checked.reason));
+
+    // daqui em diante o comando usa os caminhos normalizados, com ou sem confirmação
+    juce::StringArray outside;
+
+    for (auto& c : checked.paths)
+    {
+        const auto name = juce::Identifier (fromUtf8 (c.param));
+        const auto path = fromUtf8 (c.path);
+
+        if (c.index < 0)
+            run.params.getDynamicObject()->setProperty (name, path);
+        else if (auto* list = run.params[name].getArray())   // o clone copiou a lista: muda só a do pedido que vai rodar
+            list->set (c.index, path);
+
+        if (c.outside)
+            outside.addIfNotAlreadyThere (path);
+    }
 
     if (rule.risk == Risk::confirm)
         return confirm (sentence (rule.why) + ".", run.params);
 
-    const auto& model = app.getModel();
-
     if (rule.confirmIfUnsaved && model.dirty)
         return confirm ("O projeto aberto tem alterações não salvas, que se perderiam."_t, run.params);
 
-    if (rule.path.name.empty())
-        return run;
+    // project.save sem caminho grava por cima do projeto aberto; os outros reclamam do parâmetro sozinhos
+    if (rule.savesProject && model.file.existsAsFile()
+        && (! params.isObject() || params[juce::Identifier (fromUtf8 (rule.path.name))].toString().isEmpty()))
+        return confirm ("Grava por cima do projeto aberto ("_t + model.file.getFullPathName() + ").", run.params);
 
-    const auto name = juce::Identifier (fromUtf8 (rule.path.name));
-    const auto given = params.isObject() ? params[name].toString() : juce::String();
+    if (outside.size() == 1)
+        return confirm ("Usa um caminho fora das pastas permitidas: "_t + outside[0], run.params);
 
-    if (given.isEmpty())
+    if (outside.size() > 1)
+        return confirm ("Usa caminhos fora das pastas permitidas: "_t + outside.joinIntoString ("; "), run.params);
+
+    for (auto& c : checked.paths)
     {
-        // project.save sem caminho grava por cima do projeto aberto; os outros reclamam do parâmetro sozinhos
-        if (rule.savesProject && model.file.existsAsFile())
-            return confirm ("Grava por cima do projeto aberto ("_t + model.file.getFullPathName() + ").", run.params);
+        if (c.access != Access::write)
+            continue;
 
-        return run;
-    }
+        auto target = juce::File (fromUtf8 (c.path));
+        const auto* param = rule.findPathParam (c.param);
 
-    const bool writes = rule.path.access == Access::write;
-    const auto checked = checkPath (utf8 (given), writes ? folders.write : folders.read);
-
-    if (checked.verdict == PathVerdict::invalid)
-        return refuse ("Caminho recusado: "_t + fromUtf8 (checked.reason));
-
-    // daqui em diante o comando usa o caminho normalizado, com ou sem confirmação
-    const auto path = fromUtf8 (checked.path);
-    run.params.getDynamicObject()->setProperty (name, path);
-
-    if (checked.verdict == PathVerdict::outside)
-        return confirm ("Usa um caminho fora das pastas permitidas: "_t + path, run.params);
-
-    if (writes)
-    {
-        auto target = juce::File (path);
-
-        if (! rule.path.extension.empty())
-            target = target.withFileExtension (fromUtf8 (rule.path.extension));
+        if (param != nullptr && ! param->extension.empty())
+            target = target.withFileExtension (fromUtf8 (param->extension));
 
         if (rule.writesIntoFolder)
         {

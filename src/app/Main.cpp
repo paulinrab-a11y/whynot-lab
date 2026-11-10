@@ -22,10 +22,14 @@ namespace
     }
 
     /** O que o JUCE e o Tracktion mandam para o juce::Logger (aparelho de áudio aberto, erros do motor)
-        vai para o log da sessão, junto com as linhas do whynot::log. */
+        vai para o log da sessão, junto com as linhas do whynot::log.
+
+        O Logger pode ser chamado de qualquer thread, inclusive a de áudio e a de MIDI: por isso a ponte só
+        enfileira (logFromAnyThread não trava, não aloca e não grava; o toRawUTF8 só devolve o ponteiro do
+        texto, que o juce::String já guarda em UTF-8). Quem grava é a thread do log. */
     struct LogBridge final : juce::Logger
     {
-        void logMessage (const juce::String& message) override   { whynot::log (message); }
+        void logMessage (const juce::String& message) override   { whynot::logFromAnyThread (message.toRawUTF8()); }
     };
 }
 

@@ -1,3 +1,5 @@
+#define _CRT_SECURE_NO_WARNINGS 1   // o sscanf do teste da ponte
+
 // Testes do registro de queda e do log de sessão (sem JUCE): o texto do .txt, a escolha dos arquivos
 // antigos a apagar, o módulo de um endereço, o "suspeito" da pilha, o log em arquivo e, no Windows,
 // processos filhos que caem de propósito (acesso inválido, estouro de pilha, abort...) para conferir
@@ -9,6 +11,8 @@
 #include "../../src/app/CrashReport.h"
 #include "../../src/common/Log.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -289,6 +293,157 @@ static void testLogAndLastCrash (const fs::path& work)
 }
 
 //==============================================================================
+// A ponte do juce::Logger: várias threads despejando em logFromAnyThread (que não trava nem aloca).
+static void testBridge (const fs::path& work)
+{
+    std::printf ("Ponte do juce::Logger (fila sem trava)\n");
+
+    const auto logs = work / "logs-ponte";
+
+    // Lê o arquivo e confere: nenhuma linha repetida, cada thread em ordem, e gravadas + descartadas = enviadas.
+    struct Tally
+    {
+        long written = 0, droppedReported = 0, droppedNotes = 0;
+        bool duplicates = false, outOfOrder = false, broken = false;
+        std::string firstBad;
+    };
+
+    auto tally = [] (const std::string& text, int threads)
+    {
+        Tally t;
+        std::vector<long> last ((std::size_t) threads, -1);
+        std::size_t start = 0;
+
+        while (start < text.size())
+        {
+            auto end = text.find ('\n', start);
+
+            if (end == std::string::npos)
+            {
+                t.broken = true;   // linha sem fim
+                break;
+            }
+
+            const auto line = text.substr (start, end - start);
+            start = end + 1;
+
+            if (const auto p = line.find ("ponte-"); p != std::string::npos)
+            {
+                int thread = -1;
+                long index = -1;
+
+                if (std::sscanf (line.c_str() + p, "ponte-%d-%ld-fim", &thread, &index) != 2 || thread < 0 || thread >= threads
+                    || line.size() < 4 || line.compare (line.size() - 4, 4, "-fim") != 0)
+                {
+                    t.broken = true;
+                    continue;
+                }
+
+                if (index == last[(std::size_t) thread])  t.duplicates = true;
+                if (index < last[(std::size_t) thread])   t.outOfOrder = true;
+
+                if (index <= last[(std::size_t) thread] && t.firstBad.empty())
+                    t.firstBad = line + " (depois do " + std::to_string (last[(std::size_t) thread]) + ")";
+
+                last[(std::size_t) thread] = index;
+                ++t.written;
+            }
+            else if (const auto d = line.find ("linhas descartadas"); d != std::string::npos)
+            {
+                const auto bracket = line.find ("] ");
+                t.droppedReported += std::atol (line.c_str() + (bracket == std::string::npos ? 0 : bracket + 2));
+                ++t.droppedNotes;
+            }
+        }
+
+        return t;
+    };
+
+    // 1) pouca coisa: tudo chega, nada é descartado, e a ordem com o log() direto se mantém
+    {
+        CHECK (sessionlog::start (logs), "abre o log");
+        const auto file = sessionlog::currentFile();
+
+        whynot::logFromAnyThread ("ponte-0-0-fim");
+        whynot::logFromAnyThread ("duas\nlinhas\tda ponte");
+        whynot::logFromAnyThread (nullptr);
+        whynot::logFromAnyThread (std::string (1000, 'y').c_str());
+        whynot::logFromAnyThread ((std::string (479, 'z') + "ção").c_str());   // o corte cai no meio do 'ç'
+        whynot::log ("direto, depois da ponte");
+
+        auto text = readAll (file);
+        CHECK (contains (text, "] ponte-0-0-fim\n") && contains (text, "] duas linhas da ponte\n"), "linhas da ponte no arquivo, sem quebra no meio");
+        CHECK (text.find ("ponte-0-0-fim") < text.find ("direto, depois da ponte"), "o log() direto leva junto o que a ponte enfileirou antes dele");
+        CHECK (contains (text, (std::string (480, 'y') + " [...]\n").c_str()) && ! contains (text, std::string (481, 'y').c_str()),
+               "linha comprida cortada em 480 bytes, com a marca do corte");
+        CHECK (contains (text, (std::string (479, 'z') + " [...]\n").c_str()), "o corte não parte um caractere UTF-8");
+
+        whynot::logFromAnyThread ("ponte-0-1-fim");
+        std::this_thread::sleep_for (std::chrono::milliseconds (4 * sessionlog::writerPeriodMs));
+        text = readAll (file);
+        CHECK (contains (text, "] ponte-0-1-fim\n"), "sem log() direto, a thread do log grava sozinha em menos de 1 s");
+
+        whynot::logFromAnyThread ("ponte-0-2-fim");
+        sessionlog::stop();
+        whynot::logFromAnyThread ("ponte-0-3-fim");
+        text = readAll (file);
+        const auto t = tally (text, 1);
+        CHECK (contains (text, "ponte-0-2-fim\n") && ! contains (text, "ponte-0-3-fim"), "o stop() grava o que estava na fila; depois dele, nada entra");
+        CHECK (t.written == 3 && t.droppedReported == 0 && ! t.duplicates && ! t.outOfOrder && ! t.broken, "3 linhas, nenhuma descartada nem repetida");
+    }
+
+    // 2) enxurrada: 6 threads, mais linhas do que a fila aguenta
+    {
+        constexpr int threads = 6;
+        constexpr long perThread = 5000;
+
+        // outra pasta: aberto no mesmo segundo, o log teria o mesmo nome e continuaria o arquivo de cima
+        CHECK (sessionlog::start (work / "logs-enxurrada"), "abre outro log");
+        const auto file = sessionlog::currentFile();
+
+        std::vector<std::thread> producers;
+
+        for (int id = 0; id < threads; ++id)
+            producers.emplace_back ([id]
+            {
+                char line[64];
+
+                for (long i = 0; i < perThread; ++i)
+                {
+                    std::snprintf (line, sizeof (line), "ponte-%d-%ld-fim", id, i);
+                    whynot::logFromAnyThread (line);
+
+                    if (i % 64 == 0)
+                        std::this_thread::yield();
+                }
+            });
+
+        for (int i = 0; i < 20; ++i)   // e alguém escrevendo direto no meio
+        {
+            whynot::log ("direto no meio da enxurrada");
+            std::this_thread::yield();
+        }
+
+        for (auto& p : producers)
+            p.join();
+
+        sessionlog::stop();
+
+        const auto text = readAll (file);
+        const auto t = tally (text, threads);
+
+        CHECK (! t.broken, "todas as linhas inteiras e bem formadas");
+        CHECK (! t.duplicates, "nenhuma linha repetida");
+        CHECK (! t.outOfOrder, "cada thread sai na ordem em que enfileirou %s", t.firstBad.c_str());
+        CHECK (t.written + t.droppedReported == threads * perThread,
+               "gravadas (%ld) + descartadas (%ld, em %ld avisos) = enviadas (%ld)", t.written, t.droppedReported, t.droppedNotes, threads * perThread);
+        CHECK (t.written >= (long) sessionlog::queueCapacity, "pelo menos uma fila cheia foi gravada");
+        CHECK ((t.droppedReported == 0) == (t.droppedNotes == 0), "só há aviso de descarte quando houve descarte");
+        CHECK (std::count (text.begin(), text.end(), '\n') == t.written + t.droppedNotes + 20, "nada além disso e das 20 linhas diretas");
+    }
+}
+
+//==============================================================================
 #if defined (_WIN32) && defined (_MSC_VER)
 
 #pragma warning (push)
@@ -333,6 +488,7 @@ static int runChild (const std::string& kind, const fs::path& folder)
         return 91;   // a pasta só nasce na queda
 
     CrashReport::setLogFile (sessionlog::currentFile());
+    whynot::logFromAnyThread ("fila da ponte, logo antes da queda");   // fica na fila: a thread do log só acorda em 200 ms
 
     if (kind == "av")               writeNull();
     else if (kind == "av-thread")   { std::thread t (writeNull); t.join(); }
@@ -443,6 +599,9 @@ static void testChildren (const fs::path& work)
 
         CHECK (contains (log, "filho do teste") && contains (log, "QUEDA: ") && contains (log, crash.stem.c_str()),
                "a última linha do log da sessão diz que caiu e aponta o registro");
+        CHECK (contains (log, "fila da ponte, logo antes da queda\n") && log.find ("fila da ponte") < log.find ("QUEDA: ")
+                 && log.find ("fila da ponte") == log.rfind ("fila da ponte"),
+               "o que estava na fila da ponte saiu antes da linha QUEDA, uma vez só");
 
         if (std::string (c.kind) == "nullcall")
             CHECK (crash.module.empty() && contains (text, "(execução de 0x0000000000000000)") && crash.sentence() == "caiu (acesso inválido à memória)",
@@ -525,6 +684,7 @@ int main (int argc, char** argv)
 
     testPure();
     testLogAndLastCrash (work);
+    testBridge (work);
 
    #if defined (_WIN32) && defined (_MSC_VER)
     testChildren (work);

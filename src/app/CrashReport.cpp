@@ -523,6 +523,7 @@ namespace
         wchar_t dumpPath[widePathSize];
         char text[16384];
         char logLine[1024];
+        char queuedLine[sessionlog::queuedLineBytes];
     };
 
     Global g;   // estático: começa zerado
@@ -732,7 +733,29 @@ namespace
         add (g.stem);
         add (".txt\n");
 
-        writeWholeFile (g.logPath, g.logLine, strlen (g.logLine), OPEN_EXISTING, FILE_APPEND_DATA);
+        const HANDLE file = CreateFileW (g.logPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+
+        if (file == INVALID_HANDLE_VALUE)
+            return;
+
+        DWORD written = 0;
+
+        // Primeiro o que a ponte do juce::Logger deixou na fila (as últimas falas do motor antes da queda).
+        // Tirar da fila não trava nem aloca; o teto evita ficar preso se outra thread não parar de enfileirar.
+        for (std::size_t i = 0; i < 2 * sessionlog::queueCapacity; ++i)
+        {
+            const auto size = sessionlog::popQueuedLine (g.queuedLine, sizeof (g.queuedLine));
+
+            if (size == 0)
+                break;
+
+            WriteFile (file, g.queuedLine, (DWORD) size, &written, nullptr);
+        }
+
+        WriteFile (file, g.logLine, (DWORD) strlen (g.logLine), &written, nullptr);
+        FlushFileBuffers (file);
+        CloseHandle (file);
     }
 
     /** Grava o .txt e o .dmp. Roda na thread do registro (ou, se ela não existir, na que caiu). */

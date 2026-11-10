@@ -41,8 +41,27 @@ auto log (const Text& text) noexcept -> decltype (text.toStdString(), void())
     {}
 }
 
+/** A entrada da ponte do juce::Logger (Main.cpp): o JUCE e o Tracktion podem chamar o Logger de qualquer
+    thread, inclusive a de áudio e a de MIDI. Esta função NÃO trava, NÃO aloca e NÃO toca em arquivo: copia
+    a linha (UTF-8, terminada em zero; o que passar de ~480 bytes é cortado) para uma fila de tamanho fixo.
+    Uma thread de prioridade baixa grava a fila no arquivo a cada `sessionlog::writerPeriodMs`. Fila cheia =
+    a linha é descartada e contada; o arquivo ganha depois "N linhas descartadas (a fila do log estava cheia)".
+    As linhas saem com a hora em que foram enfileiradas, e antes de qualquer log() direto que venha depois. */
+void logFromAnyThread (const char* line) noexcept;
+
 namespace sessionlog
 {
+    constexpr std::size_t queueCapacity = 256;      // linhas esperando a gravação (potência de 2)
+    constexpr std::size_t queuedLineBytes = 560;    // uma linha da fila já formatada cabe aqui
+    constexpr int writerPeriodMs = 200;
+
+    /** Grava agora o que está na fila da ponte (o stop() também faz isso). */
+    void flushQueued() noexcept;
+
+    /** Para o registro de queda: tira da fila a linha mais antiga, já formatada e terminada em '\n', sem
+        travar nem alocar. `capacity` tem de ser pelo menos queuedLineBytes. Devolve o tamanho; 0 = vazia. */
+    std::size_t popQueuedLine (char* out, std::size_t capacity) noexcept;
+
     constexpr std::size_t maxFileBytes = 4u * 1024u * 1024u;   // depois disso o log da sessão para de crescer
     constexpr std::size_t maxLineBytes = 2000;
     constexpr std::size_t defaultKeep = 10;                     // arquivos de sessão guardados (rodízio)

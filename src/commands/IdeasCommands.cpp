@@ -570,6 +570,18 @@ void registerIdeasCommands (CommandRegistry& r)
                  if (s.density)    o->setProperty ("density", *s.density);
 
                  o->setProperty ("understood", understood);
+
+                 // Opcionais (10/11): o que o pedido mandou tirar e as palavras que ficaram de fora.
+                 juce::Array<juce::var> negated, ignored;
+
+                 for (auto& n : s.negated)
+                     negated.add (utf8 (n));
+
+                 for (auto& n : s.ignored)
+                     ignored.add (utf8 (n));
+
+                 if (! negated.isEmpty())  o->setProperty ("negated", negated);
+                 if (! ignored.isEmpty())  o->setProperty ("ignored", ignored);
                  return CommandResult::success (juce::var (o));
              } });
 }

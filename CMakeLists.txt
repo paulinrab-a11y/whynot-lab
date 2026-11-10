@@ -132,6 +132,7 @@ set(WHYNOT_SOURCES
     src/app/selftest/Library.cpp
     src/app/selftest/Mixing.cpp
     src/app/selftest/NoteTune.cpp
+    src/app/selftest/Palette.cpp
     src/app/selftest/Performance.cpp
     src/app/selftest/Piano.cpp
     src/app/selftest/PitchBend.cpp
@@ -264,6 +265,7 @@ set(WHYNOT_SOURCES
     src/ui/BeatKeyNotice.cpp
     src/ui/BlockProperties.cpp
     src/ui/ChannelRack.cpp
+    src/ui/CommandPalette.cpp
     src/ui/ControlMenu.cpp
     src/ui/Controls.cpp
     src/ui/DeviceSettings.cpp

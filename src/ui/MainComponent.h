@@ -5,6 +5,7 @@
 #include "AiBridgeUi.h"
 #include "BeatKeyNotice.h"
 #include "ChannelRack.h"
+#include "CommandPalette.h"
 #include "ExportDialogs.h"
 #include "Fluid.h"
 #include "MixerView.h"
@@ -171,6 +172,7 @@ private:
     juce::String selectedChannel;
     StatusBar statusBar;           // o pé: mensagem, erro que fica até fechar, teclado-piano e escala (Design)
     WelcomeCard welcome;           // "Comece aqui": só num projeto novo, até fechar (Design)
+    CommandPalette palette { app }; // a busca de ações (ação view.commandPalette do KeyMap), por cima das telas
     bool wasPlaying = false;       // para avisar "sem saída de som" quando o play começa
     int recordMessageSerial = 0;   // a última mensagem da gravação que já foi para o pé
     int headphoneQuestionSeen = 0; // a última vez que a escuta perguntou "Está de fone?" (fatia 8)

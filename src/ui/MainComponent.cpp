@@ -206,6 +206,20 @@ MainComponent::MainComponent (AppController& a)
     addAndMakeVisible (statusBar);
     addChildComponent (welcome);
 
+    // paleta de comandos: executa as ações pelo mesmo mapa das teclas; o resultado dos comandos vai para o pé
+    addChildComponent (palette);
+    palette.onStatus = toStatus;
+    palette.onAction = [this] (const juce::String& id)
+    {
+        const auto it = actions.find (id);
+
+        if (it == actions.end())
+            return false;
+
+        it->second();
+        return true;
+    };
+
     // "Comece aqui" (revisão de iniciante, 22/10): três passos; cada um encolhe o cartão e deixa a orientação no pé
     welcome.onBeat = [this]
     {
@@ -987,6 +1001,7 @@ void MainComponent::buildActions()
         { "view.mixer",            toggle ("mixer") },
         { "view.settings",         [this] { showAudioSettings(); } },
         { "view.shortcuts",        [this] { ShortcutEditor::show (app, this); } },
+        { CommandPalette::actionId, [this] { palette.open(); } },
         { "keyboard.typing",       [this] { setTypingKeyboard (! typingKeyboard); } },
         { "record.captureMidi",    [this]
           {

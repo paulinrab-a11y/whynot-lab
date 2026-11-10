@@ -236,3 +236,17 @@ else()
 endif()
 
 add_test(NAME rt_bench COMMAND whynot_rt_bench --check)
+
+# Autosave e recuperação de queda (frente app-autosave, 10/11): a política de adiamento do autosave periódico, o
+# conjunto de plugins sujos e os suspeitos de uma queda (janela aberta, últimos adicionados), sem JUCE.
+add_executable(whynot_autosave_tests
+    app/test_autosave_policy.cpp)
+target_compile_features(whynot_autosave_tests PRIVATE cxx_std_20)
+
+if(MSVC)
+    target_compile_options(whynot_autosave_tests PRIVATE /W4 /utf-8 /O2)
+else()
+    target_compile_options(whynot_autosave_tests PRIVATE -Wall -Wextra -O2)
+endif()
+
+add_test(NAME autosave COMMAND whynot_autosave_tests)

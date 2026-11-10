@@ -320,7 +320,24 @@ MainComponent::MainComponent (AppController& a)
 
     // queda na última sessão: oferece o autosave depois que a janela aparecer
     juce::Component::SafePointer<MainComponent> safe (this);
-    juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->offerRecovery(); });
+    juce::MessageManager::callAsync ([safe]
+    {
+        if (safe == nullptr)
+            return;
+
+        safe->offerRecovery();
+
+        // (app-autosave) queda com janela de plugin aberta: oferece bloquear o suspeito, por cima da recuperação
+        // (responder antes de reabrir o autosave, que traria o plugin de volta)
+        if (const auto crash = safe->app.takeCrashNotice(); crash.file.isNotEmpty())
+            juce::AlertWindow::showOkCancelBox (juce::MessageBoxIconType::NoIcon, "Plugin suspeito", crash.question,
+                                                "Bloquear", "Agora não"_t, safe.getComponent(),
+                                                juce::ModalCallbackFunction::create ([safe, crash] (int choice)
+                                                {
+                                                    if (safe != nullptr && choice == 1)
+                                                        safe->showStatus (safe->app.blockSuspect (crash), false);
+                                                }));
+    });
 }
 
 MainComponent::~MainComponent()

@@ -153,6 +153,7 @@ set(WHYNOT_SOURCES
     src/app/selftest/Voice.cpp
     src/app/selftest/VoicePlaylist.cpp
     src/app/selftest/WarpCapture.cpp
+    src/app/selftest/WnlFuzz.cpp
     src/commands/AutomationCommands.cpp
     src/commands/BeatCommands.cpp
     src/commands/AudioMidiCommands.cpp

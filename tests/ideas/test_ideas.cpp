@@ -576,6 +576,195 @@ static void testPrompt()
 }
 
 //==============================================================================
+// Tabela de frases → o que o leitor de pedidos tem que devolver. Campo vazio = tem que vir vazio.
+struct PromptCase
+{
+    const char* text;
+    const char* part;       // id da parte, ou nullptr
+    const char* genre;      // id do gênero, ou nullptr
+    const char* mood;       // id do clima, ou nullptr
+    int root;               // -1 = sem tom
+    const char* scale;      // ou nullptr
+    int bars;               // 0 = sem
+    int bpm;                // 0 = sem
+    double complexity;      // 0 = sem
+    double density;         // 0 = sem
+    const char* negated;    // "a,b" ("" = nada negado)
+    const char* ignored;    // "a,b" ("" = nada ficou de fora)
+};
+
+static std::string joined (const std::vector<std::string>& list)
+{
+    std::string s;
+
+    for (auto& item : list)
+        s += (s.empty() ? "" : ",") + item;
+
+    return s;
+}
+
+static void testPromptTable()
+{
+    std::printf ("Pedido em texto: tabela de frases\n");
+
+    static const PromptCase cases[] = {
+        // --- Os exemplos do docs/ideias.md e os casos que já existiam: têm que continuar iguais.
+        { "trap triste em Fá menor, 4 compassos",            nullptr,  "trap",  "sad",   5, "minor", 4, 0, 0, 0, "", "" },
+        { "melodia de trap triste em Fá menor, 4 compassos", "melody", "trap",  "sad",   5, "minor", 4, 0, 0, 0, "", "" },
+        { "808 de drill sombrio em F#m 142 bpm",             "808",    "drill", "dark",  6, "minor", 0, 142, 0, 0, "", "" },
+        { "acordes de R&B calmo, bem elaborado",             "chords", "rnb",   "chill", -1, nullptr, 0, 0, 0.85, 0, "", "" },
+        { "batida de funk mandelão",                         "drums",  "funk",  nullptr, -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "boom bap jazzy, minimalista",                     nullptr,  "lofi",  nullptr, -1, nullptr, 0, 0, 0.85, 0.25, "", "" },
+        { "Faz uma melodia de drill sombria em F#m 140 bpm", "melody", "drill", "dark",  6, "minor", 0, 140, 0, 0, "", "" },
+        { "Em lá menor, um R&B calmo com acordes",           "chords", "rnb",   "chill", 9, "minor", 0, 0, 0, 0, "", "" },
+        { "batida de funk mandelão 150bpm",                  "drums",  "funk",  nullptr, -1, nullptr, 0, 150, 0, 0, "", "" },
+        { "boom bap jazzy, bem minimalista",                 nullptr,  "lofi",  nullptr, -1, nullptr, 0, 0, 0.85, 0.25, "", "" },
+        { "do zero, um trap pesado",                         nullptr,  "trap",  "dark",  -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "pop alegre em si bemol maior, 8 compassos",       nullptr,  "pop",   "happy", 10, "major", 8, 0, 0, 0, "", "" },
+        { "808 de phonk em Dó# frígio",                      "808",    "phonk", nullptr, 1, "phrygian", 0, 0, 0, 0, "", "" },
+        { "arpejo épico em Am",                              "arp",    nullptr, "epic",  9, "minor", 0, 0, 0, 0, "", "" },
+        { "Em 140 bpm, um trap sombrio",                     nullptr,  "trap",  "dark",  -1, nullptr, 0, 140, 0, 0, "", "" },
+        { "Em 4 compassos, melodia de drill",                "melody", "drill", nullptr, -1, nullptr, 4, 0, 0, 0, "", "" },
+        { "um trap no tom Em",                               nullptr,  "trap",  nullptr, 4, "minor", 0, 0, 0, 0, "", "" },
+        { "trap em Em, 4 compassos",                         nullptr,  "trap",  nullptr, 4, "minor", 4, 0, 0, 0, "", "" },
+        { "acordes em Fá# menor",                            "chords", nullptr, nullptr, 6, "minor", 0, 0, 0, 0, "", "" },
+        { "trap em Mi frígio",                               nullptr,  "trap",  nullptr, 4, "phrygian", 0, 0, 0, 0, "", "" },
+        { "A menor",                                         nullptr,  nullptr, nullptr, 9, "minor", 0, 0, 0, 0, "", "" },
+        { "em fa#",                                          nullptr,  nullptr, nullptr, 6, nullptr, 0, 0, 0, 0, "", "" },
+        { "em sib",                                          nullptr,  nullptr, nullptr, 10, nullptr, 0, 0, 0, 0, "", "" },
+        { "em do",                                           nullptr,  nullptr, nullptr, 0, nullptr, 0, 0, 0, 0, "", "" },
+
+        // --- Expressões de mais de uma palavra antes das simples.
+        { "linha de baixo de funk",          "bass",   "funk",   nullptr, -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "linha de baixo",                  "bass",   nullptr,  nullptr, -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "linha de 808 pesada",             "808",    nullptr,  "dark",  -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "baixo 808 de trap",               "808",    "trap",   nullptr, -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "uma linha triste",                "melody", nullptr,  "sad",   -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "hi hat de trap",                  "drums",  "trap",   nullptr, -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "hi-hat rápido",                   "drums",  nullptr,  nullptr, -1, nullptr, 0, 0, 0, 0.8, "", "" },
+        { "hihat de drill",                  "drums",  "drill",  nullptr, -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "chimbal de funk",                 "drums",  "funk",   nullptr, -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "boom bap",                        nullptr,  "lofi",   nullptr, -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "lo fi calmo",                     nullptr,  "lofi",   "chill", -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "lo-fi",                           nullptr,  "lofi",   nullptr, -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "hip hop",                         nullptr,  "rap",    nullptr, -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "hip-hop pesado",                  nullptr,  "rap",    "dark",  -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "pra cima",                        nullptr,  nullptr,  "happy", -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "melodia pra baixo",               "melody", nullptr,  "sad",   -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "jersey club animado",             nullptr,  "jersey", "happy", -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "brazilian phonk",                 nullptr,  "phonk",  nullptr, -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "r and b",                         nullptr,  "rnb",    nullptr, -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "r n b calmo",                     nullptr,  "rnb",    "chill", -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "R&B",                             nullptr,  "rnb",    nullptr, -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "r & b",                           nullptr,  "rnb",    nullptr, -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "poucas notas",                    nullptr,  nullptr,  nullptr, -1, nullptr, 0, 0, 0, 0.25, "", "" },
+        { "trap com mais notas",             nullptr,  "trap",   nullptr, -1, nullptr, 0, 0, 0, 0.8, "", "" },
+
+        // --- Negação.
+        { "sem bateria",                     nullptr,  nullptr,  nullptr, -1, nullptr, 0, 0, 0, 0, "bateria", "" },
+        { "trap sem bateria, só melodia",    "melody", "trap",   nullptr, -1, nullptr, 0, 0, 0, 0, "bateria", "" },
+        { "nada de 808, quero acordes",      "chords", nullptr,  nullptr, -1, nullptr, 0, 0, 0, 0, "808", "" },
+        { "não quero bateria",               nullptr,  nullptr,  nullptr, -1, nullptr, 0, 0, 0, 0, "bateria", "" },
+        { "não quero nenhuma bateria",       nullptr,  nullptr,  nullptr, -1, nullptr, 0, 0, 0, 0, "bateria", "" },
+        { "tirar a bateria",                 nullptr,  nullptr,  nullptr, -1, nullptr, 0, 0, 0, 0, "bateria", "" },
+        { "sem bateria nem baixo",           nullptr,  nullptr,  nullptr, -1, nullptr, 0, 0, 0, 0, "bateria,baixo", "" },
+        { "sem bateria ou 808",              nullptr,  nullptr,  nullptr, -1, nullptr, 0, 0, 0, 0, "bateria,808", "" },
+        { "sem hi hat",                      nullptr,  nullptr,  nullptr, -1, nullptr, 0, 0, 0, 0, "hi hat", "" },
+        { "drill sem ser sombrio",           nullptr,  "drill",  nullptr, -1, nullptr, 0, 0, 0, 0, "sombrio", "" },
+        { "funk, nada de trap",              nullptr,  "funk",   nullptr, -1, nullptr, 0, 0, 0, 0, "trap", "" },
+        { "não é trap, é drill",             nullptr,  "drill",  nullptr, -1, nullptr, 0, 0, 0, 0, "trap", "" },
+        { "sem muitas notas",                nullptr,  nullptr,  nullptr, -1, nullptr, 0, 0, 0, 0, "muitas notas", "" },
+        { "melodia de trap sem 808 em Lá menor", "melody", "trap", nullptr, 9, "minor", 0, 0, 0, 0, "808", "" },
+
+        // --- "beat" é a faixa, não a bateria; a parte é a primeira citada.
+        { "beat de trap",                    nullptr,  "trap",   nullptr, -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "beat de trap com melodia triste", "melody", "trap",   "sad",   -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "melodia para um baixo pesado",    "melody", nullptr,  "dark",  -1, nullptr, 0, 0, 0, 0, "", "baixo" },
+        { "melodia e baixo de trap",         "melody", "trap",   nullptr, -1, nullptr, 0, 0, 0, 0, "", "baixo" },
+        { "trap triste e sombrio",           nullptr,  "trap",   "sad",   -1, nullptr, 0, 0, 0, 0, "", "sombrio" },
+
+        // --- Números.
+        { "quatro compassos",                nullptr,  nullptr,  nullptr, -1, nullptr, 4, 0, 0, 0, "", "" },
+        { "8 barras",                        nullptr,  nullptr,  nullptr, -1, nullptr, 8, 0, 0, 0, "", "" },
+        { "oito compassos",                  nullptr,  nullptr,  nullptr, -1, nullptr, 8, 0, 0, 0, "", "" },
+        { "dois compassos",                  nullptr,  nullptr,  nullptr, -1, nullptr, 2, 0, 0, 0, "", "" },
+        { "um compasso de bateria",          "drums",  nullptr,  nullptr, -1, nullptr, 1, 0, 0, 0, "", "" },
+        { "40 compassos",                    nullptr,  nullptr,  nullptr, -1, nullptr, 16, 0, 0, 0, "", "" },
+        { "trap 140bpm",                     nullptr,  "trap",   nullptr, -1, nullptr, 0, 140, 0, 0, "", "" },
+        { "trap a 140",                      nullptr,  "trap",   nullptr, -1, nullptr, 0, 140, 0, 0, "", "" },
+        { "trap 140 de bpm",                 nullptr,  "trap",   nullptr, -1, nullptr, 0, 140, 0, 0, "", "" },
+        { "bpm 140",                         nullptr,  nullptr,  nullptr, -1, nullptr, 0, 140, 0, 0, "", "" },
+        { "trap de 140",                     nullptr,  "trap",   nullptr, -1, nullptr, 0, 0, 0, 0, "", "140" },
+        { "300 bpm",                         nullptr,  nullptr,  nullptr, -1, nullptr, 0, 0, 0, 0, "", "300" },
+
+        // --- Tom.
+        { "tom de lá menor",                 nullptr,  nullptr,  nullptr, 9, "minor", 0, 0, 0, 0, "", "" },
+        { "em dó sustenido menor",           nullptr,  nullptr,  nullptr, 1, "minor", 0, 0, 0, 0, "", "" },
+        { "si bemol",                        nullptr,  nullptr,  nullptr, 10, nullptr, 0, 0, 0, 0, "", "" },
+        { "F sharp minor",                   nullptr,  nullptr,  nullptr, 6, "minor", 0, 0, 0, 0, "", "" },
+        { "f sharp minor",                   nullptr,  nullptr,  nullptr, 6, "minor", 0, 0, 0, 0, "", "" },
+        { "Bb major",                        nullptr,  nullptr,  nullptr, 10, "major", 0, 0, 0, 0, "", "" },
+        { "lá menor harmônica",              nullptr,  nullptr,  nullptr, 9, "harmonicMinor", 0, 0, 0, 0, "", "" },
+        { "G harmonic minor",                nullptr,  nullptr,  nullptr, 7, "harmonicMinor", 0, 0, 0, 0, "", "" },
+        { "ré dórico",                       nullptr,  nullptr,  nullptr, 2, "dorian", 0, 0, 0, 0, "", "" },
+        { "key of A minor",                  nullptr,  nullptr,  nullptr, 9, "minor", 0, 0, 0, 0, "", "" },
+        { "na tonalidade de sol menor",      nullptr,  nullptr,  nullptr, 7, "minor", 0, 0, 0, 0, "", "" },
+        { "tom: Sib maior",                  nullptr,  nullptr,  nullptr, 10, "major", 0, 0, 0, 0, "", "" },
+
+        // --- Sub-estilos: por enquanto só o gênero-pai.
+        { "funk mandelão",                   nullptr,  "funk",   nullptr, -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "automotivo",                      nullptr,  "funk",   nullptr, -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "bruxaria pesada",                 nullptr,  "funk",   "dark",  -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "drift",                           nullptr,  "phonk",  nullptr, -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "amapiano calmo",                  nullptr,  "afro",   "chill", -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "pluggnb",                         nullptr,  "plugg",  nullptr, -1, nullptr, 0, 0, 0, 0, "", "" },
+
+        // --- Erros de digitação seguros e o que não foi entendido.
+        { "melodía triste",                  "melody", nullptr,  "sad",   -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "acordis de pop",                  "chords", "pop",    nullptr, -1, nullptr, 0, 0, 0, 0, "", "" },
+        { "trep",                            nullptr,  nullptr,  nullptr, -1, nullptr, 0, 0, 0, 0, "", "trep" },
+        { "trap com xilofone",               nullptr,  "trap",   nullptr, -1, nullptr, 0, 0, 0, 0, "", "xilofone" },
+        { "violão triste",                   nullptr,  nullptr,  "sad",   -1, nullptr, 0, 0, 0, 0, "", "violão" },
+        { "",                                nullptr,  nullptr,  nullptr, -1, nullptr, 0, 0, 0, 0, "", "" },
+    };
+
+    int count = 0;
+
+    for (auto& c : cases)
+    {
+        const auto p = parsePrompt (c.text);
+        const std::string part = p.part ? std::string (partId (*p.part)) : std::string();
+        const std::string mood = p.mood ? std::string (moodId (*p.mood)) : std::string();
+
+        const bool same = part == (c.part ? c.part : "")
+                          && p.genre.value_or ("") == (c.genre ? c.genre : "")
+                          && mood == (c.mood ? c.mood : "")
+                          && p.root.value_or (-1) == c.root
+                          && p.scale.value_or ("") == (c.scale ? c.scale : "")
+                          && p.bars.value_or (0) == c.bars
+                          && p.bpm.value_or (0) == c.bpm
+                          && p.complexity.value_or (0.0) == c.complexity
+                          && p.density.value_or (0.0) == c.density
+                          && joined (p.negated) == c.negated
+                          && joined (p.ignored) == c.ignored;
+
+        CHECK (same, "\"%s\" -> parte=%s gênero=%s clima=%s tom=%d %s compassos=%d bpm=%d sem=[%s] fora=[%s]", c.text,
+               part.c_str(), p.genre.value_or ("-").c_str(), mood.c_str(), p.root.value_or (-1), p.scale.value_or ("-").c_str(),
+               p.bars.value_or (0), p.bpm.value_or (0), joined (p.negated).c_str(), joined (p.ignored).c_str());
+        ++count;
+    }
+
+    CHECK (count >= 60, "%d frases na tabela", count);
+
+    // O que aparece na tela.
+    auto p = parsePrompt ("trap sem bateria nem baixo, só melodia");
+    CHECK (! p.understood.empty() && p.understood.back() == "sem: bateria, baixo", "\"sem: bateria, baixo\" entra no que foi entendido");
+
+    p = parsePrompt ("trap com xilofone");
+    CHECK (p.understood.size() == 1 && p.ignored.size() == 1, "o que ficou de fora não entra no \"Entendi\"");
+}
+
+//==============================================================================
 static void testReviewFixes()
 {
     std::printf ("Revisão cruzada (Synth)\n");
@@ -662,6 +851,7 @@ int main()
     test808AndDrums();
     testAnalysis();
     testPrompt();
+    testPromptTable();
     testReviewFixes();
 
     std::printf ("\n%s: %d falha(s)\n", failures == 0 ? "OK" : "FALHOU", failures);

@@ -21,6 +21,22 @@ Piano roll (F7) → botão **✦ Ideias** na barra. O painel abre à direita da 
 
    O painel mostra o que entendeu ("Entendi: parte: Melodia · gênero: Trap · clima: Triste · tom: Fá menor ·
    4 compassos"), ajusta os controles, muda o tom/BPM do projeto se você pediu, e gera.
+
+   O que o texto entende:
+   - **Parte**: a primeira que você citar. Expressões inteiras valem antes das palavras soltas: `linha de baixo` é
+     Baixo, `linha de 808` e `baixo 808` são 808, `hi hat`/`chimbal`/`bumbo` são Bateria, `melodia pra baixo` é
+     melodia triste (não o baixo). Se citar duas (`melodia e baixo`), gera a primeira e avisa que a outra ficou de fora.
+   - **"beat"** é a faixa inteira, não a bateria: `beat de trap` escolhe só o gênero e gera a parte que já está
+     selecionada no painel. Para a bateria, escreva `bateria` ou `batida`.
+   - **Negação**: `sem bateria`, `nada de 808`, `não quero baixo`, `tirar a bateria`, `sem bateria nem baixo`. O que
+     foi negado não é escolhido e aparece como "sem: bateria". Vale também para gênero e clima (`drill sem ser sombrio`).
+   - **Compassos e andamento**: `4 compassos`, `oito compassos`, `8 barras`, `140bpm`, `140 bpm`, `140 de bpm`,
+     `bpm 140`, `a 140`. Compassos de 1 a 16; BPM de 40 a 250.
+   - **Tom**: `em Fá menor`, `tom de lá menor`, `dó sustenido menor`, `si bemol`, `Am`, `F#m`, `Bb major`,
+     `F sharp minor`, `lá menor harmônica`, `ré dórico`, `Dó# frígio`. Nota sozinha só vale depois de "em" ou "tom"
+     (`em Mi`); `Em` no começo da frase é a preposição.
+   - **Gêneros com mais de uma palavra**: `boom bap`, `lo fi`, `hip hop`, `jersey club`, `brazilian phonk`, `r and b`.
+   - O que ele não reconheceu volta numa lista à parte (`ignored`), para a tela dizer "ficou de fora: xilofone".
 2. Ou escolha à mão: **parte**, **gênero**, **clima**, **progressão** (automática ou uma da lista, já com os nomes
    dos acordes no tom do projeto), **compassos**, **complexidade** e **densidade**.
 3. **Nova ideia** sorteia outra progressão e outra batida e gera a parte escolhida no canal aberto.
@@ -96,7 +112,7 @@ O banco tem 60 progressões marcadas por gênero e clima. Para usar outra, mande
 | `ideas.progressions` | As progressões do gênero/clima, com os nomes dos acordes no tom. |
 | `ideas.generate` | Gera uma parte. Parâmetros: `part` (chords, melody, arp, bass, 808, drums), `channel`, `genre`, `mood`, `bars`, `at`, `root`, `scale`, `complexity`, `density`, `seed`, `variation`, `progression`, `follow`, `octave`, `replace`, `channels` (bateria). Devolve a semente, os acordes e um resumo. |
 | `ideas.detectChords` | Acordes e tom provável de um canal (ou de todos). |
-| `ideas.parse` | Entende um pedido em português e devolve os ajustes. |
+| `ideas.parse` | Entende um pedido em português e devolve os ajustes (`genre`, `mood`, `part`, `root`, `scale`, `bars`, `bpm`, `complexity`, `density`), o que entendeu (`understood`) e, quando houver, o que foi negado (`negated`) e o que ficou de fora (`ignored`). |
 
 A mesma `seed` em partes diferentes dá a mesma progressão e a mesma batida. É assim que os acordes, a melodia, o
 808 e a bateria combinam. Na Fase 4 (MCP), a IA usa esses mesmos comandos.
@@ -107,4 +123,15 @@ A mesma `seed` em partes diferentes dá a mesma progressão e a mesma batida. É
   chimbal do drill saem como grupos de 3 na grade de semicolcheias, e os rolls usam o roll do passo (2, 3, 4, 6).
   Melodias e arpejos usam tercinas de verdade.
 - A detecção de tom é uma sugestão. Em progressões ambíguas (ex.: `IV V iii vi`) ela pode apontar a relativa.
-- O texto entende palavras-chave, não frases livres. O que ele não reconheceu fica de fora, e o painel mostra o que entendeu.
+- O texto entende palavras-chave e expressões de uma tabela, não frases livres. O que ele não reconheceu volta em
+  `ignored`; o painel ainda só mostra o que entendeu.
+- A negação pega a expressão logo depois dela (`sem bateria`, `sem bateria nem baixo`, `sem bateria ou 808`). Em
+  `tirar a bateria e o baixo` só a bateria é negada; o baixo vira a parte pedida. Negar não muda o que o gerador faz
+  além de não escolher aquilo: `sem bateria` sozinho gera a parte que já estava selecionada.
+- Sub-estilos (`mandelão`, `automotivo`, `bruxaria`, `drift`, `brazilian phonk`, `amapiano`, `pluggnb`) escolhem só o
+  gênero-pai. As batidas do banco não têm nome e o gerador sorteia a batida pela semente e pela densidade, então o
+  pedido ainda não consegue escolher "a batida do mandelão".
+- Só uma parte, um gênero e um clima por pedido: o primeiro citado vale, o segundo diferente vai para `ignored`.
+- Erros de digitação: só os da tabela (`acordis`, `arpegio`, `chimbau`, `dril`, `regueton`, `compasos`). Não há
+  correção automática, para não confundir palavras curtas (`trep` não vira trap).
+- Escala sem nota (`frígio` solto, `tom menor`) não muda o tom: precisa da nota junto.

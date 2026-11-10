@@ -125,6 +125,15 @@ public:
     /** Canais com problema (sample ou plugin não encontrado, plugin bloqueado ou com erro), com o motivo. */
     const juce::StringPairArray& sampleProblems() const noexcept   { return problems; }
 
+    /** Carregar samples fora da thread de mensagem (samples-async, 10/11). Desligado (o padrão: render, export,
+        autoteste, sem janela), o sync() decodifica na hora, como sempre. Ligado (o app com janela), o sample que
+        não está no cache carrega numa thread de trabalho: o canal fica em silêncio, sem problema, até ele chegar. */
+    void setAsyncSampleLoads (bool on) noexcept   { asyncSampleLoads = on; }
+    int pendingSampleLoads() const;                               // canais esperando sample
+    bool isSampleLoading (const juce::String& channelId) const;
+    void flushPendingLoads();                                     // espera e publica tudo agora (antes de renderizar o Edit ao vivo)
+    std::function<void()> onSampleLoadsChanged;                   // um canal recebeu o sample (ou o erro): a tela se atualiza
+
     /** Congelar (3.5): a trilha do mixer está congelada agora (o motor renderizou o som dela)? */
     bool isFrozen (const juce::String& mixerId) const;
 
@@ -303,6 +312,9 @@ private:
 
     te::Edit& edit;
     SampleCache& cache;
+    struct SampleLoads;                         // samples-async: os lotes que os canais esperam (Projector.cpp)
+    std::shared_ptr<SampleLoads> sampleLoads;   // some com o Projector: o pedido em voo vê que ele saiu
+    bool asyncSampleLoads = false;
     const PluginCatalog* catalog;
     const Mode mode;
     const int loops;

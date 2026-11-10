@@ -569,6 +569,142 @@ void Projector::syncMixer (const Project& p)
     }
 }
 
+//==============================================================================
+/** Carregamento assíncrono dos samples (samples-async, 10/11). Cada canal espera um lote: o sample dele e as
+    camadas por força, publicados juntos num setSample só. O lote tem geração: se o canal trocar de sample ou
+    sair antes de o arquivo chegar, a entrega antiga é descartada. O weak_ptr deste objeto é o "ainda existo"
+    do Projector para os pedidos em voo no SampleCache. Thread de mensagem. */
+struct Projector::SampleLoads
+{
+    struct Item
+    {
+        SampleCache::Data data;
+        juce::String error;
+    };
+
+    /** O que o lote é: se o primeiro item é o sample do canal, e a força e o nome de cada camada. */
+    struct Plan
+    {
+        bool hasMain = false;
+        std::vector<float> layerVelocity;
+        juce::StringArray layerNames;
+    };
+
+    loads::Batches<juce::String, Item> batches;
+
+    /** O lote inteiro vai para o sampler do canal (se ele ainda existe) e o problema, se houver, para a lista. */
+    static void publish (Projector& owner, const juce::String& channelId, const Plan& plan, std::vector<Item> items)
+    {
+        auto found = owner.channels.find (channelId);
+
+        if (found == owner.channels.end() || found->second.sampler == nullptr
+            || items.size() != plan.layerVelocity.size() + (plan.hasMain ? 1u : 0u))
+            return;
+
+        auto& b = found->second;
+        SampleCache::Data data;
+        juce::String error;
+        size_t next = 0;
+
+        if (plan.hasMain)
+        {
+            data = std::move (items[0].data);
+            error = items[0].error;
+            next = 1;
+        }
+
+        std::vector<WhynotSamplerPlugin::Layer> layers;
+        juce::StringArray missing;
+
+        for (size_t i = 0; i < plan.layerVelocity.size(); ++i)
+        {
+            if (auto& item = items[next + i]; item.data != nullptr)
+                layers.push_back ({ std::move (item.data), plan.layerVelocity[i] });
+            else
+                missing.add (plan.layerNames[(int) i]);
+        }
+
+        b.sampler->setSample (data, std::move (layers));
+        b.missingLayers = missing.joinIntoString (", ");
+
+        if (data == nullptr)
+            owner.problems.set (channelId, error.isEmpty() ? juce::String ("Canal sem sample.") : error);
+
+        if (b.missingLayers.isNotEmpty() && owner.problems[channelId].isEmpty())
+            owner.problems.set (channelId, "Camada por força não abriu: "_t + b.missingLayers + " (as notas fortes tocam o sample do canal)");
+    }
+
+    /** Abre o lote do canal. O que já está no cache (ou não existe no disco) entra na hora; se tudo está, o canal
+        é publicado aqui mesmo, sem atraso. O resto é pedido ao cache e chega depois, na thread de mensagem. */
+    void request (Projector& owner, const juce::String& channelId, const std::vector<juce::File>& files, Plan plan, bool silenceWhileLoading)
+    {
+        const auto generation = batches.begin (channelId, files.size());   // aposenta o pedido anterior do canal
+
+        if (files.empty())
+        {
+            publish (owner, channelId, plan, {});
+            return;
+        }
+
+        const auto shared = std::make_shared<const Plan> (std::move (plan));
+        bool waiting = false;
+
+        for (size_t i = 0; i < files.size(); ++i)
+        {
+            Item item;
+            item.data = owner.cache.getIfReady (files[i], item.error);
+
+            if (item.data != nullptr || item.error.isNotEmpty())
+            {
+                if (auto done = batches.deliver (channelId, generation, i, std::move (item)))
+                    publish (owner, channelId, *shared, std::move (*done));   // só no último, e só se nenhum ficou esperando
+
+                continue;
+            }
+
+            waiting = true;
+            owner.cache.request (files[i], [weak = std::weak_ptr<SampleLoads> (owner.sampleLoads), &owner, channelId, generation, i, shared]
+                                           (SampleCache::Data data, const juce::String& error)
+            {
+                const auto alive = weak.lock();
+
+                if (alive == nullptr)
+                    return;   // o Projector saiu com o pedido em voo: `owner` não existe mais
+
+                if (auto done = alive->batches.deliver (channelId, generation, i, Item { std::move (data), error }))
+                {
+                    publish (owner, channelId, *shared, std::move (*done));
+
+                    if (owner.onSampleLoadsChanged)
+                        owner.onSampleLoadsChanged();
+                }
+            });
+        }
+
+        // carregando: o canal que trocou de sample cala o antigo (silêncio, sem problema na lista)
+        if (waiting && silenceWhileLoading)
+            if (auto found = owner.channels.find (channelId); found != owner.channels.end() && found->second.sampler != nullptr
+                                                              && found->second.sampler->hasSample())
+                found->second.sampler->setSample (nullptr);
+    }
+};
+
+int Projector::pendingSampleLoads() const
+{
+    return sampleLoads != nullptr ? (int) sampleLoads->batches.pending() : 0;
+}
+
+bool Projector::isSampleLoading (const juce::String& channelId) const
+{
+    return sampleLoads != nullptr && sampleLoads->batches.isPending (channelId);
+}
+
+void Projector::flushPendingLoads()
+{
+    if (pendingSampleLoads() > 0)
+        cache.flushPendingLoads();   // os lotes fecham aqui dentro, pelos callbacks
+}
+
 void Projector::syncChannels (const Project& p, const juce::File& projectFolder)
 {
     problems.clear();
@@ -582,6 +718,9 @@ void Projector::syncChannels (const Project& p, const juce::File& projectFolder)
         {
             if (it->second.track != nullptr)
                 edit.deleteTrack (it->second.track.get());
+
+            if (sampleLoads != nullptr)
+                sampleLoads->batches.cancel (it->first);   // o sample que ainda chegar para ele é descartado
 
             it = channels.erase (it);
         }
@@ -731,8 +870,38 @@ void Projector::syncChannels (const Project& p, const juce::File& projectFolder)
                 layersKey << (juce::File::isAbsolutePath (l.samplePath) ? juce::File (l.samplePath) : projectFolder.getChildFile (l.samplePath)).getFullPathName()
                           << "@" << l.minVelocity << ";";
 
-            if (resolved != b.resolvedSample || layersKey != b.resolvedLayers)
+            if ((resolved != b.resolvedSample || layersKey != b.resolvedLayers) && asyncSampleLoads)
             {
+                // samples-async: o que não está no cache carrega numa thread de trabalho; o lote do canal (o sample
+                // e as camadas) é publicado junto quando o último chega. Tudo no cache: publica já, como antes.
+                if (sampleLoads == nullptr)
+                    sampleLoads = std::make_shared<SampleLoads>();
+
+                SampleLoads::Plan plan;
+                std::vector<juce::File> files;
+                plan.hasMain = c.samplePath.isNotEmpty();
+
+                if (plan.hasMain)
+                    files.push_back (file);
+
+                for (auto& l : c.layers)
+                {
+                    files.push_back (juce::File::isAbsolutePath (l.samplePath) ? juce::File (l.samplePath) : projectFolder.getChildFile (l.samplePath));
+                    plan.layerVelocity.push_back ((float) l.minVelocity / 127.0f);
+                    plan.layerNames.add (files.back().getFileName());
+                }
+
+                const bool mainChanged = resolved != b.resolvedSample;
+                b.resolvedSample = resolved;
+                b.resolvedLayers = layersKey;
+                b.missingLayers.clear();
+                sampleLoads->request (*this, c.id, files, std::move (plan), mainChanged);
+            }
+            else if (resolved != b.resolvedSample || layersKey != b.resolvedLayers)
+            {
+                if (sampleLoads != nullptr)
+                    sampleLoads->batches.cancel (c.id);   // o modo mudou com um pedido em voo: vale o de agora
+
                 juce::String error;
                 auto data = c.samplePath.isEmpty() ? nullptr : cache.get (file, error);
                 std::vector<WhynotSamplerPlugin::Layer> layers;
@@ -757,7 +926,7 @@ void Projector::syncChannels (const Project& p, const juce::File& projectFolder)
                 if (data == nullptr)
                     problems.set (c.id, error.isEmpty() ? juce::String ("Canal sem sample.") : error);
             }
-            else if (! b.sampler->hasSample())
+            else if (! b.sampler->hasSample() && ! isSampleLoading (c.id))   // carregando não é problema
             {
                 problems.set (c.id, "Sample não encontrado: "_t + resolved);
             }
@@ -1844,6 +2013,22 @@ void Projector::syncFreeze (const Project& p)
 
         if (frozenNow && frozenSignatures.count (m.id) != 0 && frozenSignatures[m.id] == key)
             continue;
+
+        // samples-async: com sample ainda carregando, o render do congelamento gravaria silêncio. A trilha toca ao
+        // vivo e entra na fila de congelar de novo: o isRefreezeDue() chama o sync até os samples chegarem.
+        if (pendingSampleLoads() > 0)
+        {
+            pendingFreezes[m.id] = { std::move (key), now };
+
+            if (frozenNow)
+            {
+                switchOnInputs (m.id);
+                (void) track.setFrozen (false, te::Track::individualFreeze);
+            }
+
+            frozenSignatures.erase (m.id);
+            continue;
+        }
 
         // O conteúdo de uma trilha que já estava congelada mudou: com espera, ela toca ao vivo agora e o render
         // sai depois que a pessoa parar de mexer (um render por trilha na thread da tela, não um por clique).

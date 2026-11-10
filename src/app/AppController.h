@@ -127,6 +127,10 @@ public:
     void cancelRecording() override;
     void refreshMonitoring() override   { syncMonitoring(); }
 
+    /** Takes que uma queda do app deixou sem fechar em gravacoes/, já consertados ao abrir o projeto.
+        Quem oferece ao usuário (a tela) lê e esvazia. */
+    std::vector<record::InputRecorder::RecoveredTake> recoveredTakes;
+
     // AppServices: desempenho (3.5)
     juce::var performance() override;
     void resetXruns() override                  { performanceMonitor.resetXruns(); }

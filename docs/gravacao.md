@@ -34,6 +34,12 @@ Como no FL:
   - Mais edição da voz (27/10): cortar na agulha, apagar o trecho puxando o resto, curvas dos fades, crossfade automático, tom do bloco e tirar silêncio e respiração. Ver `docs/voz-playlist.md`.
 - **Take de áudio:** vira um **canal de áudio novo** no channel rack ("Voz take 1", "Voz take 2"...), que sai pela trilha armada, com **um clipe na playlist** (na raia que grava por essa trilha, senão na primeira livre). O arquivo vai para `gravacoes/` na pasta do projeto, em WAV 32 bits float, igual à entrada amostra por amostra, com o nome da trilha e o número: **"Voz_take03.wav"** (o primeiro número que os canais do projeto não usam; se o arquivo já existe, como o de um take desfeito, o novo ganha "(2)" e nada é sobrescrito).
 - **Gravar pela playlist (fatia 5):** o botão direito no cabeçalho da raia escolhe a entrada da placa ("Entrada 1 (mono)", ou um par em estéreo) e **já arma**, como no FL. A raia ganha uma trilha do mixer com o nome dela (a voz passa pelos efeitos de lá), e os takes dela caem nessa raia. O cabeçalho mostra a entrada e o ponto vermelho quando armada. "Parar de gravar nesta raia" solta a raia e desarma.
+- **Se o app cair gravando (10/11):** o take não se perde.
+  - Enquanto grava, o cabeçalho do WAV é reescrito a cada segundo de áudio, e ao lado do take fica um marcador, **"Voz_take03.gravando.json"** (o arquivo, a taxa, os canais, onde o transporte começou e onde o take começa a valer, o nome do take e da trilha, a hora). O stop, o cancelar e o fechar do app apagam o marcador.
+  - Ao abrir o projeto, o app procura marcadores que sobraram em `gravacoes/`, conserta o cabeçalho do WAV pelo tamanho do arquivo (o áudio depois do último flush também volta; um frame cortado pela metade sai) e guarda a lista em `AppController::recoveredTakes`. O marcador some e o take fica como um WAV comum na pasta.
+  - Um take sem nenhum frame no disco é apagado junto com o marcador. Um arquivo que outra janela do app ainda está gravando não é tocado.
+  - **Falta:** a tela que oferece o take ("Achei uma gravação que não foi guardada...") e põe o bloco na playlist. Hoje o take recuperado fica na pasta, pronto para arrastar. A posição do marcador é a do começo do transporte, sem a compensação de latência (que só é medida com a placa andando).
+  - Projeto ainda sem nome: os takes vão para `Gravacoes` na pasta de dados do app, e essa pasta ainda não é varrida.
 - **Cancelar o take:** no botão direito do REC, gravando, "Cancelar o take" (ou o atalho, no editor de atalhos): o arquivo é apagado, nada entra no projeto e o transporte para.
 - **Takes e comping (gravar voz, 21/10; desenho aprovado em `revisoes\desenho-takes-comping-2026-10-21.md`):**
   - **Em loop** (seleção de tempo e loop ligado), cada volta vira um take do mesmo grupo. A volta que mal começou (menos de um tempo) fica de fora. Um arquivo só: cada volta é um bloco com o corte dela.
@@ -188,6 +194,8 @@ O esquema **continua 3**: tudo é campo opcional, que só sai no arquivo quando 
   - Se a placa falha, ou o disco atrasa e a fila enche (por qualquer tempo), o buraco vira silêncio e o resto do take continua no tempo certo.
   - Se a placa reinicia no meio (troca de taxa ou de buffer), o take para ali, com aviso, em vez de seguir adiantado.
   - A posição de cada bloco não depende da ordem dos callbacks da placa: o `BlockClock` descobre a ordem quando a placa começa.
+  - **Queda do app:** a thread de fundo (nunca a de áudio) chama o `flush()` do escritor a cada segundo de áudio escrito. No JUCE (`WavAudioFormatWriter::flush`), ele volta ao começo, reescreve o cabeçalho inteiro com o tamanho atual (RIFF, ou RF64 acima de 4 GB, no lugar do bloco JUNK de reserva) e retorna à posição de escrita; isso também esvazia o buffer do arquivo no sistema. A cada 5 flushes, o `FlushFileBuffers` (para a queda de energia). O marcador é escrito pela thread de mensagem no `start()`, num arquivo temporário trocado de nome.
+  - **O conserto** está em `src/record/TakeRecovery.h`, sem JUCE: lê só o cabeçalho e o tamanho do arquivo e devolve os bytes a trocar. Entende 16, 24 e 32 bits (inteiro e float), o `fmt ` estendido e o RF64 (o JUNK de reserva vira o `ds64`); um arquivo íntegro não é tocado. Quem aplica no disco é o `InputRecorder::recoverOrphanTakes`.
   - Os controladores MIDI entram por um `Consumer` do Tracktion, com uma fila por aparelho. Nota que não coube na fila é contada (`midiDropped` no `record.state`) e avisada.
 - **Automação:** o `Projector` põe cada curva no `AutomatableParameter` do Tracktion, em segundos pelo mapa de tempo. Ele chama `updateStream()` na hora, porque o temporizador do Tracktion não roda no export sem janela.
   - Nos efeitos nativos, cada parâmetro visível é automatizável. Os pontos de 2 a 5 dessa parte foram combinados com a Mixagem, dona do arquivo: a curva passa pelo clamp do parâmetro, o valor do Insert volta quando ela sai e o modelo manda.
@@ -197,7 +205,7 @@ O esquema **continua 3**: tudo é campo opcional, que só sai no arquivo quando 
 ## Testes
 
 - **Sem JUCE** (ctest):
-  - `record`: o relógio, a latência, onde o take cai, o punch, as notas, a posição do bloco nas duas ordens de callback e os buracos; o começo da gravação (a agulha, a seleção, a contagem), as voltas do loop e o andamento do beat (o nome e beats sintéticos de 87,5 a 140 BPM);
+  - `record`: o relógio, a latência, onde o take cai, o punch, as notas, a posição do bloco nas duas ordens de callback e os buracos; o começo da gravação (a agulha, a seleção, a contagem), as voltas do loop e o andamento do beat (o nome e beats sintéticos de 87,5 a 140 BPM); o conserto do take sem fechar (cabeçalho com tamanho zero, cabeçalho do último flush, corte no meio do frame em 24 bits com `fmt ` estendido, o byte de enchimento, o arquivo íntegro que não é tocado, o que não é WAV, e mais de 4 GB virando RF64);
   - `automation`: a posição do knob, os pontos e o valor da curva;
   - `perf`: o medidor.
 - **`--self-test`, seção "Gravação":** a entrada são blocos de um WAV conhecido empurrados no gravador, como a placa faria.
@@ -235,6 +243,8 @@ O esquema **continua 3**: tudo é campo opcional, que só sai no arquivo quando 
   - as recusas.
 
 ## O que não foi testado de verdade
+
+- **Queda do app gravando (10/11):** as contas do conserto têm teste sem JUCE. O flush periódico, o marcador e a varredura da pasta (`InputRecorder::recoverOrphanTakes`) não têm autoteste: falta matar o app no meio de um take e reabrir o projeto.
 
 - **Fatia 8 sem placa:** a lista de microfones do Windows Audio, a troca do aparelho com a entrada aberta e a pergunta "Está de fone?" só aparecem com o app aberto; o autoteste usa nomes simulados e confere o número da pergunta, não a janela.
 

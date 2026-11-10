@@ -835,6 +835,7 @@ juce::Result RecordEngine::begin (const Project& p, const juce::String& liveChan
         if (result.wasOk())
         {
             const auto base = juce::File::createLegalFileName (track->name.trim().replaceCharacter (' ', '_') + "_take" + juce::String (n).paddedLeft ('0', 2));
+            recorder.setTakeInfo ({ start.playFrom, start.recordFrom, s.takeName, track->name });   // vai no marcador do take
             result = recorder.start (takeFolder.getNonexistentChildFile (base, ".wav", true), s.sampleRate, config.firstInput, config.stereo ? 2 : 1);
         }
 

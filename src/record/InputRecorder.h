@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 
 #include "TakeMath.h"
+#include "TakeRecovery.h"
 #include "../audio/SpscQueue.h"
 #include "../common/Text.h"
 
@@ -25,6 +26,11 @@ namespace whynot::record
     continua no tempo certo. Quem chama decide onde o take cai na linha do tempo (ver TakeMath.h).
 
     No autoteste não há placa: quem chama pushInput() é o próprio teste, com blocos de um WAV conhecido.
+
+    Se o app cair gravando: o escritor reescreve o cabeçalho do WAV a cada segundo de áudio (flush), e ao
+    lado do take fica um marcador "<take>.gravando.json" do start() até o stop(). Na abertura do projeto,
+    recoverOrphanTakes() acha os marcadores que sobraram, conserta o cabeçalho (TakeRecovery.h) e devolve
+    os takes para o app oferecer.
 */
 class InputRecorder
 {
@@ -49,8 +55,43 @@ public:
         double seconds() const noexcept   { return sampleRate > 0.0 ? (double) numSamples / sampleRate : 0.0; }
     };
 
+    /** O que vai no marcador além do arquivo e do formato: onde o take cairia no projeto. */
+    struct TakeInfo
+    {
+        double playFromSeconds = 0.0;     // onde o transporte começou (com a contagem, antes de recordFrom)
+        double recordFromSeconds = 0.0;   // onde o take começa a valer na linha do tempo
+        juce::String takeName, trackName; // "Voz take 3" e a trilha do mixer armada
+    };
+
+    /** Um take achado por recoverOrphanTakes(): o WAV já está legível. */
+    struct RecoveredTake
+    {
+        juce::File file;
+        double sampleRate = 0.0;
+        int numChannels = 0;
+        int64_t numSamples = 0;
+        bool repaired = false;            // o cabeçalho precisou de conserto (false: já estava íntegro)
+        TakeInfo info;                    // do marcador; zerado se o marcador não deu para ler
+        juce::String startedAt;           // a hora em que a gravação começou (ISO 8601), do marcador
+
+        double seconds() const noexcept   { return sampleRate > 0.0 ? (double) numSamples / sampleRate : 0.0; }
+    };
+
     InputRecorder();
     ~InputRecorder();
+
+    //==========================================================================
+    // Recuperação (thread de mensagem)
+
+    /** O marcador de gravação em andamento de um take: "Voz_take03.wav" -> "Voz_take03.gravando.json". */
+    static juce::File markerFileFor (const juce::File& takeFile);
+
+    /** Varre a pasta de gravações atrás de marcadores que sobraram (o app caiu gravando), conserta o
+        cabeçalho de cada WAV e devolve os takes que dá para usar. O marcador some quando o take foi
+        resolvido (consertado, íntegro ou vazio; o vazio é apagado). Um WAV que não deu para abrir para
+        escrita (uma gravação em andamento, nesta ou em outra janela do app) ou para consertar fica como
+        está, com o marcador, e o motivo vai para `problems`. */
+    static std::vector<RecoveredTake> recoverOrphanTakes (const juce::File& folder, juce::StringArray* problems = nullptr);
 
     //==========================================================================
     // Thread de mensagem
@@ -58,6 +99,9 @@ public:
     /** Abre o arquivo e começa a aceitar a entrada. firstInput é o índice (0 = entrada 1) do primeiro
         canal da placa; numChannels é 1 (mono) ou 2. */
     juce::Result start (const juce::File& file, double sampleRate, int firstInput, int numChannels);
+
+    /** O que o marcador do próximo start() leva sobre o lugar do take no projeto. Chame antes do start(). */
+    void setTakeInfo (const TakeInfo& info)     { takeInfo = info; }
 
     /** Para de aceitar a entrada, escreve o que estava na fila e fecha o arquivo.
         waitForAudioThread: espera (até 100 ms) a thread de áudio terminar o bloco que estava copiando.
@@ -110,6 +154,8 @@ private:
     // Atômicos: um bloco atrasado de um take anterior não lê um valor pela metade.
     std::atomic<int> firstChannel { 0 }, numChannelsToRecord { 1 };
     juce::File writerFile;     // só a thread de mensagem
+    juce::File markerFile;     // o marcador do take em andamento (só a thread de mensagem)
+    TakeInfo takeInfo;
     double writerRate = 0.0;
     Chunk staging {};   // só a thread de áudio
 

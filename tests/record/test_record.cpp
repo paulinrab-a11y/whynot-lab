@@ -3,6 +3,7 @@
 #include "../../src/record/BeatTempo.h"
 #include "../../src/record/RecordingGuide.h"
 #include "../../src/record/TakeMath.h"
+#include "../../src/record/TakeRecovery.h"
 
 #include <cmath>
 #include <cstdio>
@@ -20,6 +21,76 @@ static int failures = 0;
     } while (false)
 
 static bool near (double a, double b, double tol) { return std::abs (a - b) <= tol; }
+
+//==============================================================================
+// Um WAV como o escritor do JUCE monta (para os testes do TakeRecovery): RIFF, WAVE, o bloco JUNK de
+// reserva (some com junk = false), "fmt " de 16 bytes (ou de 40, o extensível) e "data".
+// declaredFrames é o que o cabeçalho diz; realBytes é o áudio que de fato está no arquivo.
+struct WavSpec
+{
+    int channels = 2, bits = 32;
+    bool isFloat = true, extensible = false, junk = true;
+    uint32_t rate = 48000;
+};
+
+static void put16 (std::vector<uint8_t>& o, uint32_t v)   { o.push_back ((uint8_t) v); o.push_back ((uint8_t) (v >> 8)); }
+static void put32 (std::vector<uint8_t>& o, uint32_t v)   { put16 (o, v & 0xffff); put16 (o, v >> 16); }
+static void putId (std::vector<uint8_t>& o, const char* id)   { o.insert (o.end(), id, id + 4); }
+static uint32_t get32 (const std::vector<uint8_t>& v, size_t at)   { return whynot::record::recovery::detail::u32 (v.data() + at); }
+static uint64_t get64 (const std::vector<uint8_t>& v, size_t at)   { return whynot::record::recovery::detail::u64 (v.data() + at); }
+
+static std::vector<uint8_t> makeWav (const WavSpec& s, uint32_t declaredFrames, size_t realBytes, bool closed)
+{
+    const uint32_t align = (uint32_t) (s.channels * s.bits / 8);
+    const uint32_t declaredData = declaredFrames * align;
+    std::vector<uint8_t> o;
+    putId (o, "RIFF");
+    put32 (o, 0);   // acertado no fim
+    putId (o, "WAVE");
+
+    if (s.junk)
+    {
+        const uint32_t n = 28 + (s.extensible ? 0u : 24u);
+        putId (o, "JUNK");
+        put32 (o, n);
+        o.insert (o.end(), n, (uint8_t) 0);
+    }
+
+    putId (o, "fmt ");
+    put32 (o, s.extensible ? 40u : 16u);
+    put16 (o, s.extensible ? 0xfffeu : (s.isFloat ? 3u : 1u));
+    put16 (o, (uint32_t) s.channels);
+    put32 (o, s.rate);
+    put32 (o, s.rate * align);
+    put16 (o, align);
+    put16 (o, (uint32_t) s.bits);
+
+    if (s.extensible)
+    {
+        put16 (o, 22);
+        put16 (o, (uint32_t) s.bits);
+        put32 (o, 0);
+        put32 (o, s.isFloat ? 3u : 1u);   // o GUID do subformato: 0000000x-0000-0010-8000-00aa00389b71
+        put16 (o, 0);
+        put16 (o, 0x0010);
+        for (int b : { 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71 })
+            o.push_back ((uint8_t) b);
+    }
+
+    putId (o, "data");
+    put32 (o, declaredData);
+    const size_t header = o.size();
+
+    for (size_t i = 0; i < realBytes; ++i)
+        o.push_back ((uint8_t) (1 + i % 251));   // áudio "de verdade": nunca zero, para ver se algo foi mexido
+
+    // fechado: o RIFF bate com o arquivo; aberto: o RIFF é o do último flush (só o que foi declarado)
+    const uint32_t riff = (uint32_t) ((closed ? o.size() : header + declaredData) - 8);
+    for (int i = 0; i < 4; ++i)
+        o[4 + (size_t) i] = (uint8_t) (riff >> (8 * i));
+
+    return o;
+}
 
 int main()
 {
@@ -315,6 +386,132 @@ int main()
         CHECK (judge (-60.0) == Level::silent && judge (-24.0) == Level::low && judge (-14.0) == Level::good && judge (-6.0) == Level::hot
                    && judge (-0.5) == Level::clip,
                "o medidor com alvo: silêncio, baixo, no alvo (-18 a -10), alto e estourado");
+    }
+
+    std::printf ("Take que ficou sem fechar (o app caiu gravando)\n");
+    {
+        using namespace whynot::record::recovery;
+
+        // 1) o caso de sempre: 32 bits float estéreo, o cabeçalho ainda diz 0 e há 1000 frames no disco
+        {
+            auto wav = makeWav ({}, 0, 8000, false);
+            const auto before = wav;
+            const auto p = repairInMemory (wav);
+            CHECK (p.status == Status::repaired && p.frames == 1000 && p.dataBytes == 8000 && p.dataOffset == 104,
+                   "cabeçalho com tamanho zero: 1000 frames achados pelo tamanho do arquivo (áudio a partir do byte %d)", (int) p.dataOffset);
+            CHECK (p.channels == 2 && p.bitsPerSample == 32 && p.isFloat && p.sampleRate == 48000 && p.blockAlign == 8 && ! p.rf64,
+                   "o formato sai do fmt: 2 canais, 32 bits float, 48 kHz");
+            CHECK (wav.size() == before.size() && get32 (wav, 4) == wav.size() - 8 && get32 (wav, 100) == 8000,
+                   "RIFF = arquivo - 8 e data = 8000 no cabeçalho corrigido");
+            bool sameAudio = std::equal (wav.begin() + 104, wav.end(), before.begin() + 104);
+            bool sameHeader = std::equal (wav.begin() + 8, wav.begin() + 100, before.begin() + 8);
+            CHECK (sameAudio && sameHeader, "só os dois tamanhos mudam: o áudio e o resto do cabeçalho ficam byte a byte");
+            CHECK (repairInMemory (wav).status == Status::intact, "consertado, passa a ser um arquivo íntegro");
+        }
+
+        // 2) o cabeçalho é o do último flush (480 frames), e o arquivo seguiu até 700
+        {
+            auto wav = makeWav ({ 1, 32, true }, 480, 700 * 4, false);
+            const auto p = repairInMemory (wav);
+            CHECK (p.status == Status::repaired && p.frames == 700 && get32 (wav, 100) == 2800 && get32 (wav, 4) == wav.size() - 8,
+                   "cabeçalho do último flush (480 frames): o take ganha os 700 que estão no disco");
+        }
+
+        // 3) cortado no meio de um frame: 24 bits estéreo com fmt estendido, 100 frames e 4 bytes soltos
+        {
+            auto wav = makeWav ({ 2, 24, false, true }, 0, 100 * 6 + 4, false);
+            const auto size = wav.size();
+            const auto p = repairInMemory (wav);
+            CHECK (p.status == Status::repaired && p.frames == 100 && p.blockAlign == 6 && ! p.isFloat && p.bitsPerSample == 24,
+                   "24 bits com fmt estendido, cortado no meio do frame: ficam os 100 frames inteiros");
+            CHECK (wav.size() == size - 4 && p.finalSize == wav.size() && get32 (wav, (size_t) p.dataOffset - 4) == 600 && get32 (wav, 4) == wav.size() - 8,
+                   "os 4 bytes do frame pela metade saem do arquivo");
+
+            auto f = makeWav ({ 2, 32, true, true }, 0, 64, false);
+            CHECK (repairInMemory (f).isFloat, "32 bits float com fmt estendido: o float sai do GUID do subformato");
+        }
+
+        // 4) 24 bits mono com número ímpar de bytes: o RIFF pede um byte de enchimento
+        {
+            auto wav = makeWav ({ 1, 24, false }, 0, 5 * 3 + 1, false);
+            const auto p = repairInMemory (wav);
+            CHECK (p.status == Status::repaired && p.frames == 5 && p.dataBytes == 15 && wav.size() == p.dataOffset + 16 && wav.back() == 0
+                       && get32 (wav, 4) == wav.size() - 8 && get32 (wav, (size_t) p.dataOffset - 4) == 15,
+                   "24 bits mono, 15 bytes de áudio: data = 15 e um zero de enchimento no fim");
+        }
+
+        // 5) arquivo íntegro não é tocado (também com um bloco depois do data, e sem o JUNK)
+        {
+            auto wav = makeWav ({}, 1000, 8000, true);
+            const auto before = wav;
+            const auto p = repairInMemory (wav);
+            CHECK (p.status == Status::intact && p.patches.empty() && wav == before && p.frames == 1000,
+                   "arquivo íntegro: nenhum remendo, nenhum byte mexido");
+
+            auto tail = makeWav ({ 2, 16, false, false, false }, 250, 1000, true);
+            for (int b : { 0x4c, 0x49, 0x53, 0x54, 4, 0, 0, 0, 0x49, 0x4e, 0x46, 0x4f })   // "LIST", 4, "INFO"
+                tail.push_back ((uint8_t) b);
+            for (int i = 0; i < 4; ++i)
+                tail[4 + (size_t) i] = (uint8_t) ((tail.size() - 8) >> (8 * i));
+            const auto tailBefore = tail;
+            const auto q = repairInMemory (tail);
+            CHECK (q.status == Status::intact && tail == tailBefore && q.frames == 250 && q.dataOffset == 44,
+                   "íntegro de 16 bits sem JUNK e com um bloco LIST depois do áudio: também não é tocado");
+        }
+
+        // 6) nada gravado, e o que não é WAV
+        {
+            auto headerOnly = makeWav ({}, 0, 0, false);
+            auto halfFrame = makeWav ({}, 0, 5, false);
+            const auto before = headerOnly;
+            CHECK (repairInMemory (headerOnly).status == Status::empty && headerOnly == before && repairInMemory (halfFrame).status == Status::empty
+                       && plan (nullptr, 0, 0).status == Status::empty,
+                   "só o cabeçalho, menos de um frame ou 0 bytes: vazio, sem remendo");
+
+            std::vector<uint8_t> garbage (4096, 0), cut = makeWav ({}, 0, 800, false);
+            cut.resize (40);   // acaba no meio do JUNK: sem fmt nem data
+            auto noFmt = makeWav ({}, 0, 800, false);
+            std::memcpy (noFmt.data() + 72, "xxxx", 4);
+            const auto noFmtBefore = noFmt;
+            CHECK (repairInMemory (garbage).status == Status::notWav && repairInMemory (cut).status == Status::notWav
+                       && repairInMemory (noFmt).status == Status::notWav && noFmt == noFmtBefore,
+                   "zeros, cabeçalho pela metade ou sem fmt: não é WAV, e nada é mexido");
+        }
+
+        // 7) mais de 4 GB: só o cabeçalho vai para o plan(), com o tamanho do arquivo ao lado
+        {
+            const auto head = makeWav ({}, 0, 0, false);
+            const uint64_t audio = 5ull * 1024 * 1024 * 1024 + 3;   // 5 GB e 3 bytes soltos
+            auto p = plan (head.data(), head.size(), head.size() + audio);
+            CHECK (p.status == Status::repaired && p.rf64 && p.dataBytes == audio - 3 && p.frames == (audio - 3) / 8 && p.finalSize == 104 + audio - 3,
+                   "5 GB num RIFF com o JUNK de reserva: vira RF64");
+
+            auto fixed = head;
+            for (const auto& patch : p.patches)
+                std::memcpy (fixed.data() + patch.offset, patch.bytes.data(), patch.bytes.size());
+
+            CHECK (std::memcmp (fixed.data(), "RF64", 4) == 0 && get32 (fixed, 4) == 0xffffffffu && std::memcmp (fixed.data() + 12, "ds64", 4) == 0
+                       && get32 (fixed, 16) == 52 && get64 (fixed, 20) == p.finalSize - 8 && get64 (fixed, 28) == p.dataBytes && get64 (fixed, 36) == p.frames
+                       && get32 (fixed, 44) == 0 && std::memcmp (fixed.data() + 96, "data", 4) == 0 && get32 (fixed, 100) == 0xffffffffu
+                       && std::equal (fixed.begin() + 72, fixed.begin() + 96, head.begin() + 72),
+                   "RF64: o JUNK vira ds64 (tamanhos de 64 bits), RIFF e data ficam -1, o fmt não muda");
+            CHECK (plan (fixed.data(), fixed.size(), p.finalSize).status == Status::intact, "o RF64 consertado é íntegro");
+
+            // um RF64 que o flush já escreveu, com o ds64 atrasado
+            p = plan (fixed.data(), fixed.size(), p.finalSize + 8000);
+            CHECK (p.status == Status::repaired && p.rf64 && p.patches.size() == 3 && p.dataBytes == audio - 3 + 8000,
+                   "RF64 do último flush: o ds64 ganha o tamanho de verdade");
+
+            const auto noJunk = makeWav ({ 2, 32, true, false, false }, 0, 0, false);
+            p = plan (noJunk.data(), noJunk.size(), noJunk.size() + audio);
+            CHECK (p.status == Status::needsRf64 && p.patches.empty(), "mais de 4 GB sem o JUNK de reserva: não dá para consertar no lugar, e nada é mexido");
+
+            // no limite: 4 GB - 1 de áudio não cabe no campo de 32 bits (0xffffffff é o -1 do RF64)
+            p = plan (head.data(), head.size(), head.size() + 0xfffffff8ull);
+            CHECK (p.status == Status::repaired && p.rf64, "perto de 4 GB, o RIFF passa de 32 bits: RF64");
+            p = plan (head.data(), head.size(), head.size() + 0x7ffffff8ull);
+            CHECK (p.status == Status::repaired && ! p.rf64 && p.patches.size() == 2, "2 GB: RIFF comum");
+        }
     }
 
     std::printf (failures == 0 ? "\nTODOS OS TESTES PASSARAM\n" : "\n%d TESTE(S) FALHARAM\n", failures);

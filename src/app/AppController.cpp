@@ -1075,6 +1075,9 @@ juce::Result AppController::openProject (const juce::File& file)
     pluginsTouched = false;
     cache.prune();   // os samples do projeto anterior que ninguém mais usa saem da memória
 
+    // Gancho da frente gravacao: takes que ficaram sem fechar (o app caiu gravando) voltam a ser WAVs legíveis.
+    recoveredTakes = record::InputRecorder::recoverOrphanTakes (takeFolder());
+
     if (projectLibrary != nullptr)
         projectLibrary->noteOpened (file);
 

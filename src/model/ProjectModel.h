@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Project.h"
+#include "ProjectChange.h"
 
 namespace whynot
 {
@@ -9,6 +10,10 @@ namespace whynot
 
     Os comandos alteram data() e depois chamam changed(); quem escuta (UI e
     projetor) é avisado de forma síncrona.
+
+    O changed() aceita uma máscara do que mudou (change::patterns, change::mixer...). Sem máscara vale
+    change::all, o comportamento de sempre. Quem escuta e quer a máscara sobrescreve o
+    projectChangedMasked; quem não quer continua só com o projectChanged.
 */
 class ProjectModel
 {
@@ -17,6 +22,9 @@ public:
     {
         virtual ~Listener() = default;
         virtual void projectChanged (const ProjectModel&) = 0;
+
+        /** O mesmo aviso, com o que mudou. O padrão ignora a máscara e chama o projectChanged. */
+        virtual void projectChangedMasked (const ProjectModel& model, change::Mask)   { projectChanged (model); }
     };
 
     Project& data() noexcept                 { return project; }
@@ -29,10 +37,12 @@ public:
         changed();
     }
 
-    void changed()
+    /** Avisa quem escuta. `what` diz o que mudou; sem ele (ou com 0), tudo. */
+    void changed (change::Mask what = change::all)
     {
         dirty = true;
-        listeners.call ([this] (Listener& l) { l.projectChanged (*this); });
+        const auto mask = change::normalised (what);
+        listeners.call ([this, mask] (Listener& l) { l.projectChangedMasked (*this, mask); });
     }
 
     void addListener (Listener* l)       { listeners.add (l); }

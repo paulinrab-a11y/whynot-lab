@@ -236,3 +236,18 @@ else()
 endif()
 
 add_test(NAME rt_bench COMMAND whynot_rt_bench --check)
+
+# Carregamento assíncrono de samples (frente samples-async): um trabalho por arquivo, o lote de cada canal com
+# geração e a entrega entre duas threads de verdade. Sem JUCE.
+find_package(Threads REQUIRED)
+add_executable(whynot_sample_loads_tests samples/test_sample_loads.cpp)
+target_compile_features(whynot_sample_loads_tests PRIVATE cxx_std_20)
+target_link_libraries(whynot_sample_loads_tests PRIVATE Threads::Threads)
+
+if(MSVC)
+    target_compile_options(whynot_sample_loads_tests PRIVATE /W4 /utf-8 /O2)
+else()
+    target_compile_options(whynot_sample_loads_tests PRIVATE -Wall -Wextra -O2)
+endif()
+
+add_test(NAME sample_loads COMMAND whynot_sample_loads_tests)

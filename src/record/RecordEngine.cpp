@@ -79,7 +79,7 @@ struct RecordEngine::MidiTap : te::InputDeviceInstance::Consumer
     std::array<std::atomic<int>, 16 * 120> latest {};
     std::atomic<bool> anyControl { false };
 
-    MidiTap (te::InputDeviceInstance& i, std::function<void()> wakeUp) : instance (&i), wake (std::move (wakeUp))   { i.addConsumer (this); }
+    explicit MidiTap (te::InputDeviceInstance& i) : instance (&i)   { i.addConsumer (this); }
 
     ~MidiTap() override
     {
@@ -95,25 +95,28 @@ struct RecordEngine::MidiTap : te::InputDeviceInstance::Consumer
         // o CC vai para o MIDI learn; os de modo (120 a 127: all notes off, reset...) não são knobs
         if (m.isController() && m.getControllerNumber() < 120 && m.getChannel() >= 1 && m.getChannel() <= 16)
         {
+            // Só dois atomics: a thread do MIDI não acorda a de mensagem (um triggerAsyncUpdate() aqui era um
+            // PostMessage, com trava, a cada CC). Quem busca é o Timer do ControlWake.
             latest[(size_t) ((m.getChannel() - 1) * 120 + m.getControllerNumber())].store (128 + m.getControllerValue(), std::memory_order_relaxed);
             anyControl.store (true, std::memory_order_release);
-
-            if (wake)
-                wake();
         }
     }
 
     juce::WeakReference<te::InputDeviceInstance> instance;
-    std::function<void()> wake;   // fixo desde o construtor: a thread do MIDI só chama
     audio::SpscQueue<Event, 512> events;
     std::atomic<int> dropped { 0 };
 };
 
-/** Leva os CCs para a thread de mensagem logo que chegam (o service roda a cada 100 ms: lento para um knob). */
-struct RecordEngine::ControlWake : juce::AsyncUpdater
+/** Busca os CCs na thread de mensagem a cada 15 ms (o service roda a cada 100 ms: lento para um knob). Só roda
+    com algum controlador ligado (syncMidiTaps); sem CC novo, cada passada lê um atomic por controlador. Nenhum
+    valor se perde: a tabela do tap guarda o último de cada CC até alguém buscar. */
+struct RecordEngine::ControlWake : juce::Timer
 {
+    static constexpr int intervalMs = 15;
+
     explicit ControlWake (RecordEngine& o) : owner (o) {}
-    void handleAsyncUpdate() override   { owner.drainControls(); }
+    ~ControlWake() override             { stopTimer(); }
+    void timerCallback() override       { owner.drainControls(); }
     RecordEngine& owner;
 };
 
@@ -685,7 +688,13 @@ void RecordEngine::syncMidiTaps()
 
     for (auto* in : physical)
         if (std::none_of (midiTaps.begin(), midiTaps.end(), [in] (const std::unique_ptr<MidiTap>& t) { return t->instance.get() == in; }))
-            midiTaps.push_back (std::make_unique<MidiTap> (*in, [wake = controlWake.get()] { wake->triggerAsyncUpdate(); }));
+            midiTaps.push_back (std::make_unique<MidiTap> (*in));
+
+    // o Timer dos CCs só anda com algum controlador ligado
+    if (midiTaps.empty())
+        controlWake->stopTimer();
+    else if (! controlWake->isTimerRunning())
+        controlWake->startTimer (ControlWake::intervalMs);
 }
 
 void RecordEngine::drainMidiTaps()

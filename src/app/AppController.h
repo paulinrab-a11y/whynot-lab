@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 
+#include "AutosavePolicy.h"
 #include "KeyMap.h"
 #include "Session.h"
 #include "../commands/CommandRegistry.h"
@@ -205,6 +206,16 @@ public:
 
     static constexpr int autosaveMinutes = 2;
     static constexpr int autosavesToKeep = 10;
+    static constexpr int autosaveRetrySeconds = 3;   // gesto, gravação ou export na hora do autosave: tenta de novo em 3 s
+    static constexpr int autosaveMaxDeferrals = 10;  // ...até 10 vezes; depois, salva assim que o gesto fechar
+
+    /** O autosave periódico, um passo a cada 100 ms (o Housekeeping chama; o autoteste chama direto).
+        Vencidos os 2 minutos, espera o gesto, a gravação e o export acabarem (autosave::Schedule) e lê só o
+        estado dos plugins que podem ter mudado. Devolve o arquivo gravado, ou File() se não gravou agora.
+        O project.autosave (autosaveNow) não passa por aqui: grava na hora e lê todos os plugins. */
+    juce::File serviceAutosave();
+    void makeAutosaveDue() noexcept             { autosaveSchedule.makeDue(); }
+    int autosaveDeferrals() const noexcept      { return autosaveSchedule.deferrals; }
 
     //--------------------------------------------------------------------------
     // Plugins, para a interface
@@ -216,7 +227,35 @@ public:
         Só marca o projeto como alterado se houve chance de edição (janela de plugin aberta desde o
         último salvar, ou parâmetro mudado por comando): alguns plugins devolvem bytes diferentes
         para o mesmo som, e comparar o estado sozinho acusaria alteração à toa. */
-    bool capturePluginStates();
+    bool capturePluginStates()   { return capturePluginStates (false); }
+
+    //--------------------------------------------------------------------------
+    // Suspeitos de uma queda fora do carregamento (o carregando-plugin.txt só cobre o createPluginInstance).
+    // A sessão anota em sessoes/suspeitos-<pid>.txt as janelas de plugin abertas agora e os últimos plugins
+    // adicionados; fechar direito apaga. Na abertura seguinte, a anotação de um processo que não é mais a
+    // WHYNOT vira aviso (takeStartupWarning) e a oferta de bloquear (takeCrashNotice). Nada é bloqueado sozinho.
+    struct CrashNotice
+    {
+        juce::String question;      // o texto da caixa que oferece bloquear
+        juce::String file, name;    // o suspeito (file vazio = ninguém a oferecer)
+    };
+
+    /** O suspeito da queda da sessão anterior, para a tela oferecer o bloqueio. Lê e limpa. */
+    CrashNotice takeCrashNotice()               { return std::exchange (crashNotice, {}); }
+
+    /** O usuário aceitou bloquear o suspeito: vai para Bloqueados. Devolve o texto para a barra de status. */
+    juce::String blockSuspect (const CrashNotice&);
+
+    /** Liga a anotação dos suspeitos. Com janela já nasce ligada; sem janela (IA, autoteste) fica desligada,
+        porque um processo sem janela morto de propósito pareceria queda. O autoteste liga para verificar. */
+    void setCrashSuspectTracking (bool on);
+
+    /** Confere quais janelas de plugin continuam abertas e atualiza a anotação (o Housekeeping chama a cada 1 s). */
+    void refreshPluginWindowMarker();
+
+    /** As janelas de plugin anotadas como abertas agora (nomes), para o autoteste. */
+    juce::StringArray openPluginWindowNames() const;
+    juce::File crashSuspectsFile() const;
 
     /** Aviso para mostrar ao abrir (ex.: plugin que derrubou o app na última vez). Lê e limpa. */
     juce::String takeStartupWarning()   { return std::exchange (startupWarning, {}); }
@@ -247,6 +286,14 @@ private:
     void syncProjector();
     void installPluginLoader();
     void recoverFromPluginCrash();
+    void collectCrashSuspects();
+    juce::String crashModuleFromReport() const;
+    void writeCrashSuspects();
+    void notePluginWindowOpening (te::Plugin&);
+    void noteInsertedPlugins();
+    bool capturePluginStates (bool onlyDirty);
+    juce::File writeAutosave (bool pluginsChanged);
+    void offerRecoveredTakes (int howMany);
     void finishScan (const PluginCatalog::ScanReport&);
     juce::var describeReport (const PluginCatalog::ScanReport&) const;
     juce::File loadingMarker() const   { return dataFolder.getChildFile ("carregando-plugin.txt"); }
@@ -290,6 +337,14 @@ private:
     PreviewPlayer preview;
     std::unique_ptr<Housekeeping> housekeeping;     // prévia, entradas MIDI e autosave
     int editsSinceAutosave = 0;
+    autosave::Schedule autosaveSchedule { autosaveMinutes * 60 * 10, autosaveRetrySeconds * 10, autosaveMaxDeferrals };
+    autosave::DirtyPlugins dirtyPlugins;            // os VST3 cujo estado pode ter mudado desde a última leitura
+    autosave::SuspectLog suspects;                  // janelas de plugin abertas e últimos plugins adicionados (desta sessão)
+    juce::String openingWindowFile;                 // o plugin cuja janela está sendo criada agora (não sai da anotação)
+    juce::StringArray knownPluginFiles;             // os plugins que o projeto já tinha: o que aparecer a mais foi adicionado
+    bool pluginBaselinePending = true;              // projeto trocado: a próxima mudança só refaz a lista acima
+    bool trackSuspects = false, wroteSuspects = false;
+    CrashNotice crashNotice;
     juce::String liveChannelId;
     te::EditItemID liveTrack;
     int liveInputCount = -1;

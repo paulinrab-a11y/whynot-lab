@@ -117,6 +117,7 @@ set(WHYNOT_SOURCES
     src/app/WindowsPower.cpp
     src/app/selftest/Automation.cpp
     src/app/selftest/AutomationRecord.cpp
+    src/app/selftest/AutosaveGuard.cpp
     src/app/selftest/BeatKey.cpp
     src/app/selftest/Community.cpp
     src/app/selftest/Composition.cpp

@@ -292,9 +292,9 @@ Os atalhos são configuráveis em **Arquivo → Atalhos de teclado**. Há dois p
 - **Estilo FL Studio** (padrão): as teclas que o FL usa para as mesmas ações.
 - **WHYNOT**: o costume dos outros programas.
 
-Além do preset, dá para trocar a tecla de qualquer ação: clique na ação e aperte a tecla nova. Uma tecla só dispara uma ação; se já estava em outra, sai de lá. As trocas ficam em `%APPDATA%\WHYNOT LAB\atalhos.json`.
+Além do preset, dá para trocar a tecla de qualquer ação: clique na ação e aperte a tecla nova. Uma tecla só dispara uma ação; se já estava em outra, sai de lá (a mesma tecla pode valer na playlist e no piano roll, cada um com a sua ação: o P é o lápis nos dois). As trocas ficam em `%APPDATA%\WHYNOT LAB\atalhos.json`.
 
-As teclas do piano roll (P, B, E, S, Delete, Backspace, setas, Ctrl+A, Esc e Alt) são **fixas**: não aparecem no editor e valem nos dois presets. Na tabela abaixo elas estão marcadas como fixas.
+As ferramentas e a edição da **playlist** e do **piano roll** (P, B, C, D, E, T, S, Y, Z, Ctrl+C/X/V/B, Delete, setas, Alt+Q...) também estão no editor, nos grupos **Playlist** e **Piano roll**, com as mesmas teclas nos dois presets; valem com o teclado no editor. Continuam **fixas** só o Esc, o Alt de ignorar a grade e o A de segurar para esticar o áudio. Na tabela abaixo, onde está "fixa" leia "de fábrica": dá para trocar.
 
 Algumas ações não têm tecla no preset FL e ficam só no menu: **Novo projeto** e **Exportar stems**. **Atalhos de teclado** não tem tecla em nenhum dos dois presets; dá para pôr uma no editor.
 

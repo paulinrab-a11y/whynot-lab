@@ -114,6 +114,9 @@ public:
     void mouseDoubleClick (const juce::MouseEvent&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     bool keyPressed (const juce::KeyPress&) override;
+    /** Roda uma ação do KeyMap do contexto da playlist ("playlist.tool.draw", "playlist.duplicate"...). false se
+        ela não se aplica agora (a tecla segue para a janela). `key` é a tecla que a disparou. */
+    bool runShortcut (const juce::String& actionId, const juce::KeyPress& key);
     bool keyStateChanged (bool isKeyDown) override;
     void focusLost (FocusChangeType) override;
     juce::String getTooltip() override;

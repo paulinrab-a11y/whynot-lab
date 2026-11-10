@@ -99,6 +99,9 @@ public:
     void mouseExit (const juce::MouseEvent&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     bool keyPressed (const juce::KeyPress&) override;
+    /** Roda uma ação do KeyMap do contexto do piano roll ("pianoroll.tool.draw", "pianoroll.quantize"...). false se
+        ela não se aplica agora (a tecla segue para a janela). `key` é a tecla que a disparou. */
+    bool runShortcut (const juce::String& actionId, const juce::KeyPress& key);
     juce::String getTooltip() override;
 
 private:

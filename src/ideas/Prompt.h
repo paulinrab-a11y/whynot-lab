@@ -1,8 +1,9 @@
 #pragma once
 
 // Pedido em português ("trap triste em Fá menor, 4 compassos, melodia") → ajustes do gerador.
-// Sem internet e sem modelo de linguagem: palavras-chave. A IA de verdade (Fase 4) chama os
-// comandos ideas.* direto, com os mesmos ajustes.
+// Sem internet e sem modelo de linguagem: palavras-chave e expressões por tabela, com negação
+// ("sem bateria") e números por extenso. A IA de verdade (Fase 4) chama os comandos ideas.*
+// direto, com os mesmos ajustes.
 
 #include "Genres.h"
 
@@ -26,6 +27,10 @@ struct PromptSettings
     std::optional<double> complexity;
     std::optional<double> density;
     std::vector<std::string> understood;  // o que foi entendido, em português, para mostrar
+
+    // Campos novos (10/11), todos opcionais: quem só lê os de cima continua funcionando.
+    std::vector<std::string> negated;     // o que o pedido mandou tirar ("sem bateria" → "bateria"), como foi escrito
+    std::vector<std::string> ignored;     // palavras relevantes que ficaram de fora ("não entendi: X"), como foram escritas
 };
 
 PromptSettings parsePrompt (std::string_view text);

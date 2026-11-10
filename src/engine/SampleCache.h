@@ -3,9 +3,11 @@
 #include <JuceHeader.h>
 
 #include "SampleAnalysis.h"
+#include "SampleLoads.h"
 #include "../audio/SampleVoice.h"
 #include "../common/Text.h"
 
+#include <functional>
 #include <map>
 #include <memory>
 
@@ -13,80 +15,46 @@ namespace whynot
 {
 
 /** Decodifica arquivos de áudio uma vez e compartilha o resultado entre canais e Edits.
-    Thread de mensagem (ou de trabalho), nunca a de áudio.
+
+    Dois caminhos, com a mesma decodificação (o sample sai igual, amostra a amostra):
+    - get(): na hora, na thread de quem chama. É o do render, do export, do --render e do autoteste, que
+      precisam do dado antes de seguir.
+    - request(): numa thread de trabalho (um juce::ThreadPool de 2 threads, criado no primeiro pedido), com a
+      resposta na thread de mensagem. É o do projeto ao vivo: um arquivo longo não trava a tela
+      (docs/arquitetura.md, seção 2: acima de ~10 ms vai para uma thread de trabalho).
+
+    Tudo aqui é da thread de mensagem, menos a decodificação do request(). Nunca a thread de áudio.
 */
 class SampleCache
 {
 public:
-    explicit SampleCache (juce::AudioFormatManager& formats) : formatManager (formats) {}
+    using Data = std::shared_ptr<const audio::SampleData>;
 
-    /** Devolve o sample decodificado; recarrega se o arquivo mudou no disco. */
-    std::shared_ptr<const audio::SampleData> get (const juce::File& file, juce::String& error)
-    {
-        if (! file.existsAsFile())
-        {
-            error = "Sample não encontrado: "_t + file.getFullPathName();
-            return {};
-        }
+    /** A resposta de um request(): o sample, ou nullptr com o motivo. Sempre na thread de mensagem. */
+    using Callback = std::function<void (Data, const juce::String& error)>;
 
-        const auto key = file.getFullPathName();
-        const auto modified = file.getLastModificationTime();
-        const auto size = file.getSize();
+    explicit SampleCache (juce::AudioFormatManager& formats);
 
-        if (auto it = entries.find (key); it != entries.end() && it->second.modified == modified && it->second.size == size)
-            return it->second.data;
+    /** Cancela os pedidos em voo (ninguém é avisado) e espera a thread de trabalho largar o arquivo. */
+    ~SampleCache();
 
-        std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (file));
+    /** Devolve o sample decodificado; recarrega se o arquivo mudou no disco. Decodifica aqui, na hora. */
+    Data get (const juce::File& file, juce::String& error);
 
-        if (reader == nullptr)
-        {
-            error = "Formato de áudio não suportado: "_t + file.getFileName();
-            return {};
-        }
+    /** Só o que já está pronto, sem decodificar: o sample se ele está no cache e o arquivo não mudou;
+        nullptr com `error` se o arquivo não existe; nullptr sem `error` se é preciso carregar (request). */
+    Data getIfReady (const juce::File& file, juce::String& error) const;
 
-        constexpr double maxSeconds = 600.0;
+    /** Decodifica numa thread de trabalho e avisa na thread de mensagem, nunca dentro desta chamada. O mesmo
+        arquivo pedido várias vezes enquanto carrega decodifica uma vez só, e todos são avisados. */
+    void request (const juce::File& file, Callback callback);
 
-        if (reader->sampleRate <= 0.0 || reader->lengthInSamples <= 0
-            || (double) reader->lengthInSamples / reader->sampleRate > maxSeconds)
-        {
-            error = "Sample vazio, inválido ou maior que 10 minutos: "_t + file.getFileName();
-            return {};
-        }
+    /** Arquivos pedidos por request() que ainda não foram entregues. */
+    int pendingLoads() const;
 
-        const int numChannels = (int) juce::jlimit (1u, 2u, reader->numChannels);
-        const int length = (int) reader->lengthInSamples;
-
-        auto data = std::make_shared<audio::SampleData>();
-        data->sampleRate = reader->sampleRate;
-        data->rootKey = 60;   // a nota de raiz de cada canal é aplicada pelo sampler
-        data->channels.resize ((size_t) numChannels);
-
-        for (auto& channel : data->channels)
-            channel.resize ((size_t) length);
-
-        // Em blocos, direto no sample (caça de bugs do produtor, 21/10): ler tudo num buffer e depois
-        // copiar pedia o dobro da memória. Uma música de 10 min em estéreo são 212 MB, e o pico ia a 424 MB.
-        constexpr int chunk = 1 << 16;
-        juce::AudioBuffer<float> buffer (numChannels, juce::jmin (chunk, length));
-
-        for (int pos = 0; pos < length; pos += chunk)
-        {
-            const int n = juce::jmin (chunk, length - pos);
-            reader->read (&buffer, 0, n, pos, true, numChannels > 1);
-
-            for (int ch = 0; ch < numChannels; ++ch)
-                std::copy (buffer.getReadPointer (ch), buffer.getReadPointer (ch) + n, data->channels[(size_t) ch].begin() + pos);
-        }
-
-        // MP3: o atraso que o codificador põe no começo atrasaria o one-shot (o ataque sairia da grade).
-        trimLeadingFrames (data->channels, leadingFramesToTrim (file, data->channels, reader->sampleRate));
-
-        audio::flushDenormals (*data);
-        audio::buildMipmaps (*data);   // os níveis de oitava: tocar mais agudo sem aliasing (até 30 s de sample)
-
-        entries[key] = { modified, size, data };
-        return data;
-    }
+    /** Espera os pedidos em voo e entrega todos agora (os callbacks rodam aqui dentro). Para quem precisa do
+        som completo antes de seguir: render do Edit ao vivo, congelar, autoteste. */
+    void flushPendingLoads();
 
     void clear() { entries.clear(); }
 
@@ -105,11 +73,39 @@ private:
     {
         juce::Time modified;
         juce::int64 size = 0;
-        std::shared_ptr<const audio::SampleData> data;
+        Data data;
     };
+
+    /** O que a decodificação devolve (na thread de trabalho, com a data e o tamanho lidos antes de abrir). */
+    struct Loaded
+    {
+        Data data;
+        juce::String error;
+        juce::Time modified;
+        juce::int64 size = 0;
+    };
+
+    /** O que a thread de trabalho e a de mensagem dividem; vive enquanto houver trabalho rodando. */
+    struct Shared
+    {
+        loads::InFlight<juce::String, Loaded, Callback> board;
+        SampleCache* owner = nullptr;   // só a thread de mensagem; nullptr depois que o cache saiu
+    };
+
+    class DecodeJob;
+
+    /** O arquivo inteiro decodificado, com o corte do MP3, sem denormais e com os mipmaps. `job` (pode ser
+        nullptr) deixa a thread de trabalho desistir no meio quando o cache está saindo. */
+    static Data decode (juce::AudioFormatManager&, const juce::File&, juce::String& error, const juce::ThreadPoolJob* job);
+
+    void deliverFinished();
 
     juce::AudioFormatManager& formatManager;
     std::map<juce::String, Entry> entries;
+    std::shared_ptr<Shared> shared;
+    std::unique_ptr<juce::ThreadPool> pool;   // criado no primeiro request(): sem janela, nenhuma thread nasce
+
+    JUCE_DECLARE_NON_COPYABLE (SampleCache)
 };
 
 } // namespace whynot

@@ -236,3 +236,20 @@ else()
 endif()
 
 add_test(NAME rt_bench COMMAND whynot_rt_bench --check)
+
+# Caminhos que um .wnl guarda (frente wnl-seguro, 10/11): o que o app aceita ao abrir um projeto de terceiros e o
+# que ele copia para samples/, mais um fuzz, sem JUCE. As regras de nome do Windows são as da ponte de controle.
+add_executable(whynot_wnl_paths_tests
+    model/test_wnl_paths.cpp
+    ../src/control/ControlPolicy.cpp
+    ../src/control/WsProtocol.cpp)
+target_include_directories(whynot_wnl_paths_tests PRIVATE ../src)
+target_compile_features(whynot_wnl_paths_tests PRIVATE cxx_std_20)
+
+if(MSVC)
+    target_compile_options(whynot_wnl_paths_tests PRIVATE /W4 /utf-8 /O2)
+else()
+    target_compile_options(whynot_wnl_paths_tests PRIVATE -Wall -Wextra -O2)
+endif()
+
+add_test(NAME wnl_paths COMMAND whynot_wnl_paths_tests)

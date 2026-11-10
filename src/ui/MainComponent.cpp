@@ -1,5 +1,6 @@
 #include "MainComponent.h"
 #include "DeviceSettings.h"
+#include "DeviceWatch.h"
 #include "NoteNames.h"
 #include "MainWindow.h"
 #include "ShortcutEditor.h"
@@ -56,6 +57,16 @@ namespace
         for (auto& [key, note] : typingLayout())
             if (key == code)
                 return true;
+
+        return false;
+    }
+
+    // a saída `name` ainda aparece na lista do driver `type`? (o WASAPI refaz a lista antes de avisar da mudança)
+    bool outputListed (juce::AudioDeviceManager& dm, const juce::String& type, const juce::String& name)
+    {
+        for (auto* t : dm.getAvailableDeviceTypes())
+            if (t->getTypeName() == type)
+                return t->getDeviceNames (false).contains (name);
 
         return false;
     }
@@ -307,6 +318,13 @@ MainComponent::MainComponent (AppController& a)
 
     app.getModel().addListener (this);
     refreshAll();
+
+    // a placa de som é ouvida o tempo todo, não só com a janela de Áudio e MIDI aberta (ui-atualizacao, 10/11)
+    if (! app.isHeadless())
+    {
+        app.getEngine().getDeviceManager().deviceManager.addChangeListener (this);
+        watchAudioDevice();
+    }
     setUiScale ((float) settings->getDoubleValue ("uiScale", 1.0));
 
     // só num projeto novo (não num aberto do disco) e se a pessoa não pediu para não mostrar
@@ -326,6 +344,7 @@ MainComponent::MainComponent (AppController& a)
 MainComponent::~MainComponent()
 {
     stopTimer();
+    app.getEngine().getDeviceManager().deviceManager.removeChangeListener (this);
     app.getModel().removeListener (this);
     releaseTypedNotes();
     app.onTogglePanel = nullptr;
@@ -341,9 +360,14 @@ MainComponent::~MainComponent()
 }
 
 //==============================================================================
-void MainComponent::projectChanged (const ProjectModel&)
+void MainComponent::projectChanged (const ProjectModel& model)
 {
-    refreshAll();
+    projectChangedMasked (model, change::all);
+}
+
+void MainComponent::projectChangedMasked (const ProjectModel&, change::Mask what)
+{
+    refreshAll (what);
     updateBeatNotice();
 }
 
@@ -398,7 +422,8 @@ void MainComponent::updateBeatNotice()
 
 void MainComponent::beatKeyAnalysed()
 {
-    pianoRoll.refresh (app.getModel().get());   // as dicas do 808 dependem da análise
+    pendingScreens |= refreshplan::pianoRoll;   // as dicas do 808 dependem da análise
+    refreshScreens (shownScreens());
     updateBeatNotice();
 
     // o tom do beat é o do projeto: só uma mensagem, sem pedir nada
@@ -540,6 +565,8 @@ juce::Rectangle<int> MainComponent::capturePng (const juce::String& screenName, 
         return {};
     }
 
+    flushPendingRefresh();   // nenhuma tela entra velha na captura
+
     // de software: no Windows a imagem nativa é do Direct2D, e ler dela com um Graphics aberto já travou o autoteste
     auto image = juce::SoftwareImageType().convert (createComponentSnapshot (getLocalBounds(), true, 1.0f));
 
@@ -578,7 +605,7 @@ void MainComponent::cancelAiQuestion()
     updateAiNotice();
 }
 
-void MainComponent::refreshAll()
+void MainComponent::refreshAll (change::Mask what)
 {
     const auto& p = app.getModel().get();
 
@@ -603,23 +630,56 @@ void MainComponent::refreshAll()
 
     transport.refresh (p);
     rack.setSelectedChannel (selectedChannel);
-    rack.refresh (p);
     pianoRoll.setChannel (selectedChannel);
-    pianoRoll.refresh (p);
-    playlist.refresh (p);
-    mixer.refresh (p);
 
-    // O channel rack ocupa a altura do conteúdo (até 60% da tela); o mixer fica com o resto.
-    // Só reajusta quando o número de canais muda, para não desfazer um arrasto da divisória.
-    if (rack.getIdealHeight() != lastRackHeight)
-    {
-        lastRackHeight = rack.getIdealHeight();
-        updateSplit();
-        resized();
-    }
-
-    fitRack (rack, rackViewport);
+    // Só as telas que dependem do que mudou, e só as que estão à vista: a aba de trás e o mixer recolhido ficam
+    // pendentes e se atualizam ao aparecer (resized) ou no flushPendingRefresh (ui-atualizacao, 10/11). Arrastar
+    // uma nota no piano roll refazia as prévias e os blocos da playlist a cada passo do mouse.
+    pendingScreens |= refreshplan::screensFor (what);
+    refreshScreens (shownScreens());
     updateTitle();
+}
+
+refreshplan::Screens MainComponent::shownScreens() const noexcept
+{
+    // pelo estado (a aba e os painéis), não pelo isShowing(): a captura sem janela monta a tela fora da área de trabalho
+    return refreshplan::visibleScreens (showUpper && view == View::channelRack, showUpper && view == View::pianoRoll,
+                                        showUpper && view == View::playlist, showMixer);
+}
+
+void MainComponent::flushPendingRefresh()
+{
+    refreshScreens (refreshplan::allScreens);
+}
+
+void MainComponent::refreshScreens (refreshplan::Screens allowed)
+{
+    const auto plan = refreshplan::split (pendingScreens, allowed);
+
+    if (plan.now == 0)
+        return;
+
+    pendingScreens = plan.pending;   // antes de chamar: o resized() daqui de baixo passa por aqui de novo
+    const auto& p = app.getModel().get();
+
+    if ((plan.now & refreshplan::rack) != 0)       rack.refresh (p);
+    if ((plan.now & refreshplan::pianoRoll) != 0)  pianoRoll.refresh (p);
+    if ((plan.now & refreshplan::playlist) != 0)   playlist.refresh (p);
+    if ((plan.now & refreshplan::mixer) != 0)      mixer.refresh (p);
+
+    if ((plan.now & refreshplan::rack) != 0)
+    {
+        // O channel rack ocupa a altura do conteúdo (até 60% da tela); o mixer fica com o resto.
+        // Só reajusta quando o número de canais muda, para não desfazer um arrasto da divisória.
+        if (rack.getIdealHeight() != lastRackHeight)
+        {
+            lastRackHeight = rack.getIdealHeight();
+            updateSplit();
+            resized();
+        }
+
+        fitRack (rack, rackViewport);
+    }
 }
 
 void MainComponent::selectChannel (const juce::String& id)
@@ -838,6 +898,99 @@ void MainComponent::animateFrame (double dt)
     playlist.setPlayhead (playing && p.songMode ? ticks : -1.0);
 }
 
+//==============================================================================
+// A placa de som que some e volta (ui-atualizacao, 10/11). Antes, só o play avisava que não havia saída.
+void MainComponent::watchAudioDevice()
+{
+    auto& dm = app.getEngine().getDeviceManager().deviceManager;
+    deviceLost = false;
+    watchedSetup = dm.getAudioDeviceSetup();
+    watchedDeviceType = dm.getCurrentAudioDeviceType();
+    watchedOutput = dm.getCurrentAudioDevice() != nullptr ? watchedSetup.outputDeviceName : juce::String();
+}
+
+void MainComponent::changeListenerCallback (juce::ChangeBroadcaster*)
+{
+    auto& dm = app.getEngine().getDeviceManager().deviceManager;
+    const auto setup = dm.getAudioDeviceSetup();
+
+    devicewatch::Facts f;
+    f.watching = watchedOutput.isNotEmpty();
+    f.lost = deviceLost;
+    f.open = dm.getCurrentAudioDevice() != nullptr;
+    f.isWatched = f.open && f.watching && dm.getCurrentAudioDeviceType() == watchedDeviceType && setup.outputDeviceName == watchedOutput;
+    f.watchedListed = f.watching && outputListed (dm, watchedDeviceType, watchedOutput);
+
+    // a última escolha da pessoa em Áudio e MIDI (o JUCE não mexe nela quando cai na saída padrão)
+    if (const auto chosen = dm.createStateXml(); chosen != nullptr && f.lost)
+    {
+        const auto output = chosen->getStringAttribute ("audioOutputDeviceName", chosen->getStringAttribute ("audioDeviceName"));
+        f.explicitOther = output.isNotEmpty() && (output != watchedOutput || chosen->getStringAttribute ("deviceType") != watchedDeviceType);
+    }
+
+    const auto keys = app.getKeyMap().describeKeys ("view.settings");
+    const auto whereToFix = "Áudio e MIDI"_t + (keys.isNotEmpty() ? " (" + keys + ")" : juce::String());
+    const auto name = juce::String ("\"") + watchedOutput + "\"";
+    auto openSettings = [this] { showAudioSettings(); };
+
+    switch (devicewatch::decide (f))
+    {
+        case devicewatch::Action::none:
+            break;
+
+        case devicewatch::Action::track:
+            watchAudioDevice();
+            break;
+
+        case devicewatch::Action::lostNoSound:
+            deviceLost = true;
+            statusBar.showError ("A placa de som "_t + name + " foi desconectada: sem saída de som. Conecte de novo (ela volta sozinha) ou escolha outra saída em "_t
+                                     + whereToFix + ".",
+                                 "Abrir Áudio e MIDI"_t, openSettings);
+            break;
+
+        case devicewatch::Action::lostFallback:
+            deviceLost = true;
+            statusBar.showNote ("A placa de som "_t + name + " foi desconectada. O som passou para \""_t + setup.outputDeviceName
+                                    + "\". Quando ela voltar, o som volta para ela. Outra saída: "_t + whereToFix + ".",
+                                "Abrir Áudio e MIDI"_t, openSettings);
+            break;
+
+        case devicewatch::Action::returned:
+            watchAudioDevice();
+            statusBar.showInfo ("A placa de som "_t + name + " voltou: o som está nela de novo."_t);
+            break;
+
+        case devicewatch::Action::reopen:
+        {
+            // gravando, a placa não troca no meio do take; e se o driver agora é outro, a escolha fica com a pessoa
+            auto* rec = app.recorder();
+
+            if ((rec != nullptr && rec->isRecording()) || dm.getCurrentAudioDeviceType() != watchedDeviceType)
+            {
+                watchAudioDevice();
+                statusBar.showNote ("A placa de som "_t + name + " voltou. Para usar de novo, escolha a saída em "_t + whereToFix + ".",
+                                    "Abrir Áudio e MIDI"_t, openSettings);
+                break;
+            }
+
+            // do jeito que estava (saída, taxa e buffer). O false não mexe na escolha guardada. O aviso de mudança
+            // que isto dispara chega depois (é assíncrono) e só confirma a vigia.
+            const auto error = dm.setAudioDeviceSetup (watchedSetup, false);
+            const bool opened = error.isEmpty() && dm.getCurrentAudioDevice() != nullptr;
+            watchAudioDevice();   // deu ou não, para de esperar: uma falha não vira laço de tentativas
+
+            if (opened)
+                statusBar.showInfo ("A placa de som "_t + name + " voltou: o som está nela de novo."_t);
+            else
+                statusBar.showError ("A placa de som "_t + name + " voltou, mas não abriu"_t + (error.isNotEmpty() ? " (" + error + ")" : juce::String())
+                                         + ". Escolha a saída em "_t + whereToFix + ".",
+                                     "Abrir Áudio e MIDI"_t, openSettings);
+            break;
+        }
+    }
+}
+
 void MainComponent::showStatus (const juce::String& text, bool isError)
 {
     // o aviso comum some em 7 s; o erro fica até ser fechado (revisão de iniciante, 22/10)
@@ -876,6 +1029,9 @@ void MainComponent::paintOverChildren (juce::Graphics& g)
 
 void MainComponent::resized()
 {
+    // toda troca de aba e todo painel que abre passam por aqui: a tela que apareceu se atualiza antes de ser desenhada
+    refreshScreens (shownScreens());
+
     layoutBeatNotice();
     updateSplit();
 

@@ -1,6 +1,8 @@
 // Testes da ponte de controle (Fase 4), sem JUCE: SHA-1 e base64 com os vetores das RFCs, o aperto de mão
 // do WebSocket, os quadros, Host/Origin/token, os caminhos, os limites, a tabela de risco dos comandos,
 // o aleatório do sistema e um fuzz do que vem da rede.
+// (10/11) Os caminhos por comando: cada parâmetro de caminho de cada comando passa pelas pastas permitidas, e uma
+// leitura dos schemas em src/commands acusa o parâmetro com nome de caminho que ficou sem regra.
 
 #include "../../src/control/CommandPolicy.h"
 #include "../../src/control/ControlPlatform.h"
@@ -12,7 +14,10 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <random>
+#include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -842,6 +847,29 @@ static void testCommandPolicy()
 
         if ((r.path.access == Access::write && r.path.name.empty()) || (! r.path.extension.empty() && r.path.access != Access::write))
             paths = false;
+
+        // os outros parâmetros de caminho: sem buraco no meio, sem nome repetido, e lista, relativo e "só às vezes" só em leitura
+        bool ended = r.path.name.empty();
+
+        for (auto& extra : r.more)
+        {
+            if (extra.name.empty())
+            {
+                ended = true;
+                continue;
+            }
+
+            if (ended || extra.name == r.path.name || (! extra.extension.empty() && extra.access != Access::write))
+                paths = false;
+        }
+
+        for (std::size_t n = 0; n < maxPathParams; ++n)
+        {
+            const auto* p = r.pathParam (n);
+
+            if (p != nullptr && (r.findPathParam (p->name) != p || ((p->list || p->relative || p->whenPathLike) && p->access != Access::read)))
+                paths = false;
+        }
     }
 
     CHECK (reasons, "todo comando que confirma ou é bloqueado diz por quê");
@@ -874,6 +902,439 @@ static void testCommandPolicy()
            "os nomes de risco do command.list");
 }
 
+//==============================================================================
+// Os caminhos por comando (10/11): a regra de cada parâmetro contra as pastas permitidas, sem JUCE.
+static void testCommandPaths()
+{
+    std::printf ("Caminhos por comando\n");
+
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const auto base = fs::temp_directory_path (ec) / ("wnl_control_paths_" + std::to_string (std::random_device {}()));
+    fs::create_directories (base / "Projeto" / "Audio", ec);
+    fs::create_directories (base / "Kit", ec);
+    fs::create_directories (base / "outra", ec);
+
+    const auto baseText = base.u8string();
+    const std::string b (reinterpret_cast<const char*> (baseText.data()), baseText.size());
+    const auto writeRoots = prepareRoots ({ b + "\\Projeto" });
+    const auto readRoots = prepareRoots ({ b + "\\Projeto", b + "\\Kit" });
+    const auto project = b + "\\Projeto";
+
+    auto check = [&] (std::string_view command, std::vector<PathArgument> args, const std::string& projectFolder)
+    {
+        return checkPathArguments (ruleFor (command), args, readRoots, writeRoots, projectFolder);
+    };
+
+    auto one = [&] (std::string_view command, std::string_view param, bool list, const std::string& value)
+    {
+        return check (command, { { param, list ? 0 : -1, value } }, project);
+    };
+
+    enum class Want { inside, outside, refused };
+
+    auto is = [] (const PathsCheck& c, Want want)
+    {
+        if (want == Want::refused)
+            return ! c.ok && ! c.reason.empty() && c.paths.empty();
+
+        return c.ok && c.paths.size() == 1 && c.paths[0].outside == (want == Want::outside) && c.anyOutside() == (want == Want::outside);
+    };
+
+    // cada parâmetro de caminho que a auditoria achou sem regra (e os que só confirmavam sem conferir o caminho)
+    struct Case
+    {
+        const char* command;
+        const char* param;
+        bool list;
+        Access access;
+        Risk risk;
+    };
+
+    const Case cases[] = {
+        { "audio.detectKey",        "path",    false, Access::read,  Risk::free },
+        { "library.refresh",        "folders", true,  Access::read,  Risk::free },
+        { "library.renderPreview",  "path",    false, Access::read,  Risk::free },
+        { "library.play",           "path",    false, Access::read,  Risk::free },
+        { "library.loadDeck",       "path",    false, Access::read,  Risk::free },
+        { "library.toggleVersions", "path",    false, Access::read,  Risk::free },
+        { "playlist.addItem",       "path",    false, Access::read,  Risk::free },
+        { "playlist.addItem",       "file",    false, Access::read,  Risk::free },
+        { "project.exportPack",     "folder",  false, Access::write, Risk::free },
+        { "project.exportPack",     "tag",     false, Access::read,  Risk::free },
+        { "export.setProducerTag",  "path",    false, Access::read,  Risk::confirm },
+        { "library.addFolder",      "path",    false, Access::read,  Risk::confirm },
+        { "library.removeFolder",   "path",    false, Access::read,  Risk::confirm },
+        { "library.comboAdd",       "path",    false, Access::read,  Risk::confirm },
+        { "library.setMeta",        "path",    false, Access::read,  Risk::confirm },
+        { "favorites.set",          "id",      false, Access::read,  Risk::confirm },
+        { "favorites.toggle",       "id",      false, Access::read,  Risk::confirm },
+    };
+
+    for (auto& c : cases)
+    {
+        const auto& rule = ruleFor (c.command);
+        const auto* param = rule.findPathParam (c.param);
+        const bool ruleOk = rule.risk == c.risk && param != nullptr && param->access == c.access && param->list == c.list;
+
+        const auto in = one (c.command, c.param, c.list, b + "\\Projeto\\Audio\\beat.wav");
+        const auto out = one (c.command, c.param, c.list, b + "\\outra\\beat.wav");
+        const auto up = one (c.command, c.param, c.list, b + "\\Projeto\\..\\outra\\beat.wav");
+        const bool normalised = in.ok && in.paths.size() == 1 && in.paths[0].param == c.param && in.paths[0].access == c.access
+                             && in.paths[0].index == (c.list ? 0 : -1) && in.paths[0].path.find ("\\Projeto\\Audio\\beat.wav") != std::string::npos;
+
+        bool refuses = true;
+
+        for (const char* bad : { "\\\\host\\share\\x.wav", "//host/share/x.wav", "\\\\?\\C:\\x.wav", "\\\\.\\pipe\\x" })
+            refuses = refuses && is (one (c.command, c.param, c.list, bad), Want::refused);
+
+        for (const char* tail : { "\\Projeto\\beat.wav:oculto", "\\Projeto\\CON", "\\Projeto\\nul.wav", "\\Projeto\\a?.wav" })
+            refuses = refuses && is (one (c.command, c.param, c.list, b + tail), Want::refused);
+
+        CHECK (ruleOk && normalised && is (in, Want::inside) && is (out, Want::outside) && is (up, Want::outside) && refuses,
+               "%s (%s): livre dentro da pasta permitida, pede confirmação fora (e subindo com ..), e recusa UNC, \\\\?\\, fluxo alternativo, "
+               "nome reservado e curinga", c.command, c.param);
+    }
+
+    // os que já tinham regra continuam com ela
+    CHECK (is (one ("channel.addSampler", "path", false, b + "\\Kit\\kick.wav"), Want::inside)
+           && is (one ("project.exportWav", "path", false, b + "\\Kit\\mix.wav"), Want::outside)
+           && is (one ("project.exportWav", "path", false, b + "\\Projeto\\mix.wav"), Want::inside)
+           && is (one ("project.open", "path", false, "\\\\host\\share\\p.wnl"), Want::refused),
+           "os comandos de um caminho só seguem iguais: o kit é só leitura (exportar para ele confirma) e UNC é recusado");
+
+    // project.exportPack: a pasta é escrita e a tag é leitura, cada uma contra as pastas dela
+    {
+        const auto both = check ("project.exportPack", { { "folder", -1, b + "\\Projeto\\Pacote" }, { "tag", -1, b + "\\Kit\\tag.wav" } }, project);
+        CHECK (both.ok && both.paths.size() == 2 && ! both.anyOutside() && both.paths[0].access == Access::write && both.paths[1].access == Access::read,
+               "exportPack: pasta dentro da de escrita e tag na de leitura rodam sem perguntar");
+
+        const auto tagOut = check ("project.exportPack", { { "folder", -1, b + "\\Projeto\\Pacote" }, { "tag", -1, b + "\\outra\\tag.wav" } }, project);
+        CHECK (tagOut.ok && tagOut.anyOutside() && ! tagOut.paths[0].outside && tagOut.paths[1].outside,
+               "exportPack: a tag fora das pastas pede confirmação mesmo com a pasta do pacote dentro");
+
+        CHECK (is (one ("project.exportPack", "folder", false, b + "\\Kit\\Pacote"), Want::outside)
+               && is (one ("project.exportPack", "tag", false, b + "\\Kit\\tag.wav"), Want::inside),
+               "exportPack: gravar na pasta só de leitura confirma; ler a tag de lá, não");
+
+        const auto tagUnc = check ("project.exportPack", { { "folder", -1, b + "\\Projeto\\Pacote" }, { "tag", -1, "\\\\host\\share\\tag.wav" } }, project);
+        CHECK (! tagUnc.ok && tagUnc.reason.find ("(tag)") != std::string::npos && tagUnc.reason.find ("rede") != std::string::npos,
+               "exportPack: tag em caminho de rede é recusada, e o motivo diz o parâmetro (%s)", tagUnc.reason.c_str());
+    }
+
+    // library.refresh: cada pasta da lista
+    {
+        const auto mixed = check ("library.refresh", { { "folders", 0, b + "\\Projeto" }, { "folders", 1, b + "\\outra" }, { "folders", 2, "" },
+                                                       { "folders", 3, b + "\\Kit" } }, project);
+        CHECK (mixed.ok && mixed.paths.size() == 3 && ! mixed.paths[0].outside && mixed.paths[1].outside && mixed.paths[1].index == 1
+               && ! mixed.paths[2].outside && mixed.paths[2].index == 3 && mixed.anyOutside(),
+               "library.refresh: cada pasta da lista é conferida (a de fora pede confirmação, a vazia é pulada, os índices ficam)");
+
+        const auto unc = check ("library.refresh", { { "folders", 0, b + "\\Projeto" }, { "folders", 1, "\\\\host\\share" } }, project);
+        CHECK (! unc.ok && unc.paths.empty(), "library.refresh: uma pasta de rede no meio da lista recusa o pedido inteiro");
+
+        CHECK (! check ("library.refresh", { { "folders", 0, "Projetos" } }, project).ok, "library.refresh: pasta relativa é recusada");
+        CHECK (is (check ("library.refresh", { { "folders", -1, b + "\\outra" } }, project), Want::outside),
+               "library.refresh: um texto no lugar da lista também é conferido");
+
+        std::vector<PathArgument> many;
+
+        for (int i = 0; i < (int) maxPathsPerList + 1; ++i)
+            many.push_back ({ "folders", i, b + "\\Projeto\\p" + std::to_string (i) });
+
+        const bool tooMany = ! check ("library.refresh", many, project).ok;
+        many.pop_back();
+        CHECK (tooMany && check ("library.refresh", many, project).ok, "library.refresh: 64 pastas passam, 65 não");
+
+        CHECK (! check ("library.play", { { "path", 0, b + "\\outra\\p.wnl" } }, project).ok,
+               "lista num parâmetro que é um caminho só: recusado (o comando leria outra coisa)");
+    }
+
+    // playlist.addItem: o file pode ser relativo à pasta do projeto
+    {
+        const auto rel = one ("playlist.addItem", "file", false, "Audio/consolidado.wav");
+        CHECK (is (rel, Want::inside) && rel.paths[0].path.find ("\\Projeto\\Audio\\consolidado.wav") != std::string::npos,
+               "addItem: file relativo é resolvido pela pasta do projeto e sai completo (%s)", ! rel.paths.empty() ? rel.paths[0].path.c_str() : rel.reason.c_str());
+        CHECK (is (one ("playlist.addItem", "file", false, "..\\outra\\segredo.wav"), Want::outside),
+               "addItem: file relativo que sobe para fora do projeto pede confirmação");
+        CHECK (is (check ("playlist.addItem", { { "file", -1, "Audio\\x.wav" } }, ""), Want::refused),
+               "addItem: file relativo sem projeto salvo é recusado");
+        CHECK (is (one ("playlist.addItem", "file", false, "Audio\\x.wav:oculto"), Want::refused)
+               && is (one ("playlist.addItem", "file", false, "C:x.wav"), Want::refused)
+               && is (one ("playlist.addItem", "file", false, "\\Windows\\x.wav"), Want::refused),
+               "addItem: file relativo com fluxo alternativo, \"C:x\" e \"\\pasta\" (sem unidade) são recusados");
+        CHECK (is (one ("playlist.addItem", "path", false, "Audio\\x.wav"), Want::refused), "addItem: o path continua tendo de ser completo");
+
+        const auto both = check ("playlist.addItem", { { "path", -1, b + "\\Kit\\loop.wav" }, { "file", -1, b + "\\outra\\x.wav" } }, project);
+        CHECK (both.ok && both.paths.size() == 2 && ! both.paths[0].outside && both.paths[1].outside,
+               "addItem: path e file são conferidos os dois (o auditor viu o comando ler os dois)");
+    }
+
+    // favoritos: o id só é caminho em sample e folder
+    {
+        const auto plugin = one ("favorites.set", "id", false, "VST3-Um Synth-1a2b3c4d");
+        CHECK (plugin.ok && plugin.paths.empty() && one ("favorites.toggle", "id", false, "reverb").paths.empty(),
+               "favoritos: id de plugin ou de efeito não é tratado como caminho");
+    }
+
+    // o que a regra não conhece não é caminho, e comando sem parâmetro de caminho não confere nada
+    CHECK (check ("audio.detectKey", { { "channel", -1, "\\\\host\\x" } }, project).paths.empty()
+           && check ("transport.play", { { "path", -1, "\\\\host\\x" } }, project).ok,
+           "parâmetro que não é de caminho fica de fora da conferência");
+
+    fs::remove_all (base, ec);
+}
+
+//==============================================================================
+// Cobertura (10/11): lê os schemas em src/commands (texto, sem JUCE) e acusa o parâmetro com nome de caminho
+// que não tem regra na tabela. Quem cria um comando que recebe arquivo ou pasta cai aqui se esquecer.
+namespace scan
+{
+    struct Param
+    {
+        std::string name, type, help;
+    };
+
+    struct Command
+    {
+        std::string id, file;
+        std::vector<Param> params;
+    };
+
+    static void skipSpace (const std::string& s, std::size_t& at)
+    {
+        while (at < s.size() && (s[at] == ' ' || s[at] == '\t' || s[at] == '\r' || s[at] == '\n'))
+            ++at;
+    }
+
+    /** Um literal "..." a partir de `at` (com as barras de escape); false se não começa com aspas. */
+    static bool readLiteral (const std::string& s, std::size_t& at, std::string& out)
+    {
+        if (at >= s.size() || s[at] != '"')
+            return false;
+
+        out.clear();
+
+        for (++at; at < s.size() && s[at] != '"'; ++at)
+        {
+            if (s[at] == '\\' && at + 1 < s.size())
+                ++at;
+
+            out += s[at];
+        }
+
+        if (at >= s.size())
+            return false;
+
+        ++at;
+        return true;
+    }
+
+    static bool readComma (const std::string& s, std::size_t& at)
+    {
+        skipSpace (s, at);
+
+        if (at >= s.size() || s[at] != ',')
+            return false;
+
+        ++at;
+        skipSpace (s, at);
+        return true;
+    }
+
+    /** As entradas { "nome", "tipo", true|false, "ajuda" } de um trecho. */
+    static std::vector<Param> paramsIn (const std::string& block)
+    {
+        static const std::set<std::string> types { "string", "array", "object", "number", "integer", "boolean" };
+        std::vector<Param> found;
+
+        for (std::size_t brace = block.find ('{'); brace != std::string::npos; brace = block.find ('{', brace + 1))
+        {
+            auto at = brace + 1;
+            Param p;
+            skipSpace (block, at);
+
+            if (! readLiteral (block, at, p.name) || ! readComma (block, at) || ! readLiteral (block, at, p.type) || types.count (p.type) == 0
+                || ! readComma (block, at))
+                continue;
+
+            if (block.compare (at, 4, "true") != 0 && block.compare (at, 5, "false") != 0)
+                continue;
+
+            at += block[at] == 't' ? 4 : 5;
+
+            if (readComma (block, at))
+                readLiteral (block, at, p.help);
+
+            found.push_back (p);
+        }
+
+        return found;
+    }
+
+    /** Cada r.add ({ "id", ... }) de um arquivo, com os parâmetros do schema dele. */
+    static void commandsIn (const std::string& text, const std::string& file, std::vector<Command>& out, int& dynamicIds)
+    {
+        static const std::string marker = "r.add ({";
+
+        for (auto at = text.find (marker); at != std::string::npos;)
+        {
+            const auto next = text.find (marker, at + marker.size());
+            const auto block = text.substr (at + marker.size(), next == std::string::npos ? std::string::npos : next - at - marker.size());
+            std::size_t pos = 0;
+            Command c;
+            c.file = file;
+            skipSpace (block, pos);
+
+            if (readLiteral (block, pos, c.id))
+            {
+                c.params = paramsIn (block);
+                out.push_back (c);
+            }
+            else
+            {
+                ++dynamicIds;   // o id vem de uma variável (channel.setMute e os outros três interruptores do canal)
+            }
+
+            at = next;
+        }
+    }
+
+    static std::string lower (std::string s)
+    {
+        for (auto& c : s)
+            if (c >= 'A' && c <= 'Z')
+                c = (char) (c - 'A' + 'a');
+
+        return s;
+    }
+
+    /** O nome ou a ajuda dizem que o parâmetro é um caminho de arquivo ou de pasta? */
+    static bool looksLikePath (const Param& p)
+    {
+        static const std::set<std::string> names { "path", "paths", "file", "files", "filename", "folder", "folders", "dir", "dirs", "directory" };
+
+        if (p.type != "string" && p.type != "array")
+            return false;
+
+        return names.count (lower (p.name)) > 0 || lower (p.help).find ("caminho") != std::string::npos;
+    }
+}
+
+static void testPathCoverage()
+{
+    std::printf ("Cobertura dos parâmetros de caminho (os schemas de src/commands)\n");
+
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path folder;
+
+    for (const auto& candidate : { fs::path (__FILE__).parent_path() / ".." / ".." / "src" / "commands", fs::path ("src") / "commands",
+                                   fs::path ("..") / "src" / "commands", fs::path ("..") / ".." / "src" / "commands" })
+    {
+        if (fs::is_directory (candidate, ec))
+        {
+            folder = candidate;
+            break;
+        }
+    }
+
+    CHECK (! folder.empty(), "achou src/commands (rode da raiz do repositório, ou compile com o caminho completo do teste)");
+
+    if (folder.empty())
+        return;
+
+    std::vector<scan::Command> commands;
+    int dynamicIds = 0;
+
+    for (auto& entry : fs::directory_iterator (folder, ec))
+    {
+        if (entry.path().extension() != ".cpp")
+            continue;
+
+        std::ifstream in (entry.path(), std::ios::binary);
+        std::stringstream text;
+        text << in.rdbuf();
+        scan::commandsIn (text.str(), entry.path().filename().string(), commands, dynamicIds);
+    }
+
+    CHECK (commands.size() >= 250 && commands.size() + (std::size_t) dynamicIds <= ruleCount() + 8,
+           "leu os comandos registrados em src/commands (%zu com o id escrito, %d com o id numa variável; a tabela tem %zu)",
+           commands.size(), dynamicIds, ruleCount());
+
+    // O que tem cara de caminho e não é: (comando, parâmetro) e por quê. Acrescente aqui só com o motivo.
+    static const std::map<std::pair<std::string, std::string>, const char*> notAPath {
+        { { "library.search", "view" }, "\"folder:<caminho>\" só filtra a lista que já está na memória (isAChildOf, sem ir ao disco)" },
+    };
+
+    std::string unclassified, uncovered, wrongShape, unknownParam;
+    int pathParams = 0;
+
+    for (auto& c : commands)
+    {
+        const auto* rule = findRule (c.id);
+
+        if (rule == nullptr)
+        {
+            unclassified += " " + c.id;
+            continue;
+        }
+
+        for (auto& p : c.params)
+        {
+            if (! scan::looksLikePath (p) || notAPath.count ({ c.id, p.name }) > 0)
+                continue;
+
+            ++pathParams;
+
+            if (rule->risk == Risk::blocked)
+                continue;   // a IA nem chega a rodar
+
+            const auto* param = rule->findPathParam (p.name);
+
+            if (param == nullptr)
+                uncovered += " " + c.id + "(" + p.name + ")";
+            else if (param->list != (p.type == "array"))
+                wrongShape += " " + c.id + "(" + p.name + ")";
+        }
+
+        // e o contrário: a regra não pode apontar para um parâmetro que o comando não tem (nome trocado = caminho cru)
+        for (std::size_t n = 0; n < maxPathParams; ++n)
+        {
+            const auto* param = rule->pathParam (n);
+            bool exists = param == nullptr;
+
+            for (auto& p : c.params)
+                exists = exists || p.name == param->name;
+
+            if (! exists)
+                unknownParam += " " + c.id + "(" + std::string (param->name) + ")";
+        }
+    }
+
+    CHECK (unclassified.empty(), "todo comando registrado tem linha na tabela de risco:%s", unclassified.c_str());
+    CHECK (uncovered.empty(), "todo parâmetro com nome ou ajuda de caminho (path, file, folder, folders, \"Caminho...\") tem regra de caminho "
+                              "(%d parâmetros):%s", pathParams, uncovered.c_str());
+    CHECK (wrongShape.empty(), "lista de caminhos marcada como lista, e texto como texto:%s", wrongShape.c_str());
+    CHECK (unknownParam.empty(), "toda regra de caminho aponta para um parâmetro que o comando tem:%s", unknownParam.c_str());
+
+    // o detector em si: um schema inventado, com e sem regra
+    {
+        std::vector<scan::Command> fake;
+        int dynamic = 0;
+        scan::commandsIn ("r.add ({ \"x.um\", \"Um\"_t,\n schema ({ { \"channel\", \"string\", true, \"Id do canal\" },\n"
+                          "   { \"output\", \"string\", false, \"Caminho do arquivo \\\"de saída\\\"\"_t },\n   { \"dirs\", \"array\", false, \"Pastas\" },\n"
+                          "   { \"tags\", \"string\", false, \"Tags\" } }), true, [] {} });\n"
+                          "r.add ({ id, title, schema ({ { \"file\", \"string\", true, \"x\" } }) });\n"
+                          "r.add ({ \"x.dois\", \"Dois\", schema ({}), false });", "fake.cpp", fake, dynamic);
+
+        CHECK (fake.size() == 2 && dynamic == 1 && fake[0].id == "x.um" && fake[0].params.size() == 4 && fake[1].params.empty()
+               && ! scan::looksLikePath (fake[0].params[0]) && scan::looksLikePath (fake[0].params[1]) && scan::looksLikePath (fake[0].params[2])
+               && ! scan::looksLikePath (fake[0].params[3]) && fake[0].params[1].help == "Caminho do arquivo \"de saída\"",
+               "o leitor de schema acha o parâmetro pelo nome (dirs) e pela ajuda (\"Caminho...\"), e não confunde tags nem channel");
+    }
+}
+
 static void testPlatform()
 {
     std::printf ("Sistema\n");
@@ -902,6 +1363,8 @@ int main()
     testPaths();
     testLimits();
     testCommandPolicy();
+    testCommandPaths();
+    testPathCoverage();
     testPlatform();
     testFuzz();
 

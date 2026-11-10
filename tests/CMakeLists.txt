@@ -236,3 +236,16 @@ else()
 endif()
 
 add_test(NAME rt_bench COMMAND whynot_rt_bench --check)
+
+# Paleta de comandos (frente paleta, 10/11): dobrar o texto (sem acento, sem caixa), pontuar e ordenar, sem JUCE.
+add_executable(whynot_palette_tests
+    ui/test_command_search.cpp)
+target_compile_features(whynot_palette_tests PRIVATE cxx_std_20)
+
+if(MSVC)
+    target_compile_options(whynot_palette_tests PRIVATE /W4 /utf-8 /O2)
+else()
+    target_compile_options(whynot_palette_tests PRIVATE -Wall -Wextra -O2)
+endif()
+
+add_test(NAME palette COMMAND whynot_palette_tests)

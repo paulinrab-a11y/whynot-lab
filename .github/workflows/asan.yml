@@ -1,0 +1,55 @@
+# Os testes sem JUCE com o AddressSanitizer do MSVC (/fsanitize=address).
+# Fica fora do CI de cada push para não dobrar o tempo: roda toda segunda de madrugada e à mão (Actions > ASan > Run workflow).
+name: ASan
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # segunda, 06:00 UTC (03:00 em Brasília)
+  workflow_dispatch:
+    inputs:
+      excluir:
+        description: 'Testes que ficam de fora (expressão do ctest -E); vazio = roda todos'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: asan-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  asan:
+    name: Testes sem JUCE com ASan
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # o vcvars64 também põe no PATH a pasta da DLL do ASan (clang_rt.asan_dynamic-x86_64.dll), que os testes carregam
+      - name: Ambiente do MSVC
+        run: ./tools/ci/ambiente-msvc.ps1
+
+      # Release, não Debug: o /RTC1 do Debug não combina com o ASan, e um teste que derruba processos filhos de
+      # propósito precisa do CRT sem depuração (sem a caixa de diálogo do assert).
+      - name: Configurar (só os testes, com ASan)
+        run: cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Release -DWHYNOT_TESTS_ONLY=ON -DWHYNOT_ASAN=ON
+
+      - name: Compilar
+        run: cmake --build build-asan
+
+      # Com ASan os testes ficam de 2 a 10 vezes mais lentos: os que medem tempo podem acusar falha que não é de memória.
+      - name: ctest
+        env:
+          EXCLUIR: ${{ github.event.inputs.excluir }}
+        run: |
+          if ($env:EXCLUIR) { ctest --test-dir build-asan --output-on-failure --timeout 1800 -E $env:EXCLUIR }
+          else { ctest --test-dir build-asan --output-on-failure --timeout 1800 }
+          exit $LASTEXITCODE

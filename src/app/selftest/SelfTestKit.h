@@ -109,6 +109,7 @@ void runSamplerBendSelfTest (SelfTestContext&);    // pitch bend e mod wheel no 
 void runUxReviewSelfTest (SelfTestContext&);       // revisão de usabilidade (28/10): rodinha e nome no painel do bloco, a IA e o travado, capturas (Revisão de usabilidade)
 void runHeavyProjectSelfTest (SelfTestContext&);    // desempenho (29/10): voz picotada com 300 blocos e 2000 notas num canal mono, tempos do motor e das telas (Desempenho)
 void runGrooveSelfTest (SelfTestContext&);         // swing global, groove das notas, humanizar e o começo do play no PAT (29/10) (Swing e início do play)
+void runBpmLiveSelfTest (SelfTestContext&);        // BPM com o motor vivo (10/11): os clipes MIDI ficam, o render sai igual (bpm)
 void runInvalidFilesSelfTest (SelfTestContext&);  // fecha o relatório (núcleo)
 
 } // namespace whynot::selftest

@@ -110,6 +110,8 @@ namespace
 //==============================================================================
 PianoRollGrid::PianoRollGrid (AppController& a) : app (a)
 {
+    follower.setOn (timegrid::loadViewFlag ("pianoRollFollow", true));
+
     // pinta o fundo inteiro: opaco, a agulha repinta só a grade (sem a tela de trás), fluidez 21/10
     setOpaque (true);
     setWantsKeyboardFocus (true);
@@ -233,9 +235,47 @@ void PianoRollGrid::setPlayhead (double ticks)
         return juce::Rectangle<int> ((int) tickToX (t) - 2, 0, 5, bottom);
     };
 
+    const bool started = playhead < 0.0 && ticks >= 0.0;
+
     if (playhead >= 0.0) repaint (column (playhead));
     playhead = ticks;
     if (playhead >= 0.0) repaint (column (playhead));
+
+    followPlayhead (started);
+}
+
+void PianoRollGrid::followPlayhead (bool started)
+{
+    // roda a cada quadro (animateFrame): só contas, nada de alocação. O mouse apertado na grade é um gesto de edição.
+    const auto r = follower.step (playhead, started, isMouseButtonDown(), scrollTicks, (double) pxPerTick,
+                                  gridArea().getWidth() / (double) pxPerTick);
+
+    if (r.stateChanged && onFollowChanged)
+        onFollowChanged();
+
+    if (r.scroll == scrollTicks)
+        return;
+
+    const double before = scrollTicks;
+    scrollTicks = r.scroll;
+    clampScroll();
+
+    if (scrollTicks != before)
+    {
+        updateScrollBars();
+        repaint();
+    }
+
+    follower.settled (scrollTicks, (double) pxPerTick);
+}
+
+void PianoRollGrid::setFollowing (bool on)
+{
+    follower.setOn (on);
+    timegrid::saveViewFlag ("pianoRollFollow", on);
+
+    if (onFollowChanged)
+        onFollowChanged();
 }
 
 //==============================================================================
@@ -2390,6 +2430,17 @@ bool PianoRollGrid::runShortcut (const juce::String& id, const juce::KeyPress& k
     if (! singleKeyShortcuts && ! mods.isCommandDown() && ! mods.isAltDown() && code > 32 && code < 127)
         return false;
 
+    if (id == "pianoroll.follow")
+    {
+        setFollowing (! isFollowing());
+
+        if (onStatus)
+            onStatus (isFollowing() ? "Seguir a reprodução: ligado. A tela anda com a agulha, página por página."_t
+                                    : "Seguir a reprodução: desligado. A tela fica onde você deixar."_t, false);
+
+        return true;
+    }
+
     if (id == "pianoroll.slide")         { toggleSlideOnSelection(); return true; }
     if (id == "pianoroll.tool.draw")     { setTool (Tool::draw);   if (onToolChanged) onToolChanged(); return true; }
     if (id == "pianoroll.tool.paint")    { setTool (Tool::paint);  if (onToolChanged) onToolChanged(); return true; }
@@ -2492,6 +2543,14 @@ PianoRoll::PianoRoll (AppController& a) : app (a), grid (a), ideas (a)
         updateSnapLabel();
     };
 
+    // Seguir a reprodução: aceso enquanto a tela acompanha a agulha; rolar ou dar zoom apaga até tocar de novo
+    followButton.setNeutralWhenOn (true);   // é da vista, não é som ligado: sem laranja
+    followButton.setTooltip ("Seguir a reprodução (F): tocando, a tela anda com a agulha, página por página. "
+                             "Rolar ou dar zoom desliga até você tocar de novo ou clicar aqui."_t);
+    followButton.setToggleState (grid.isFollowing(), juce::dontSendNotification);
+    followButton.onClick = [this] { grid.setFollowing (! grid.isFollowing()); };
+    grid.onFollowChanged = [this] { followButton.setToggleState (grid.isFollowing(), juce::dontSendNotification); };
+
     slideButton.setClickingTogglesState (true);
     slideButton.setTooltip ("Slide (S): notas novas deslizam da nota anterior, como no 808. Com notas selecionadas, S liga ou desliga o slide delas."_t);
     slideButton.onClick = [this] { setSlideMode (slideButton.getToggleState()); };
@@ -2581,7 +2640,7 @@ PianoRoll::PianoRoll (AppController& a) : app (a), grid (a), ideas (a)
     grid.onModesChanged = [this] { syncModeButtons(); };
 
     for (juce::Component* c : { (juce::Component*) &channelBox, (juce::Component*) &toolSwitch, (juce::Component*) &snapBox,
-                                (juce::Component*) &slideButton,
+                                (juce::Component*) &followButton, (juce::Component*) &slideButton,
                                 (juce::Component*) &monoButton, (juce::Component*) &glideButton,
                                 (juce::Component*) &grooveButton,
                                 (juce::Component*) &editButton, (juce::Component*) &keyBox,
@@ -3101,6 +3160,8 @@ void PianoRoll::resized()
     toolSwitch.setBounds (bar.removeFromLeft (toolSwitch.getIdealWidth()));
     bar.removeFromLeft (theme::metric::gap);
     snapBox.setBounds (bar.removeFromLeft (narrow ? 140 : 156));
+    bar.removeFromLeft (2);
+    followButton.setBounds (bar.removeFromLeft (followButton.getIdealWidth (c)));   // só o ícone: a largura é a altura
     bar.removeFromLeft (gap / 2);
     dividers.add (bar.getX());
     bar.removeFromLeft (gap / 2);

@@ -296,6 +296,8 @@ Além do preset, dá para trocar a tecla de qualquer ação: clique na ação e 
 
 As ferramentas e a edição da **playlist** e do **piano roll** (P, B, C, D, E, T, S, Y, Z, Ctrl+C/X/V/B, Delete, setas, Alt+Q...) também estão no editor, nos grupos **Playlist** e **Piano roll**, com as mesmas teclas nos dois presets; valem com o teclado no editor. Continuam **fixas** só o Esc, o Alt de ignorar a grade e o A de segurar para esticar o áudio. Na tabela abaixo, onde está "fixa" leia "de fábrica": dá para trocar.
 
+**Seguir a reprodução** (tecla **F**, ou o botão da setinha na barra da playlist e do piano roll): tocando, quando a agulha sai da vista a tela pula uma página e deixa a agulha perto da borda esquerda. Vem ligado. Rolar, dar zoom ou arrastar a barra de rolagem desliga sozinho (o botão apaga) até você tocar de novo ou clicar no botão; com o mouse apertado na grade a tela não anda. A escolha fica em `%APPDATA%\WHYNOT LAB\Editores.settings`.
+
 Algumas ações não têm tecla no preset FL e ficam só no menu: **Novo projeto** e **Exportar stems**. **Atalhos de teclado** não tem tecla em nenhum dos dois presets; dá para pôr uma no editor.
 
 | Tecla (preset FL) | Ação |

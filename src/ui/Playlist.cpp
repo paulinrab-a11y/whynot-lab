@@ -102,6 +102,8 @@ juce::String PlaylistGrid::stretchLabel (double stretch)
 //==============================================================================
 PlaylistGrid::PlaylistGrid (AppController& a) : app (a), stretchCursor (makeStretchCursor())
 {
+    follower.setOn (timegrid::loadViewFlag ("playlistFollow", true));
+
     // pinta o fundo inteiro: opaco, a agulha repinta só a grade (sem a tela de trás), fluidez 21/10
     setOpaque (true);
     setWantsKeyboardFocus (true);
@@ -400,9 +402,47 @@ void PlaylistGrid::setPlayhead (double ticks)
         liveItems = live;
     }
 
+    const bool started = playhead < 0.0 && ticks >= 0.0;
+
     if (playhead >= 0.0) repaint (column (playhead));
     playhead = ticks;
     if (playhead >= 0.0) repaint (column (playhead));
+
+    followPlayhead (started);
+}
+
+void PlaylistGrid::followPlayhead (bool started)
+{
+    // roda a cada quadro (animateFrame): só contas, nada de alocação. O mouse apertado na grade é um gesto de edição.
+    const auto r = follower.step (playhead, started, isMouseButtonDown(), scrollTicks, (double) pxPerTick,
+                                  gridArea().getWidth() / (double) pxPerTick);
+
+    if (r.stateChanged && onFollowChanged)
+        onFollowChanged();
+
+    if (r.scroll == scrollTicks)
+        return;
+
+    const double before = scrollTicks;
+    scrollTicks = r.scroll;
+    clampScroll();
+
+    if (scrollTicks != before)
+    {
+        updateScrollBars();
+        repaint();
+    }
+
+    follower.settled (scrollTicks, (double) pxPerTick);
+}
+
+void PlaylistGrid::setFollowing (bool on)
+{
+    follower.setOn (on);
+    timegrid::saveViewFlag ("playlistFollow", on);
+
+    if (onFollowChanged)
+        onFollowChanged();
 }
 
 void PlaylistGrid::setNeedle (int ticks)
@@ -3541,6 +3581,17 @@ bool PlaylistGrid::runShortcut (const juce::String& id, const juce::KeyPress& ke
         }
     }
 
+    if (id == "playlist.follow")
+    {
+        setFollowing (! isFollowing());
+
+        if (onStatus)
+            onStatus (isFollowing() ? "Seguir a reprodução: ligado. A tela anda com a agulha, página por página."_t
+                                    : "Seguir a reprodução: desligado. A tela fica onde você deixar."_t, false);
+
+        return true;
+    }
+
     return false;
 }
 
@@ -3834,6 +3885,15 @@ Playlist::Playlist (AppController& a) : app (a), grid (a), lanes (a)
     };
     voiceButton.setWantsKeyboardFocus (false);
 
+    // Seguir a reprodução: aceso enquanto a tela acompanha a agulha; rolar ou dar zoom apaga até tocar de novo
+    followButton.setNeutralWhenOn (true);   // é da vista, não é som ligado: sem laranja
+    followButton.setTooltip ("Seguir a reprodução (F): tocando, a tela anda com a agulha, página por página. "
+                             "Rolar ou dar zoom desliga até você tocar de novo ou clicar aqui."_t);
+    followButton.setToggleState (grid.isFollowing(), juce::dontSendNotification);
+    followButton.onClick = [this] { grid.setFollowing (! grid.isFollowing()); };
+    followButton.setWantsKeyboardFocus (false);
+    grid.onFollowChanged = [this] { followButton.setToggleState (grid.isFollowing(), juce::dontSendNotification); };
+
     grid.onStatus = [this] (const juce::String& m, bool e) { if (onStatus) onStatus (m, e); };
     grid.onOpenPattern = [this] (const juce::String& id) { if (onOpenPattern) onOpenPattern (id); };
     grid.onBrushChanged = [this] { repaint (0, 0, getWidth(), toolbarHeight); };
@@ -3849,6 +3909,7 @@ Playlist::Playlist (AppController& a) : app (a), grid (a), lanes (a)
     addAndMakeVisible (toolSwitch);
     addChildComponent (songButton);
     addAndMakeVisible (voiceButton);
+    addAndMakeVisible (followButton);
     addAndMakeVisible (grid);
     addAndMakeVisible (lanes);
     updateSnapLabel();
@@ -3904,6 +3965,7 @@ void Playlist::paint (juce::Graphics& g)
 
     auto right = bar;
     right.removeFromRight (voiceButton.getWidth() + metric::gap);
+    right.removeFromRight (followButton.getWidth() + metric::gap);
 
     if (! songMode)
         right.removeFromRight (songButton.getWidth() + metric::gap);
@@ -3924,6 +3986,8 @@ void Playlist::resized()
     bar.removeFromLeft (theme::metric::gap);
     toolSwitch.setBounds (bar.removeFromLeft (toolSwitch.getIdealWidth()));
     voiceButton.setBounds (bar.removeFromRight (voiceButton.getIdealWidth (theme::metric::control)));
+    bar.removeFromRight (theme::metric::gap);
+    followButton.setBounds (bar.removeFromRight (followButton.getIdealWidth (theme::metric::control)));
     bar.removeFromRight (theme::metric::gap);
     songButton.setBounds (bar.removeFromRight (songButton.getIdealWidth (theme::metric::control)));
 }

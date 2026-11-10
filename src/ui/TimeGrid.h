@@ -177,4 +177,30 @@ void paintFineRuler (juce::Graphics& g, juce::Rectangle<int> r, double fromTick,
     }
 }
 
+/** As preferências de vista dos editores (seguir a reprodução na playlist e no piano roll). Ficam num arquivo só
+    delas, "Editores.settings", na mesma pasta do "WHYNOT LAB.settings" da janela, e ele é aberto só na hora de ler
+    ou gravar: o da janela fica aberto o tempo todo no MainComponent e regravaria por cima uma chave que não é dele. */
+inline juce::PropertiesFile::Options viewSettingsOptions()
+{
+    juce::PropertiesFile::Options options;
+    options.applicationName = "Editores";
+    options.filenameSuffix = ".settings";
+    options.folderName = "WHYNOT LAB";
+    options.osxLibrarySubFolder = "Application Support";
+    return options;
+}
+
+inline bool loadViewFlag (const char* key, bool fallback)
+{
+    juce::PropertiesFile settings (viewSettingsOptions());
+    return settings.getBoolValue (key, fallback);
+}
+
+inline void saveViewFlag (const char* key, bool on)
+{
+    juce::PropertiesFile settings (viewSettingsOptions());
+    settings.setValue (key, on);
+    settings.saveIfNeeded();
+}
+
 } // namespace whynot::timegrid

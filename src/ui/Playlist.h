@@ -6,6 +6,7 @@
 #include "BlockProperties.h"
 #include "Controls.h"
 #include "TimeGrid.h"
+#include "TimelineFollow.h"
 #include "../model/PlaylistEdit.h"
 #include "../model/Project.h"
 
@@ -44,6 +45,12 @@ public:
     double getScrollTicks() const noexcept   { return scrollTicks; }
     void setPlayhead (double ticks);   // < 0 = parado
     void setNeedle (int ticks);        // a agulha com o transporte parado, no SONG; < 0 = não mostra
+
+    /** Seguir a reprodução: tocando, quando a agulha sai da vista a tela pula uma página (TimelineFollow.h).
+        Rolar ou dar zoom desliga sozinho até tocar de novo ou ligar aqui; a escolha do usuário fica gravada. */
+    bool isFollowing() const noexcept   { return follower.isOn(); }
+    void setFollowing (bool on);
+    std::function<void()> onFollowChanged;   // ligou ou desligou (pelo botão, pela tecla ou sozinho)
     juce::String getBrushName() const;
 
     /** Ferramentas, com as teclas do FL (pedido do usuário, 21/10): P desenhar, B pintar, C cortar,
@@ -171,6 +178,7 @@ private:
     void scrollBarMoved (juce::ScrollBar*, double) override;
     void updateScrollBars();
     void clampScroll();
+    void followPlayhead (bool started);
 
     juce::Rectangle<int> gridArea() const;
     juce::Rectangle<int> headerArea() const;
@@ -329,6 +337,7 @@ private:
     int dragIn = 0, dragOut = 0;           // o punch enquanto as pontas são arrastadas
     std::vector<Marker> markers;           // os do projeto, ordenados
     juce::String dragMarker;               // o marcador que está sendo arrastado
+    follow::Follower follower;             // seguir a reprodução (ligado por padrão)
     double notifiedScroll = -1.0;          // o enquadramento que a automação já recebeu
     float notifiedZoom = -1.0f;
     juce::ScrollBar hScroll { false }, vScroll { true };
@@ -397,6 +406,7 @@ private:
     SegmentedControl toolSwitch;   // P B C D E T S Y
     IconButton songButton { "Tocar a playlist", Icon::play, "Tocar a playlist (SONG)", IconButton::Style::filled };
     IconButton voiceButton { "Gravar voz", Icon::record, "Gravar voz" };   // arma a trilha Voz, conta e grava (fatia 8)
+    IconButton followButton { "Seguir", Icon::chevronRight, "Seguir" };    // a tela anda com a agulha
     PlaylistGrid grid;
     AutomationLanes lanes;
     bool songMode = false;

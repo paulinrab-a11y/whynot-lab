@@ -502,11 +502,16 @@ void Projector::syncTempo (const Project& p)
     {
         edit.tempoSequence.getTempos()[0]->setBpm (p.bpm);
         appliedBpm = p.bpm;
-        tempoChanged = true;   // clipes são posicionados em segundos: precisam ser refeitos
+        tempoChanged = true;   // os clipes ficam em segundos: o rebuildClips põe cada um no lugar novo
     }
 
     if (p.timeSigNum != appliedNum || p.timeSigDen != appliedDen)
     {
+        // No Tracktion o tempo do compasso é a figura do denominador (240 / (bpm × denominador) segundos): trocar o
+        // denominador muda os segundos de tudo, como o BPM, e o Tracktion não reposiciona os clipes nesse caso.
+        // O numerador só muda a conta dos compassos.
+        tempoChanged = tempoChanged || p.timeSigDen != appliedDen;
+
         auto* ts = edit.tempoSequence.getTimeSigs()[0];
         ts->numerator = p.timeSigNum;
         ts->denominator = p.timeSigDen;
@@ -962,11 +967,21 @@ void Projector::syncInstrument (ChannelBinding& b, const Channel& c)
     - clipe com o mesmo conteúdo fica como está;
     - clipe MIDI que mudou é reescrito no lugar (o mesmo id: o Tracktion corta só as notas que saíram);
     - só sobra apagar ou criar quando o número de clipes muda.
-    O BPM mexe na posição em segundos de tudo: aí é tudo de novo, como antes. */
+    O BPM (e o denominador do compasso) mexe na posição em segundos de tudo, mas não no conteúdo: as notas do
+    clipe MIDI ficam em tempos musicais. Antes era tudo de novo, e arrastar o BPM com a música tocando
+    disparava de novo o 808 e os pads a cada passo. Agora (10/11) o clipe MIDI fica (o mesmo id) e só ganha a
+    posição nova; os de áudio continuam sendo refeitos, porque o corte, os fades e o esticar deles são em
+    segundos e o Tracktion os ajusta ao tamanho do clipe na hora em que são postos. */
 void Projector::rebuildClips (ChannelBinding& b, const juce::String& name, std::vector<MidiSpec> midi,
                               std::vector<AudioSpec> audio, bool everything)
 {
+    // Quem chama pede "everything" na primeira vez do canal e quando o andamento muda. Só a primeira vez é
+    // motivo: num canal já montado, o andamento novo é tratado no lugar (retimed).
+    const bool retimed = tempoChanged && b.built;
     b.built = true;
+
+    if (retimed)
+        everything = false;
 
     if (b.track == nullptr)
     {
@@ -997,6 +1012,16 @@ void Projector::rebuildClips (ChannelBinding& b, const juce::String& name, std::
         b.midi.clear();
         b.audio.clear();
         b.midiClips.clear();
+        b.audioClips.clear();
+    }
+    else if (retimed)
+    {
+        // andamento novo: os clipes de áudio saem todos e nascem de novo mais abaixo, como antes
+        for (auto& clip : b.audioClips)
+            if (clip != nullptr)
+                clip->removeFromParent();
+
+        b.audio.clear();
         b.audioClips.clear();
     }
 
@@ -1045,6 +1070,15 @@ void Projector::rebuildClips (ChannelBinding& b, const juce::String& name, std::
     for (size_t i = 0; i < b.midi.size(); ++i)
         if (! usedMidi[i] && b.midiClips[i] != nullptr)
             b.midiClips[i]->removeFromParent();
+
+    // 5) andamento novo: cada clipe que ficou vai para os segundos novos. O Tracktion já os moveu no setBpm
+    // (EditTimecodeRemapperSnapshot), mas ida e volta por tempos musicais, e não mexe em quem andou menos de
+    // 1 ms; aqui a posição é escrita sempre, pela mesma conta do clipe novo, para o render depois da troca
+    // sair igual ao de um projeto aberto já no andamento novo.
+    if (retimed)
+        for (size_t j = 0; j < midi.size(); ++j)
+            if (midiClips[j] != nullptr)
+                midiClips[j]->setPosition (midiPosition (midi[j]));
 
     // Áudio: o mesmo bloco fica com o mesmo clipe (o esticar segue tocando); o que mudou é refeito
     std::vector<te::Clip::Ptr> audioClips (audio.size());
@@ -1168,9 +1202,14 @@ te::Clip::Ptr Projector::insertMidiClip (te::AudioTrack& track, const juce::Stri
     return clip;
 }
 
+te::ClipPosition Projector::midiPosition (const MidiSpec& spec) const
+{
+    return { { toTime (spec.start), toTime (spec.start + spec.length) }, te::TimeDuration() };
+}
+
 void Projector::writeMidi (te::MidiClip& clip, const MidiSpec& spec)
 {
-    const te::ClipPosition position { { toTime (spec.start), toTime (spec.start + spec.length) }, te::TimeDuration() };
+    const auto position = midiPosition (spec);
 
     if (clip.getPosition() != position)
         clip.setPosition (position);

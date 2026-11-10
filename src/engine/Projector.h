@@ -274,6 +274,7 @@ private:
     void rebuildClips (ChannelBinding&, const juce::String& name, std::vector<MidiSpec>, std::vector<AudioSpec>, bool everything);
     te::Clip::Ptr insertMidiClip (te::AudioTrack&, const juce::String& name, const MidiSpec&);
     void writeMidi (te::MidiClip&, const MidiSpec&);
+    te::ClipPosition midiPosition (const MidiSpec&) const;   // o lugar do clipe, em segundos no andamento de agora
     std::vector<MidiSpec> midiFor (const Project&, const Channel&) const;
     void addChokeCuts (const Project&, const Channel&, std::vector<MidiSpec>&) const;
     void syncInstrument (ChannelBinding&, const Channel&);
@@ -377,7 +378,7 @@ private:
 
     double appliedBpm = -1.0;
     int appliedNum = -1, appliedDen = -1;
-    bool tempoChanged = false;
+    bool tempoChanged = false;   // neste sync o BPM ou o denominador do compasso mudou: os segundos dos clipes mudam
     bool songMode = false;
     bool transportLoopManaged = false;
     double currentPatternSeconds = 0.0;

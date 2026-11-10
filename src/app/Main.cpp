@@ -1,8 +1,10 @@
 #include <JuceHeader.h>
 
 #include "AppController.h"
+#include "CrashReport.h"
 #include "SelfTest.h"
 #include "WindowsPower.h"
+#include "../common/Log.h"
 #include "../control/ControlServer.h"
 #include "../ui/MainComponent.h"
 #include "../ui/MainWindow.h"
@@ -11,6 +13,21 @@
 
 namespace whynot
 {
+
+namespace
+{
+    std::filesystem::path toPath (const juce::File& file)
+    {
+        return std::filesystem::path (file.getFullPathName().toWideCharPointer());
+    }
+
+    /** O que o JUCE e o Tracktion mandam para o juce::Logger (aparelho de áudio aberto, erros do motor)
+        vai para o log da sessão, junto com as linhas do whynot::log. */
+    struct LogBridge final : juce::Logger
+    {
+        void logMessage (const juce::String& message) override   { whynot::log (message); }
+    };
+}
 
 /** Linha de comando:
       whynot-lab                                  abre a janela
@@ -67,6 +84,11 @@ public:
             return;
         }
 
+        // Registro de queda (CrashReport.h) antes de qualquer outra coisa. O processo do scan, acima, fica de
+        // fora: lá um plugin que cai é o esperado, e o pai lê o código de saída (3 = exceção, abort() também
+        // sai com 3) para dizer o motivo em Bloqueados.
+        startCrashReport (args, flag ("--data"));
+
         // Minimizado ou atrás de outra janela, o app continua nos núcleos rápidos (ver WindowsPower.h).
         keepFullCpuSpeed();
 
@@ -109,6 +131,7 @@ public:
             const auto dataText = flag ("--data");
             const auto controlFileText = flag ("--control-file");
             controller = std::make_unique<AppController> (true, dataText.isEmpty() ? juce::File() : juce::File (dataText));
+            logAudioDevice();
 
             control::ControlServer::Options options;
             options.port = portText.getIntValue();
@@ -154,12 +177,13 @@ public:
             splash = SplashWindow::showNow();
 
         controller = std::make_unique<AppController> (false);
+        logAudioDevice();
 
         // duplo clique num .wnl: o Windows passa o caminho como primeiro argumento
         if (arg (0).endsWithIgnoreCase (".wnl"))
-            controller->openProject (juce::File (arg (0)));
+            openFromCommandLine (juce::File (arg (0)));
         else if (args[0] == "--control" && arg (2).endsWithIgnoreCase (".wnl"))
-            controller->openProject (juce::File (arg (2)));
+            openFromCommandLine (juce::File (arg (2)));
 
         if (args[0] == "--screenshot" || args[0] == "--screenshot-fx" || args[0] == "--screenshot-synth")
         {
@@ -282,6 +306,12 @@ public:
         controlServer = nullptr;   // a ponte sai antes da janela e do motor
         mainWindow = nullptr;
         controller = nullptr;
+
+        // o log fecha por último: o que o motor disser ao desligar ainda entra
+        whynot::log ("Sessão encerrada pelo Sair"_t);
+        juce::Logger::setCurrentLogger (nullptr);
+        logBridge = nullptr;
+        sessionlog::stop();
     }
 
     void systemRequestedQuit() override
@@ -299,11 +329,67 @@ public:
     }
 
 private:
+    /** Instala o registro de queda e, com janela ou com a ponte da IA, abre o log da sessão.
+        O autoteste, o --render e as capturas não escrevem log (não deixam marcas na pasta de dados);
+        o registro de queda vale para todos, e o do autoteste fica ao lado do relatório dele. */
+    void startCrashReport (const juce::StringArray& args, const juce::String& dataArg)
+    {
+        const auto mode = args[0];
+        const auto data = mode == "--headless" && dataArg.isNotEmpty()
+                            ? juce::File (dataArg)
+                            : juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("WHYNOT LAB");
+        auto crashes = data.getChildFile ("quedas");
+
+        if (mode == "--self-test" && juce::File::isAbsolutePath (args[1].unquoted()))
+            crashes = juce::File (args[1].unquoted()).getParentDirectory().getChildFile ("quedas");
+
+        CrashReport::install ({ toPath (crashes), getApplicationVersion().toStdString(), 5 });
+
+        if (mode == "--self-test" || mode == "--render" || mode.startsWith ("--screenshot"))
+            return;
+
+        if (! sessionlog::start (toPath (data.getChildFile ("logs"))))
+            return;
+
+        CrashReport::setLogFile (sessionlog::currentFile());   // numa queda, a última linha do log diz onde foi
+        logBridge = std::make_unique<LogBridge>();
+        juce::Logger::setCurrentLogger (logBridge.get());
+
+        whynot::log ("WHYNOT LAB "_t + getApplicationVersion() + " - sessão iniciada, pid "_t + juce::String (Session::currentPid()));
+        whynot::log ("Linha de comando: "_t + (args.isEmpty() ? juce::String ("(vazia)") : args.joinIntoString (" ")));
+        whynot::log ("Sistema: "_t + juce::SystemStats::getOperatingSystemName() + ", " + juce::SystemStats::getCpuModel()
+                       + ", " + juce::String (juce::SystemStats::getNumCpus()) + " núcleos, "_t
+                       + juce::String (juce::SystemStats::getMemorySizeInMegabytes()) + " MB");
+    }
+
+    /** O aparelho de áudio que o motor abriu ao nascer (as trocas depois disso são da janela de áudio, F10). */
+    void logAudioDevice()
+    {
+        if (! sessionlog::isOpen() || controller == nullptr)
+            return;
+
+        if (auto* device = controller->getEngine().getDeviceManager().deviceManager.getCurrentAudioDevice())
+            whynot::log ("Áudio: "_t + device->getTypeName() + " / " + device->getName() + ", "
+                           + juce::String (device->getCurrentSampleRate(), 0) + " Hz, buffer de "_t
+                           + juce::String (device->getCurrentBufferSizeSamples()) + " amostras");
+        else
+            whynot::log ("Áudio: nenhum aparelho aberto"_t);
+    }
+
+    void openFromCommandLine (const juce::File& file)
+    {
+        const auto result = controller->openProject (file);
+        whynot::log (result.wasOk() ? "Projeto aberto pela linha de comando: "_t + file.getFullPathName()
+                                    : "O projeto da linha de comando não abriu: "_t + file.getFullPathName()
+                                        + " (" + result.getErrorMessage() + ")");
+    }
+
     std::unique_ptr<AppController> controller;
     std::unique_ptr<MainWindow> mainWindow;
     std::unique_ptr<SplashWindow> splash;
     std::unique_ptr<control::ControlServer> controlServer;   // Fase 4: só com --control
     std::unique_ptr<control::ParentWatch> parentWatch;       // --headless --parent-pid
+    std::unique_ptr<juce::Logger> logBridge;                 // juce::Logger -> log da sessão
     juce::File screenshotFile;
 };
 

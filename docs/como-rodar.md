@@ -391,6 +391,8 @@ O `ctest --test-dir build` roda dois testes, sem abrir o app:
 
 Para isso, compile antes os alvos `whynot_audio_tests` e `whynot_dsp_tests` (seção 3).
 
+O alvo `whynot_crash_tests` (teste `crash`) confere o registro de queda e o log da sessão: derruba processos filhos de propósito, sem abrir janela, e olha se o `.dmp` e o `.txt` nasceram.
+
 Outros modos:
 
 ```
@@ -438,12 +440,30 @@ Os dois plugins de teste, o Surge XT 1.3.4 e o Surge XT Effects passam no nível
 | Cópia de um projeto antigo antes de converter para o esquema novo | `history\` dentro da pasta do projeto (uma por esquema) |
 | Autosaves | `autosave\` dentro da pasta do projeto; os de projeto nunca salvo em `%APPDATA%\WHYNOT LAB\Autosave\` |
 | Marca de sessão aberta (para achar autosave depois de uma queda) | `%APPDATA%\WHYNOT LAB\sessoes\sessao-<pid>.txt`; some ao fechar pelo Sair |
+| Registro de queda (minidump e texto com o módulo culpado; seção 11b) | `%APPDATA%\WHYNOT LAB\quedas\`; ficam as 5 mais novas |
+| Log da sessão (seção 11b) | `%APPDATA%\WHYNOT LAB\logs\`; um arquivo por abertura, ficam os 10 mais novos |
 | Biblioteca de sons | `Músicas\WHYNOT LAB\Biblioteca\` |
 | Samples do WHYNOT Piano (Salamander) | `%APPDATA%\WHYNOT LAB\Bibliotecas\Salamander\` (`whynot-piano.json`, `CREDITOS.txt` e `samples\`) |
 | Pastas extras e abertas do navegador de sons | `%APPDATA%\WHYNOT LAB\Navegador.settings` |
 | Ponte da IA: arquivo de controle (porta e token) | `%APPDATA%\WHYNOT LAB\control\<porta>.json`; só existe com o app aberto com `--control` |
 | O que a IA fez | `%APPDATA%\WHYNOT LAB\control\ia.log` (e `ia.anterior.log`) |
 | Prévias e capturas da IA | `%LOCALAPPDATA%\WHYNOT LAB\IA\`; o que tem mais de 24 h sai sozinho |
+
+## 11b. Quando o app cai: registro de queda e log
+
+Nada disso sai da sua máquina: a WHYNOT LAB não envia relatório nem telemetria. São arquivos locais, para você (ou quem for ajudar) descobrir o que houve.
+
+- **Registro de queda**, em `%APPDATA%\WHYNOT LAB\quedas\`. Cada queda deixa dois arquivos com o mesmo nome (`<data>-<hora>-<pid>`):
+  - o `.txt`, para ler no Bloco de Notas: versão do app, código e descrição da exceção, endereço, **módulo** (a DLL ou o `.vst3` onde o endereço cai), a pilha da thread que caiu e o **suspeito**, que é o primeiro módulo da pilha que não é o app nem o Windows. Se um plugin derrubou o app, é o nome dele que aparece ali;
+  - o `.dmp`, um minidump pequeno (em geral de 1 a 5 MB) com as pilhas de todas as threads.
+  - Ficam as 5 quedas mais novas; as mais antigas saem na abertura seguinte do app.
+- **Log da sessão**, em `%APPDATA%\WHYNOT LAB\logs\`, um arquivo de texto por abertura do app (ficam os 10 mais novos; cada um para de crescer em 4 MB). Tem o início e o fim da sessão, a versão, o aparelho de áudio aberto e o que o motor avisou. Se o app caiu, a última linha começa com `QUEDA:` e diz qual registro olhar. O autoteste, o `--render` e as capturas não escrevem log.
+- **Como abrir o `.dmp`**:
+  - no Visual Studio: Arquivo > Abrir > Arquivo, escolha o `.dmp` e clique em "Depurar com Somente Nativo". Com o `WHYNOT LAB.pdb` do mesmo build ao lado do `.exe` (ou apontado em Depurar > Opções > Símbolos), a pilha sai com nome de função e linha;
+  - no WinDbg: abra o `.dmp` e digite `.ecxr` e depois `k` para ver a pilha da queda, ou `!analyze -v` para o resumo.
+  - Sem o `.pdb`, o `.txt` já dá o módulo e o deslocamento (`Plugin.vst3+0x1234`), que é o que o fabricante do plugin precisa.
+- **O que não gera registro**: processo morto pelo Gerenciador de Tarefas, falta de luz, e as falhas que o Windows encerra sem avisar o programa (proteção de pilha, parte dos erros de heap). Nesses casos sobra o log da sessão, sem a linha `QUEDA:`.
+- O processo do scan de plugins (`--scan-plugin`) não grava registro: plugin que cai no scan vai para Bloqueados com o motivo, como sempre.
 
 ## 12. Problemas comuns
 

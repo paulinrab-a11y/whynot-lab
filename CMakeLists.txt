@@ -118,6 +118,7 @@ set(WHYNOT_SOURCES
     src/app/selftest/Automation.cpp
     src/app/selftest/AutomationRecord.cpp
     src/app/selftest/BeatKey.cpp
+    src/app/selftest/CommandParams.cpp
     src/app/selftest/Community.cpp
     src/app/selftest/Composition.cpp
     src/app/selftest/Control.cpp

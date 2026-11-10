@@ -146,6 +146,30 @@ powershell -ExecutionPolicy Bypass -File tools\portatil\montar-pacote.ps1 -SoApp
 - **LAME:** o script confere se o exe tem o LAME (a marca `LAME3.100` dentro dele) e para se não tiver. Sem o LAME, o app abre, mas o MP3 fica desligado, e no PC do produtor isso vira "não exporta".
 - O pacote sem o piano tem uns 22 MB; com o piano, uns 600 MB antes do zip (o WAV comprime pouco). Dá para mandar os dois: o app primeiro e o piano à parte.
 
+### 2f. Release pelo GitHub: hash fora do zip e assinatura do exe
+
+O `.github/workflows/release.yml` faz o pacote dos produtores sem depender deste PC. Dispara com o push de uma tag `v*`, ou à mão em Actions > Release > Run workflow (o campo pede o nome da tag). Ele:
+
+1. baixa o Tracktion, o JUCE, o LAME e o ASIO SDK (os dois últimos com o sha256 conferido) e compila do zero, sem cache;
+2. roda o `ctest` e o `--self-test`; com falha, não há pacote;
+3. roda o `montar-pacote.ps1 -SoApp -Zip` (sem o piano: a biblioteca de 590 MB não está no repositório);
+4. grava o `SHA256SUMS.txt` **fora** do zip e cria uma release em **rascunho** com os dois arquivos. Nada fica público até você abrir a release e clicar em "Publish release".
+
+O `conteudo.sha256` de dentro do pacote continua servindo para pegar cópia corrompida, mas não prova a origem: quem troca o zip troca a lista junto. O `SHA256SUMS.txt` ao lado do zip é o que o produtor confere antes de extrair:
+
+```
+Get-FileHash .\WHYNOT-LAB-app-v0.2.0.zip
+```
+
+**Assinatura do exe (ainda não feita).** Sem assinatura, o SmartScreen avisa na primeira abertura (seção 3). O caminho sem custo é a [SignPath Foundation](https://signpath.org), que assina de graça projetos de código aberto que ela aprova. O pedido é do dono do repositório:
+
+1. Preencha o formulário em signpath.org com o endereço do repositório. Eles pedem licença de código aberto aprovada pela OSI (a AGPL-3.0 é), repositório público, o build feito pelo CI a partir do código publicado e uma página do projeto dizendo quem assina e a política de privacidade.
+2. Aprovado, eles criam a organização e o projeto na SignPath e dão o id da organização, o nome do projeto e o da política de assinatura.
+3. Crie um token de API na SignPath e guarde em Settings > Secrets and variables > Actions, com o nome `SIGNPATH_API_TOKEN`.
+4. No `release.yml`, ligue o passo comentado "Assinar o exe (SignPath)" com esses dados e aponte o `-Exe` do `montar-pacote.ps1` para o exe assinado. O exe é assinado antes de montar o pacote, porque o zip e o `SHA256SUMS.txt` levam o hash do exe final.
+
+O certificado é emitido em nome da SignPath Foundation, e a reputação no SmartScreen ainda cresce com os downloads: o aviso pode aparecer nas primeiras semanas. Os nomes exatos dos campos do passo comentado são os da documentação da SignPath na data em que este guia foi escrito; confira lá ao ligar.
+
 ## 3. No outro PC: só usar o app
 
 1. Extraia o zip inteiro (botão direito, "Extrair tudo...") e abra `app\WHYNOT LAB.exe`. Aberto de dentro do zip, o Windows tira só o exe para uma pasta temporária, e o piano e os arquivos ao lado dele ficam para trás.

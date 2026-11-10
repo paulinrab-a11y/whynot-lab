@@ -459,3 +459,57 @@ Os dois plugins de teste, o Surge XT 1.3.4 e o Surge XT Effects passam no nível
 - **O controlador não toca**: ligue a entrada em F10 e clique no nome do canal que deve tocar. O controlador toca o canal escolhido.
 - **As letras pararam de funcionar como atalho**: o teclado-piano está ligado (aceso no pé da janela). Ctrl+T desliga.
 - **"git@github.com: Permission denied"** ao baixar o JUCE: rode o segundo comando da seção 2.
+
+## 13. CI (GitHub Actions)
+
+Três arquivos em `.github/workflows/`. Todos rodam na imagem `windows-2022` (VS 2022, o mesmo compilador da seção 1), só com permissão de leitura, e uma execução nova no mesmo branch cancela a anterior.
+
+| Arquivo | Quando roda | O que faz |
+|---|---|---|
+| `ci.yml` | push no `main`, todo pull request e à mão | os três jobs abaixo |
+| `asan.yml` | toda segunda de madrugada e à mão | os testes sem JUCE com o AddressSanitizer |
+| `release.yml` | push de uma tag `v*` e à mão | compila, testa, monta o pacote e cria a release em rascunho (`docs/portatil.md`, seção 2f) |
+
+Os jobs do `ci.yml`:
+
+| Job | O que roda | Tempo esperado |
+|---|---|---|
+| **Testes sem JUCE** | `cmake -DWHYNOT_TESTS_ONLY=ON -DWHYNOT_WERROR=ON`, os alvos de `tests/CMakeLists.txt` e o `ctest` inteiro. Não baixa o Tracktion nem o JUCE | uns 5 min |
+| **App, autoteste e MCP com o app** | os submódulos como na seção 2, o LAME e o ASIO SDK com o sha256 conferido, o build Release com `-DWHYNOT_WERROR=ON`, o `ctest`, o `--self-test` (o relatório sai como artifact `autoteste-relatorio`) e o `npm test` do `mcp/` com o `WHYNOT_EXE` apontando para o app | do zero, o tempo do build; com o cache, só o que mudou |
+| **MCP (sem o app)** | Node 24 (o `mcp/package.json` pede `>=24`), `npm ci` e `npm test`. Os testes de integração se pulam sozinhos sem o exe | 1 a 2 min |
+
+O `ctest` roda sem lista de nomes: um alvo novo com `add_test` em `tests/CMakeLists.txt` entra no CI sem mexer no workflow.
+
+**O autoteste no runner.** Ele não precisa de placa de som nem de janela: o app abre no modo sem janela, não inicia o aparelho de áudio, e as telas das capturas são desenhadas fora da área de trabalho. Precisa dos plugins de `build\test_plugins`, que o job compila. As áreas que medem tempo (Fluidity, Performance, HeavyProject) nunca rodaram numa máquina virtual: se uma delas falhar só no CI, o relatório do artifact diz a linha.
+
+**Opções do CMake para o CI.** Todas desligadas por padrão; sem elas, o build é o da seção 3.
+
+| Opção | O que faz |
+|---|---|
+| `-DWHYNOT_TESTS_ONLY=ON` | configura só `tests/`, sem o JUCE nem o Tracktion (o submódulo pode estar vazio) |
+| `-DWHYNOT_WERROR=ON` | aviso vira erro (`/WX`) nos fontes da WHYNOT e nos testes; o JUCE, o Tracktion e o LAME ficam de fora |
+| `-DWHYNOT_ASAN=ON` | `/fsanitize=address` em tudo o que o build compila. Só com Release ou RelWithDebInfo. Rode os testes num prompt com o `vcvars64`: a DLL do ASan fica na pasta do compilador |
+| `-DWHYNOT_GUARD_CF=ON` | Control Flow Guard (`/guard:cf`). Nenhum workflow liga ainda: falta medir o custo no áudio |
+
+O `/Qspectre` ficou de fora: pede as bibliotecas "Spectre-mitigated" do Visual Studio, instaladas à parte, e custa CPU nos laços do áudio.
+
+Para rodar em casa o mesmo que o job dos testes, num prompt do VS:
+
+```
+cmake -S . -B build-testes -G Ninja -DCMAKE_BUILD_TYPE=Release -DWHYNOT_TESTS_ONLY=ON -DWHYNOT_WERROR=ON
+cmake --build build-testes
+ctest --test-dir build-testes --output-on-failure
+```
+
+**Scripts do CI** (`tools/ci/`, PowerShell 5.1 ou 7):
+
+| Script | O que faz |
+|---|---|
+| `ambiente-msvc.ps1` | acha o VS 2022 pelo `vswhere`, roda o `vcvars64.bat` e passa o ambiente para os passos seguintes |
+| `terceiros.ps1` | confere `external\lame-3.100` e `external\asiosdk`, arquivo por arquivo, com `tools/ci/terceiros.sha256`. Pasta que não existe não é erro. Com `-Baixar`, baixa os dois das fontes da seção 2b, confere o sha256 do arquivo baixado com o de `docs/licencas.md` antes de extrair e não sobrescreve nada. Serve também no seu PC: `powershell -ExecutionPolicy Bypass -File tools\ci\terceiros.ps1` |
+| `datas-do-cache.ps1` | faz o cache da pasta `build` valer: o fonte com o mesmo conteúdo do build guardado recebe de volta a data daquele build, e o Ninja recompila só o que mudou |
+| `autoteste.ps1` | roda o `--self-test`, espera, mostra as falhas e sai com o número delas |
+
+**Cache do build.** Só o `main` grava; os pull requests leem o do `main`. A chave tem a versão do MSVC e do SDK do Windows, o commit do Tracktion e o hash dos três `CMakeLists.txt`. Para jogar o cache fora, troque `build-v1` por `build-v2` no `ci.yml`.
+
+**ASan.** Roda à parte para não dobrar o tempo de cada push. Com ele os testes ficam bem mais lentos, e os que medem tempo podem falhar por isso: no disparo manual, o campo "excluir" tira testes pelo nome (a expressão do `ctest -E`).

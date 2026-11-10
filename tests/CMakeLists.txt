@@ -236,3 +236,17 @@ else()
 endif()
 
 add_test(NAME rt_bench COMMAND whynot_rt_bench --check)
+
+# Parâmetros dos comandos (10/11, frente comandos): a conversão de número que satura e recusa o não finito, e a
+# conferência de um valor contra a regra do schema (src/commands/Params.h, só cabeçalho), sem JUCE.
+add_executable(whynot_params_tests
+    commands/test_params.cpp)
+target_compile_features(whynot_params_tests PRIVATE cxx_std_20)
+
+if(MSVC)
+    target_compile_options(whynot_params_tests PRIVATE /W4 /utf-8 /O2)
+else()
+    target_compile_options(whynot_params_tests PRIVATE -Wall -Wextra -O2)
+endif()
+
+add_test(NAME params COMMAND whynot_params_tests)

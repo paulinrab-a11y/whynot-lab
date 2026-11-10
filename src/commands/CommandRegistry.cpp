@@ -245,7 +245,7 @@ void CommandRegistry::applySnapshot (const juce::String& json)
 {
     Project p;
 
-    if (wnl::fromJson (json, p).wasOk())
+    if (wnl::fromSnapshot (json, p).wasOk())   // texto do próprio app (desfazer): sem os tetos e as regras de caminho do arquivo de fora
         model.replace (std::move (p));
 }
 

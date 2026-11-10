@@ -110,6 +110,7 @@ set(WHYNOT_SOURCES
     src/app/Main.cpp
     src/app/AppController.cpp
     src/app/AutomationRecording.cpp
+    src/app/CrashReport.cpp
     src/app/Favorites.cpp
     src/app/KeyMap.cpp
     src/app/Session.cpp
@@ -178,6 +179,7 @@ set(WHYNOT_SOURCES
     src/commands/PlaylistEditCommands.cpp
     src/commands/RecordCommands.cpp
     src/commands/SliceCommands.cpp
+    src/common/Log.cpp
     src/control/AudioPreview.cpp
     src/control/CommandGate.cpp
     src/control/CommandPolicy.cpp

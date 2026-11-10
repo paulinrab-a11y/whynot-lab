@@ -234,6 +234,7 @@ set(WHYNOT_SOURCES
     src/engine/PluginHost.cpp
     src/engine/Projector.cpp
     src/engine/SampleAnalysis.cpp
+    src/engine/SampleCache.cpp
     src/engine/SoundInfo.cpp
     src/engine/SynthFavorites.cpp
     src/engine/UserMix.cpp

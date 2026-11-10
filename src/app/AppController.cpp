@@ -389,6 +389,11 @@ AppController::AppController (bool isHeadless, const juce::File& requestedDataFo
     if (! headless)
         projector->setRefreezeDelay (1.0);
 
+    // Com janela, o sample que não está no cache carrega numa thread de trabalho (samples-async, 10/11): abrir um
+    // projeto ou soltar um arquivo longo não trava a tela. Sem janela (autoteste, --render, IA) decodifica na hora.
+    if (! headless)
+        projector->setAsyncSampleLoads (true);
+
     if (! headless)
         edit->getTransport().ensureContextAllocated();
 

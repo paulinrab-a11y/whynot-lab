@@ -20,8 +20,12 @@ WhynotSamplerPlugin::~WhynotSamplerPlugin()
 //==============================================================================
 void WhynotSamplerPlugin::initialise (const te::PluginInitialisationInfo& info)
 {
-    // Pode rodar enquanto o grafo antigo ainda toca este plugin: só avisamos a
-    // thread de áudio, que prepara as vozes ela mesma no próximo bloco.
+    // O Tracktion só chama initialise() sem nenhum grafo processando o plugin (conferido em 10/11 no
+    // Plugin::baseClassInitialise: com o plugin em uso e a mesma taxa e bloco, quem roda é o
+    // initialiseWithoutStopping; taxa ou bloco novos, o EditPlaybackContext::createNode destrói o grafo
+    // velho antes de montar o novo, e o render e o congelar soltam o contexto de playback antes). Daria
+    // para preparar aqui; a flag fica porque já é segura e não custa nada: a thread de áudio prepara as
+    // vozes (sem alocar) no primeiro bloco do grafo novo.
     requestedSampleRate = info.sampleRate;
     needsPrepare = true;
 }

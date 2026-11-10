@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 
 #include "../audio/RtObjectSlot.h"
+#include "../audio/StopMark.h"
 
 #include <atomic>
 
@@ -50,12 +51,14 @@ private:
 
     audio::RtObjectSlot<Clip> slot;
     std::unique_ptr<const Clip> pending;   // "o mais novo vence" se o slot estiver cheio
-    std::atomic<juce::uint32> stopRequests { 0 }, finishedId { 0 };
+    audio::StopMark stopMark;              // "pare as prévias até o id N": a pedida depois do stop() não para
+    std::atomic<juce::uint32> finishedId { 0 };
     std::atomic<double> deviceRate { 48000.0 };
     juce::uint32 nextId = 1, lastId = 0;
+    juce::uint32 newestId = 0;             // o maior id já entregue (o lastId volta a 0 no stop de uma pendente)
 
     // só a thread de áudio
-    juce::uint32 playingId = 0, seenStops = 0;
+    juce::uint32 playingId = 0;
     double position = 0.0;
     float fade = 1.0f;
     bool stopping = false, finished = true;

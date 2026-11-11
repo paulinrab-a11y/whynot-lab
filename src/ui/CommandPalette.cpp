@@ -38,7 +38,7 @@ namespace
     };
 
     template <std::size_t n>
-    bool contains (const char* const (&list)[n], const juce::String& id)
+    bool listed (const char* const (&list)[n], const juce::String& id)
     {
         for (auto* entry : list)
             if (id == entry)
@@ -116,7 +116,7 @@ void CommandPalette::rebuildItems()
             const auto id = command["id"].toString();
 
             if (id.isEmpty() || id == actionId || needsParams (command["params"]) || KeyMap::findAction (id) != nullptr
-                || contains (coveredByAction, id) || contains (notAnAction, id))
+                || listed (coveredByAction, id) || listed (notAnAction, id))
                 continue;
 
             items.push_back ({ id, command["title"].toString(), {}, false });

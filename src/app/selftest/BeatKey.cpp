@@ -72,6 +72,9 @@ namespace
     {
         juce::StringArray names;
 
+        if (! bars.isArray())   // o comando falhou (app sem o LAME, por exemplo): não há lista para ler
+            return "(sem acordes)";
+
         for (auto& b : *bars.getArray())
             names.add ((bool) b["found"] ? b["chord"].toString() : juce::String ("-"));
 

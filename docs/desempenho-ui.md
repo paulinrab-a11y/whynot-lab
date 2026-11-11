@@ -179,3 +179,54 @@ O som não mudou. Os `--render` do antes e do depois saíram iguais amostra por 
 - O `mixer.setVolume` ainda leva a um sync inteiro do motor (as specs de todos os canais, sem refazer o grafo).
 - O desenho das notas das prévias dos padrões percorre todas as repetições até a borda, mesmo na coluna da agulha.
 - Não ouvido e sem ASIO: as medidas são do render offline e do banco. A carga da placa ao vivo não foi medida.
+
+## Passada de 10/11: só a tela à vista se atualiza, e a placa de som que some (frente ui-atualizacao)
+
+Branch `m-ui-atualizacao`. Nada disto foi compilado com o app nem medido: a frente não compila. O que tem prova é a lógica sem JUCE (`tests/ui/test_ui_logic.cpp`, alvo `whynot_ui_tests`).
+
+### O que estava lento
+
+Toda mudança do projeto atualizava as quatro telas (`MainComponent::refreshAll`): rack, piano roll, playlist e mixer, mesmo com a aba escondida ou o mixer recolhido. Arrastar uma nota no piano roll refazia, a cada passo do mouse, as prévias de todos os padrões e os blocos da playlist (`PlaylistGrid::refresh`: 17 ms com a voz picotada antes da passada de 29/10, 0,34 ms depois, mais as curvas de automação, que rodam o comando `automation.list`) e as trilhas do mixer.
+
+### O que mudou
+
+| Onde | O quê |
+|---|---|
+| `src/model/ProjectChange.h` (novo, sem JUCE) | A máscara do que mudou: `change::patterns`, `playlist`, `mixer`, `channels`, `transport` e `all`. |
+| `src/model/ProjectModel.h` | `changed (change::Mask = change::all)` e `Listener::projectChangedMasked`, que por padrão chama o `projectChanged` de sempre. Quem não informa nada continua valendo "tudo"; quem não quer a máscara não muda. |
+| `src/ui/RefreshPlan.h` (novo, sem JUCE) | A tabela "mudança → telas" e a regra "à vista sai agora, escondida fica pendente". |
+| `src/ui/MainComponent.*` | O `refreshAll` soma as telas que dependem da mudança às pendentes e só chama o `refresh` das que estão à vista. A que estava escondida se atualiza quando aparece: toda troca de aba e todo painel passam pelo `resized()`, que atualiza as pendentes à vista antes do layout. O `flushPendingRefresh()` atualiza todas, e a captura (`capturePng`, do `ui.screenshot` e do `--headless`) chama ele antes de fotografar. |
+
+"À vista" sai do estado da tela (`view`, `showUpper`, `showMixer`), não do `isShowing()`: a captura sem janela monta o `MainComponent` fora da área de trabalho, onde nada "está aparecendo".
+
+A tabela, conferida no `refresh` de cada tela:
+
+| Mudança | Rack | Piano roll | Playlist | Mixer |
+|---|---|---|---|---|
+| padrões | sim | sim | sim (as prévias) | não |
+| playlist | não | não | sim | não |
+| mixer | sim (nome e congelado da saída) | não | sim (as curvas leem o mixer) | sim |
+| canais | sim | sim | sim | sim |
+| transporte e projeto | sim | sim | sim | não |
+
+O transporte e o canal escolhido se atualizam sempre (são baratos e outras partes leem deles).
+
+### O que ainda não vale
+
+- **A máscara chega sempre como "tudo".** Quem pode informar é o `CommandRegistry` (frente comandos): hoje ele chama `model.changed()` sem dizer nada. Enquanto isso, o ganho é só o da tela escondida. Com a máscara pelo domínio do comando (`pianoroll.*` e `steps.*` → padrões, `mixer.*` → mixer, `playlist.*` → playlist...), mexer num fader para de atualizar o piano roll, e arrastar uma nota para de atualizar o mixer.
+- **A playlist à vista ainda refaz tudo** a cada mudança (o item antigo desta página): a máscara não ajuda, porque ela depende de tudo. O cache das prévias por padrão continua sendo o próximo passo, da frente editores.
+- **A agulha e os tiques continuam indo para as telas escondidas** (`setPlayhead`, `setNeedle`, `mixer.tick`): eles só calculam retângulos para repintar, sobre o estado guardado da tela, e não foram mexidos.
+- **Não medido.** Falta o número de "arrastar nota com a playlist escondida" antes e depois, no projeto grande da Fluidez.
+
+### A placa de som que some
+
+Antes, a placa desconectada só era avisada quando a pessoa apertava o play (`MainComponent::timerCallback`), e quem ouvia o gerente de áudio era só a janela de Áudio e MIDI, aberta.
+
+Agora o `MainComponent` ouve o `juce::AudioDeviceManager` do motor o tempo todo (com janela; sem janela não há placa) e guarda a saída "vigiada": a última que esteve aberta, com a taxa e o buffer. A decisão fica em `src/ui/DeviceWatch.h` (sem JUCE, testada):
+
+- **sumiu da lista do driver e nada abriu:** erro no pé, na hora, com o botão "Abrir Áudio e MIDI";
+- **sumiu e o JUCE caiu na saída padrão** (é o que o `audioDeviceListChanged` dele faz sozinho): aviso no pé dizendo para onde o som foi;
+- **voltou para a lista:** reabre nela, do jeito que estava, e avisa. Não reabre se a pessoa escolheu outra saída enquanto esperava (a escolha guardada do gerente é outra), se está gravando ou se o driver mudou: aí só avisa que voltou;
+- **a pessoa trocou ou fechou a saída** (a antiga continua na lista): passa a vigiar a nova, sem aviso.
+
+Limites: vale para o driver que avisa quando a lista muda (o Windows Audio avisa). Uma placa ASIO desligada no meio pode não avisar: aí continua valendo o aviso do play. Nada disto foi testado com uma placa de verdade.

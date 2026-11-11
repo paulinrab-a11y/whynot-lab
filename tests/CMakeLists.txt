@@ -309,3 +309,15 @@ else()
 endif()
 
 add_test(NAME autosave COMMAND whynot_autosave_tests)
+# Lógica da tela sem JUCE (frente ui-atualizacao, 10/11): quais telas atualizar dada a máscara da mudança e o
+# que está à vista (RefreshPlan.h), e a decisão da placa de som que some e volta (DeviceWatch.h).
+add_executable(whynot_ui_tests ui/test_ui_logic.cpp)
+target_compile_features(whynot_ui_tests PRIVATE cxx_std_20)
+
+if(MSVC)
+    target_compile_options(whynot_ui_tests PRIVATE /W4 /utf-8)
+else()
+    target_compile_options(whynot_ui_tests PRIVATE -Wall -Wextra)
+endif()
+
+add_test(NAME ui_logic COMMAND whynot_ui_tests)

@@ -11,6 +11,7 @@
 #include "PianoRoll.h"
 #include "PluginBrowser.h"
 #include "Playlist.h"
+#include "RefreshPlan.h"
 #include "SampleBrowser.h"
 #include "Theme.h"
 #include "TransportBar.h"
@@ -35,6 +36,7 @@ class AppController;
 class MainComponent : public juce::Component,
                       public juce::DragAndDropContainer,
                       private ProjectModel::Listener,
+                      private juce::ChangeListener,
                       private juce::Timer
 {
 public:
@@ -98,6 +100,14 @@ public:
     static juce::Rectangle<int> captureOffscreen (AppController&, const juce::String& view, juce::String& channel, int maxWidth,
                                                   const juce::File& png, juce::String& error);
 
+    /** Tela escondida (aba de trás, mixer recolhido) não é atualizada a cada mudança do projeto: fica pendente e
+        se atualiza ao aparecer. Isto atualiza já todas as pendentes, à vista ou não: para a captura e para o
+        autoteste que for ler o estado de uma tela escondida. Sem pendência, não faz nada. */
+    void flushPendingRefresh();
+
+    /** Para o autoteste: as telas que esperam atualização (bits de refreshplan). */
+    unsigned pendingRefresh() const noexcept     { return pendingScreens; }
+
     /** Para o autoteste: o cartão da pergunta aberto (ou nullptr) e o aviso do pé. */
     AiConfirmCard* getAiCard() const noexcept    { return aiCard.get(); }
     AiStatusNotice& getAiNotice() noexcept       { return aiNotice; }
@@ -106,12 +116,17 @@ public:
 private:
 
     void projectChanged (const ProjectModel&) override;
+    void projectChangedMasked (const ProjectModel&, change::Mask) override;
+    void changeListenerCallback (juce::ChangeBroadcaster*) override;   // a placa de som mudou, saiu ou voltou
     void timerCallback() override;
 
     /** Um quadro da tela: agulha (suavizada entre os blocos de áudio), medidores e o visor do transporte. */
     void animateFrame (double dt);
 
-    void refreshAll();
+    void refreshAll (change::Mask what = change::all);
+    refreshplan::Screens shownScreens() const noexcept;   // as telas à vista agora (pelo estado, não pela janela)
+    void refreshScreens (refreshplan::Screens allowed);   // atualiza as pendentes que estão em `allowed`
+    void watchAudioDevice();                              // guarda a saída aberta agora como a vigiada
     void updateSplit();
     void updateTitle();
     void showStatus (const juce::String&, bool isError);
@@ -172,6 +187,12 @@ private:
     StatusBar statusBar;           // o pé: mensagem, erro que fica até fechar, teclado-piano e escala (Design)
     WelcomeCard welcome;           // "Comece aqui": só num projeto novo, até fechar (Design)
     bool wasPlaying = false;       // para avisar "sem saída de som" quando o play começa
+    refreshplan::Screens pendingScreens = 0;   // telas escondidas que esperam o refresh (ui-atualizacao, 10/11)
+
+    // a placa de som vigiada: a última saída que esteve aberta. Se ela some, o pé avisa na hora; se volta, reabre nela
+    juce::String watchedDeviceType, watchedOutput;
+    juce::AudioDeviceManager::AudioDeviceSetup watchedSetup;
+    bool deviceLost = false;
     int recordMessageSerial = 0;   // a última mensagem da gravação que já foi para o pé
     int headphoneQuestionSeen = 0; // a última vez que a escuta perguntou "Está de fone?" (fatia 8)
     float uiScale = 1.0f;

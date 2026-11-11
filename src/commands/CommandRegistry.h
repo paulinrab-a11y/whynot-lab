@@ -1,10 +1,12 @@
 #pragma once
 
 #include "../model/ProjectModel.h"
+#include "Params.h"
 
 #include <functional>
 #include <map>
 #include <optional>
+#include <vector>
 
 namespace whynot
 {
@@ -261,6 +263,9 @@ struct CommandInfo
     Comandos que mudam o modelo viram um passo de desfazer: guardamos o projeto
     em JSON antes e depois. Entre beginGesture() e endGesture() (um arrasto de
     fader, por exemplo) tudo vira um passo só.
+
+    Os parâmetros são conferidos aqui contra o schema do próprio comando, antes de ele rodar (10/11): vale
+    para a interface, os atalhos, o autoteste e qualquer cliente da ponte, não só para o MCP.
 */
 class CommandRegistry
 {
@@ -274,6 +279,14 @@ public:
     juce::var describe() const;
 
     CommandResult run (const juce::String& id, const juce::var& params = {});
+
+    /** Confere os parâmetros contra o schema do comando, sem rodar nada: vazio = pode rodar; senão, o motivo da
+        recusa (o mesmo texto que o run() devolve). Recusa: params que não é objeto, campo obrigatório ausente,
+        lista ou objeto num campo simples (e o contrário), número que não é finito (em qualquer nível), e valor
+        fora do "enum", do "minimum" ou do "maximum" quando o schema declara. Valores simples trocam de tipo como
+        os leitores do namespace params leem (ver params::check em Params.h). Chaves fora do schema passam.
+        Não aloca quando está tudo certo: o schema é compilado uma vez, no add(). */
+    juce::String checkParams (const juce::String& id, const juce::var& params) const;
 
     /** Chamado antes de cada comando, gesto, lote, desfazer, refazer e limpar o histórico. O AppController fecha
         ali o gesto aberto pelos knobs do controlador MIDI (bloco 4d): nada de outra origem entra no passo dele. */
@@ -296,8 +309,17 @@ public:
         refazer. Chame fora de um gesto. Devolve { results: [value de cada passo] }. */
     CommandResult runBatch (const juce::Array<juce::var>& steps, const juce::String& title);
 
+    /** false = não havia passo, ou a foto do passo não abriu. Nesse segundo caso o projeto fica como estava, o
+        passo continua no histórico (no mesmo lugar) e o motivo sai no lastHistoryError(). */
     bool undo();
     bool redo();
+
+    /** O motivo da falha do último undo() ou redo(); vazio se deu certo ou se só não havia passo. */
+    juce::String lastHistoryError() const   { return historyError; }
+
+    /** Lê a foto de um passo de desfazer (padrão: wnl::fromJson). Existe para o autoteste simular uma foto
+        estragada; fora dele, não troque. */
+    std::function<juce::Result (const juce::String& json, Project& out)> readSnapshot;
     bool canUndo() const               { return undoManager.canUndo(); }
     bool canRedo() const               { return undoManager.canRedo(); }
     juce::String undoDescription() const   { return undoManager.getUndoDescription(); }
@@ -332,17 +354,40 @@ public:
 
 private:
     friend class SnapshotAction;
-    void applySnapshot (const juce::String& json);
+
+    /** Troca o projeto pelo da foto. Se a foto não abre, o projeto fica como está e devolve o motivo. */
+    juce::Result applySnapshot (const juce::String& json);
+    void applyHistoryStep (const juce::String& json);   // a foto de um passo, pedida pelo UndoManager
+    bool stepHistory (bool forward);
+
+    // Um campo do schema, já lido do juce::var: conferir um parâmetro não procura texto nem aloca.
+    struct Field
+    {
+        juce::Identifier name;
+        params::Rule rule;
+    };
+
+    struct Entry
+    {
+        CommandInfo info;
+        std::vector<Field> fields;
+    };
+
+    static std::vector<Field> compileSchema (const juce::var& schema);
+    static juce::String problemIn (const Entry&, const juce::var& params);
+    const Entry* findEntry (const juce::String& id) const;
 
     ProjectModel& model;
     AppServices& app;
-    std::map<juce::String, CommandInfo> commands;
+    std::map<juce::String, Entry> commands;
     // Até 64 M caracteres de fotos (o getSizeInUnits é o tamanho do JSON), guardando no mínimo 30 passos.
     // Com 200 de mínimo, um projeto com 2 MB de estado de VST3 chegava a ~800 MB de RAM (revisão profissional, 22/10).
     juce::UndoManager undoManager { 64 * 1024 * 1024, 30 };
     int gestureDepth = 0;
     std::optional<Project> gestureStart;   // o projeto antes do primeiro comando do gesto
     int batchDepth = 0;   // > 0 dentro de um runBatch: o run() não empilha desfazer (o lote empilha um só)
+    juce::String historyError;         // a foto que não abriu no undo() ou redo() em andamento
+    bool replayingHistory = false;     // devolvendo um passo ao lugar depois da falha: as fotos não são aplicadas
 };
 
 /** Registra todos os comandos da entrega 3.1. */
@@ -413,7 +458,19 @@ namespace params
 
     bool has (const juce::var& p, const char* key);
     juce::String string (const juce::var& p, const char* key, const juce::String& fallback = {});
+
+    /** Sempre finito e dentro da faixa do int: `(int) params::number (...)` e `(float) params::number (...)` são
+        definidos para qualquer entrada (NaN, infinito e texto que não é número finito viram o fallback; 1e300
+        satura em 2147483647). A exceção é a chave "seed", que os comandos leem com mais de 32 bits: satura na
+        faixa do int64. Chave ausente devolve o fallback como veio. */
     double number (const juce::var& p, const char* key, double fallback);
+
+    /** O número truncado para int, saturado (params::toInt). Prefira a `(int) params::number (...)` em código novo. */
+    int integer (const juce::var& p, const char* key, int fallback);
+
+    /** O mesmo em 64 bits (sementes e contagens que passam de 2^31). */
+    juce::int64 integer64 (const juce::var& p, const char* key, juce::int64 fallback);
+
     bool boolean (const juce::var& p, const char* key, bool fallback);
 }
 

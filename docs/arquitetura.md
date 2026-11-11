@@ -334,6 +334,30 @@ sequenceDiagram
     Reg-->>Origem: ok (resultado em JSON)
 ```
 
+### Parâmetros conferidos no registro (10/11)
+
+O `CommandRegistry::run` e o `runBatch` conferem os parâmetros contra o schema do próprio comando antes de ele rodar. Até aqui só o MCP conferia (`mcp/src/validate.ts`): a interface, os atalhos, o autoteste e qualquer outro cliente da ponte entravam direto.
+
+- O schema é lido uma vez, no `add()`, para uma lista de campos (`juce::Identifier` + `params::Rule`). Conferir é comparar ponteiros e números: não aloca quando está certo e custa de 11 a 25 ns por parâmetro (medido duas vezes em `tests/commands/test_params.cpp`), contra os ~15 ms das duas fotos do desfazer. Cabe em cada passo de um arraste.
+- **Recusa:** `params` que não é objeto; campo de `required` ausente (ou `null`); lista ou objeto num campo simples, e valor simples num campo `array` ou `object`; número que não é finito, em qualquer nível (as notas de um `pianoroll.addNotes`) e em qualquer chave; valor fora do `enum`, do `minimum` ou do `maximum`, quando o schema declara (hoje nenhum comando declara; o registro já lê).
+- **Não recusa:** valor simples de outro tipo simples. A interface e o autoteste mandam a raia da playlist como número num campo `string` (~80 chamadas) e o `mixer.setInsertParam` aceita o rótulo de uma lista ("48 dB/oit") no campo `number`; os leitores (`params::number`, `string`, `boolean`) sempre converteram. O MCP continua mais estrito para a IA. Chave fora do schema passa (o MCP avisa).
+- No lote, todos os passos são conferidos antes de rodar o primeiro; a mensagem sai como `Passo N (id): ...`.
+- `params::number` devolve sempre um número finito e dentro da faixa do `int`: as dezenas de `(int) params::number (...)` dos comandos ficam definidas para NaN, infinito e 1e300 sem mexer neles. A exceção é a chave `seed` (faixa do `int64`): o `synth.vary` devolve e aceita sementes de 32 bits sem sinal. Código novo usa `params::integer` e `params::integer64`.
+- A conta (conversão saturada e `params::check`) fica em `src/commands/Params.h`, sem JUCE.
+
+### Desfazer (como é, e o que está planejado)
+
+Cada comando que muda o modelo guarda duas fotos do projeto inteiro em JSON (`wnl::toJson` antes e depois); num gesto, as fotos saem uma vez, no `endGesture`. O histórico tem teto de 64 M de caracteres e piso de 30 passos.
+
+- **Foto que não abre (10/11):** se o `wnl::fromJson` de uma foto falha no desfazer ou no refazer, o `undo()`/`redo()` devolve `false`, o projeto fica como estava, o passo continua no histórico no mesmo lugar e o motivo sai em `lastHistoryError()`. Antes devolvia `true` sem desfazer. As `SnapshotAction` devolvem sempre `true` ao `juce::UndoManager` (com `false` ele apaga o histórico inteiro); o registro anota a falha e devolve o passo ao lugar. Um comando (ou lote) que falha e não consegue voltar ao projeto de antes diz isso no erro.
+- **Planejado: tirar o estado dos plugins VST3 das fotos.** O estado de cada plugin (`PluginRef::state`, base64, em `Channel::plugin` e no insert `vst3`) vai inteiro dentro de cada foto. Contas, não medições: um passo guarda 2 fotos, e o piso de 30 passos vale mesmo acima do teto, então um projeto com 2 MB de estado ocupa até 30 × 2 × 2 MB = 120 MB de histórico, e um com 10 MB (plugin de samples), 600 MB; e cada comando fora de gesto serializa e compara esses megabytes duas vezes, mesmo sem tocar em plugin. O desenho mais contido, todo dentro do `CommandRegistry` e sem mexer no `WnlFormat`:
+  1. a foto passa a ser `{ json leve, blobs }`: numa cópia do projeto (o `juce::String` é contado por referência, a cópia não duplica o estado), cada `plugin.state` não vazio é trocado por uma marca `@wnl-blob:N` antes do `wnl::toJson`, e o `juce::String` original entra em `blobs[N]`. Projeto sem estado de plugin segue pelo caminho de hoje, sem a cópia;
+  2. "mudou?" passa a ser `json leve` diferente **ou** algum blob diferente (primeiro pelo ponteiro do texto, e só se o ponteiro diferir, pelo conteúdo). É equivalente à comparação de hoje: a marca não colide com base64 (`@` e `:` não são do alfabeto) e o `toJson` grava o campo do mesmo jeito para qualquer texto;
+  3. ao aplicar, `wnl::fromJson` do json leve e depois cada marca volta a ser o `blobs[N]` (marca fora da lista = foto que não abre, pelo caminho de erro acima);
+  4. não há tabela global nem coleta: os passos e o modelo dividem o mesmo texto por contagem de referência, e ele some quando o último passo que aponta para ele sai do histórico. O `getSizeInUnits` soma o json leve mais os blobs que entraram naquele passo (os do "depois" que não estão no "antes"), para o teto continuar valendo para quem mexe muito num plugin;
+  5. um campo de estado esquecido não quebra nada: só continua pesado como hoje.
+  Não entrou em 10/11 porque troca o caminho de todo desfazer e a frente não compila nem roda o autoteste; a prova que falta é o fuzz do `Robustness.cpp` (desfazer e refazer voltam ao mesmo JSON) num projeto com VST3. Nada precisa mudar no `WnlFormat`; se a frente do formato quiser cortar também a cópia do projeto, a assinatura seria `juce::String toJson (const Project&, const std::function<juce::String (const PluginRef&)>& stateText)`.
+
 - **Atalhos** (3.4): as teclas apontam para **ações** do `KeyMap` (`src/app/KeyMap.cpp`), como `view.files` ou `ui.zoomIn`, que o `MainComponent::buildActions` liga aos comandos e às telas. Os dois presets, "Estilo FL Studio" e "WHYNOT", ficam no código. Só as trocas do usuário vão para `%APPDATA%\WHYNOT LAB\atalhos.json`, e um arquivo estragado volta ao preset FL.
 - **Planejado (Fase 4):** a IA vai descobrir os comandos por `command.list` (ID, título e schema) e executar por `command.run` ou `command.batch`, como no EffectCraft. O registro já tem o ID, o título e o schema de cada comando; falta o servidor.
 - Macros (encadear comandos com um atalho) saem quase de graça daqui, numa fase seguinte.

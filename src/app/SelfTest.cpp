@@ -11,6 +11,9 @@
 namespace whynot
 {
 
+// Frente comandos (10/11): declarada aqui para não mexer no SelfTestKit.h, que tem outro dono.
+namespace selftest { void runCommandParamsSelfTest (SelfTestContext&); }   // parâmetros conferidos no registro e desfazer com foto que não abre
+
 int runSelfTest (const juce::File& reportFile, const juce::File& workFolder)
 {
     using namespace selftest;
@@ -64,6 +67,7 @@ int runSelfTest (const juce::File& reportFile, const juce::File& workFolder)
     runHeavyProjectSelfTest (ctx);
     runGrooveSelfTest (ctx);
     runBpmLiveSelfTest (ctx);
+    runCommandParamsSelfTest (ctx);
     runInvalidFilesSelfTest (ctx);
 
     rep.lines.add ({});

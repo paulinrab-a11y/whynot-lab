@@ -1,6 +1,8 @@
 #include "CommandRegistry.h"
 #include "../model/WnlFormat.h"
 
+#include <cstring>
+
 namespace whynot
 {
 
@@ -11,20 +13,23 @@ public:
     SnapshotAction (CommandRegistry& r, juce::String b, juce::String a, bool alreadyApplied)
         : registry (r), before (std::move (b)), after (std::move (a)), skipNextPerform (alreadyApplied) {}
 
+    // As duas devolvem sempre true: com false, o juce::UndoManager apaga o histórico inteiro (e ainda devolve
+    // true para quem chamou). A foto que não abre fica anotada no registro, que devolve o passo ao lugar e
+    // avisa quem pediu (CommandRegistry::stepHistory).
     bool perform() override
     {
         // Na primeira vez o comando já mudou o modelo; só no "refazer" aplicamos o depois.
         if (skipNextPerform)
             skipNextPerform = false;
         else
-            registry.applySnapshot (after);
+            registry.applyHistoryStep (after);
 
         return true;
     }
 
     bool undo() override
     {
-        registry.applySnapshot (before);
+        registry.applyHistoryStep (before);
         return true;
     }
 
@@ -50,21 +55,277 @@ CommandRegistry::CommandRegistry (ProjectModel& m, AppServices& a) : model (m), 
 void CommandRegistry::add (CommandInfo info)
 {
     jassert (info.id.isNotEmpty() && info.run != nullptr);
-    commands[info.id] = std::move (info);
+    auto fields = compileSchema (info.params);
+    const auto id = info.id;
+    commands[id] = Entry { std::move (info), std::move (fields) };
+}
+
+const CommandRegistry::Entry* CommandRegistry::findEntry (const juce::String& id) const
+{
+    auto it = commands.find (id);
+    return it == commands.end() ? nullptr : &it->second;
 }
 
 const CommandInfo* CommandRegistry::find (const juce::String& id) const
 {
-    auto it = commands.find (id);
-    return it == commands.end() ? nullptr : &it->second;
+    const auto* entry = findEntry (id);
+    return entry == nullptr ? nullptr : &entry->info;
+}
+
+//==============================================================================
+// Conferência dos parâmetros contra o schema do comando. A conta fica em Params.h (sem JUCE, testada com o
+// cl); aqui o schema é lido uma vez do juce::var, e cada valor que chega é traduzido para ela.
+std::vector<CommandRegistry::Field> CommandRegistry::compileSchema (const juce::var& schema)
+{
+    std::vector<Field> fields;
+    const auto* properties = schema["properties"].getDynamicObject();
+
+    if (properties == nullptr)
+        return fields;
+
+    const auto* required = schema["required"].getArray();
+    const auto isNumber = [] (const juce::var& v)   { return v.isInt() || v.isInt64() || v.isDouble(); };
+
+    for (const auto& property : properties->getProperties())
+    {
+        const auto& spec = property.value;
+        Field field;
+        field.name = property.name;
+        field.rule.type = params::typeFromName (spec["type"].toString().toStdString());
+        field.rule.required = required != nullptr && required->contains (juce::var (property.name.toString()));
+
+        if (const auto& minimum = spec["minimum"]; isNumber (minimum) && std::isfinite ((double) minimum))
+        {
+            field.rule.hasMinimum = true;
+            field.rule.minimum = (double) minimum;
+        }
+
+        if (const auto& maximum = spec["maximum"]; isNumber (maximum) && std::isfinite ((double) maximum))
+        {
+            field.rule.hasMaximum = true;
+            field.rule.maximum = (double) maximum;
+        }
+
+        if (const auto* allowed = spec["enum"].getArray())
+            for (const auto& option : *allowed)
+            {
+                if (option.isString())
+                    field.rule.allowedText.push_back (option.toString().toStdString());
+                else if (isNumber (option))
+                    field.rule.allowedNumbers.push_back ((double) option);
+            }
+
+        fields.push_back (std::move (field));
+    }
+
+    return fields;
+}
+
+namespace
+{
+    // Número que não é finito em qualquer nível de uma lista ou de um objeto (as notas de um pianoroll.addNotes,
+    // os pontos de uma curva). O limite de profundidade é só para nunca recursar sem fim.
+    bool allFinite (const juce::var& v, int depth)
+    {
+        if (v.isDouble())
+            return std::isfinite ((double) v);
+
+        if (depth >= 16)
+            return true;
+
+        if (const auto* list = v.getArray())
+        {
+            for (const auto& item : *list)
+                if (! allFinite (item, depth + 1))
+                    return false;
+
+            return true;
+        }
+
+        if (const auto* object = v.getDynamicObject())
+            for (const auto& property : object->getProperties())
+                if (! allFinite (property.value, depth + 1))
+                    return false;
+
+        return true;
+    }
+
+    juce::String typeLabel (params::Type t)
+    {
+        switch (t)
+        {
+            case params::Type::boolean:   return "sim ou não (true/false)"_t;
+            case params::Type::integer:   return "um número inteiro"_t;
+            case params::Type::number:    return "um número"_t;
+            case params::Type::text:      return "um texto";
+            case params::Type::list:      return "uma lista";
+            case params::Type::object:    return "um objeto { nome: valor }";
+            case params::Type::any:       break;
+        }
+
+        return "outro tipo";
+    }
+
+    juce::String kindLabel (params::Kind k)
+    {
+        switch (k)
+        {
+            case params::Kind::boolean:   return "sim ou não"_t;
+            case params::Kind::integer:
+            case params::Kind::number:    return "um número"_t;
+            case params::Kind::text:      return "um texto";
+            case params::Kind::list:      return "uma lista";
+            case params::Kind::object:    return "um objeto";
+            case params::Kind::other:     break;
+        }
+
+        return "um valor que não é JSON"_t;
+    }
+}
+
+juce::String CommandRegistry::problemIn (const Entry& entry, const juce::var& p)
+{
+    const auto missing = [&entry] (const Field& field)
+    {
+        const auto& spec = entry.info.params["properties"][field.name];
+        const auto description = spec["description"].toString();
+        return "Falta o parâmetro \""_t + field.name.toString() + "\" (" + spec["type"].toString() + ")"
+               + (description.isNotEmpty() ? ": " + description : juce::String ("."));
+    };
+
+    const bool none = p.isVoid() || p.isUndefined();
+    const auto* object = p.getDynamicObject();
+
+    if (! none && object == nullptr)
+        return "Os parâmetros precisam ser um objeto { nome: valor }."_t;
+
+    for (const auto& field : entry.fields)
+        if (field.rule.required)
+        {
+            const auto* value = none ? nullptr : object->getProperties().getVarPointer (field.name);
+
+            if (value == nullptr || value->isVoid() || value->isUndefined())
+                return missing (field);
+        }
+
+    if (none)
+        return {};
+
+    static const params::Rule anything;   // chave fora do schema: só o número não finito é recusado
+
+    for (const auto& given : object->getProperties())
+    {
+        const auto& v = given.value;
+
+        if (v.isVoid() || v.isUndefined())   // o null do JSON: é como se não viesse
+            continue;
+
+        const params::Rule* rule = &anything;
+
+        for (const auto& field : entry.fields)
+            if (field.name == given.name)   // dois Identifier: compara ponteiros
+            {
+                rule = &field.rule;
+                break;
+            }
+
+        params::Value value;
+        juce::String text;   // segura o texto enquanto o string_view aponta para ele (cópia sem alocar)
+
+        if (v.isBool())
+        {
+            value.kind = params::Kind::boolean;
+            value.number = (bool) v ? 1.0 : 0.0;
+        }
+        else if (v.isInt() || v.isInt64())
+        {
+            value.kind = params::Kind::integer;
+            value.number = (double) v;
+        }
+        else if (v.isDouble())
+        {
+            value.kind = params::Kind::number;
+            value.number = (double) v;
+        }
+        else if (v.isString())
+        {
+            value.kind = params::Kind::text;
+            text = v.toString();
+
+            if (rule->type == params::Type::integer || rule->type == params::Type::number)
+                value.number = text.getDoubleValue();
+
+            if (rule->hasEnum())
+                value.text = std::string_view (text.toRawUTF8(), text.getNumBytesAsUTF8());
+        }
+        else if (v.isArray())
+        {
+            value.kind = params::Kind::list;
+        }
+        else if (v.getDynamicObject() != nullptr)
+        {
+            value.kind = params::Kind::object;
+        }
+
+        auto problem = params::check (*rule, value);
+
+        if (problem == params::Problem::none && (value.kind == params::Kind::list || value.kind == params::Kind::object)
+            && ! allFinite (v, 0))
+            problem = params::Problem::notFinite;
+
+        if (problem == params::Problem::none)
+            continue;
+
+        const auto name = "O parâmetro \""_t + given.name.toString() + "\" ";
+
+        switch (problem)
+        {
+            case params::Problem::wrongType:
+                return name + "precisa ser " + typeLabel (rule->type) + ", e veio " + kindLabel (value.kind) + ".";
+
+            case params::Problem::notFinite:
+                return name + "tem um número que não é finito (NaN ou infinito)."_t;
+
+            case params::Problem::belowMinimum:
+                return name + "precisa ser no mínimo "_t + juce::String (rule->minimum) + " (veio " + juce::String (value.number) + ").";
+
+            case params::Problem::aboveMaximum:
+                return name + "precisa ser no máximo "_t + juce::String (rule->maximum) + " (veio " + juce::String (value.number) + ").";
+
+            case params::Problem::notAllowed:
+            {
+                juce::StringArray options;
+
+                for (const auto& option : rule->allowedText)
+                    options.add (juce::String::fromUTF8 (option.c_str()));
+
+                for (const double option : rule->allowedNumbers)
+                    options.add (juce::String (option));
+
+                return name + "precisa ser um destes: " + options.joinIntoString (", ") + ".";
+            }
+
+            case params::Problem::none:
+                break;
+        }
+    }
+
+    return {};
+}
+
+juce::String CommandRegistry::checkParams (const juce::String& id, const juce::var& p) const
+{
+    const auto* entry = findEntry (id);
+    return entry == nullptr ? "Comando desconhecido: " + id : problemIn (*entry, p);
 }
 
 juce::var CommandRegistry::describe() const
 {
     juce::Array<juce::var> list;
 
-    for (auto& [id, info] : commands)
+    for (auto& [id, entry] : commands)
     {
+        const auto& info = entry.info;
         auto o = new juce::DynamicObject();
         o->setProperty ("id", id);
         o->setProperty ("title", info.title);
@@ -84,11 +345,17 @@ CommandResult CommandRegistry::run (const juce::String& id, const juce::var& p)
     if (beforeAnything)
         beforeAnything();
 
-    auto* cmd = find (id);
+    const auto* entry = findEntry (id);
 
-    if (cmd == nullptr)
+    if (entry == nullptr)
         return CommandResult::fail ("Comando desconhecido: " + id);
 
+    // Antes de tocar em qualquer coisa: o que o schema do comando não aceita nem chega ao comando. Custa
+    // dezenas de nanossegundos por parâmetro e não aloca quando está certo (cabe num passo de arraste).
+    if (const auto problem = problemIn (*entry, p); problem.isNotEmpty())
+        return CommandResult::fail (problem);
+
+    const auto* cmd = &entry->info;
     CommandContext ctx { model, app };
 
     if (! cmd->changesModel)
@@ -147,9 +414,16 @@ CommandResult CommandRegistry::run (const juce::String& id, const juce::var& p)
 
     if (! result.ok)
     {
-        // Comando falhou no meio: volta ao estado anterior.
+        // Comando falhou no meio: volta ao estado anterior. A foto acabou de sair do toJson; se mesmo assim não
+        // abrir, vale a cópia (quando há) e, sem ela, o erro diz que o projeto ficou pela metade.
         if (before != after)
-            applySnapshot (before);
+            if (const auto back = applySnapshot (before); back.failed())
+            {
+                if (previous.has_value())
+                    model.replace (std::move (*previous));
+                else
+                    result.error += " (e o projeto não voltou ao estado de antes: "_t + back.getErrorMessage() + ")";
+            }
 
         return result;
     }
@@ -183,17 +457,23 @@ CommandResult CommandRegistry::runBatch (const juce::Array<juce::var>& steps, co
     for (int i = 0; i < steps.size(); ++i)
     {
         const auto id = steps.getReference (i)["id"].toString();
-        const auto* cmd = find (id);
+        const auto* entry = findEntry (id);
         const auto where = "Passo "_t + juce::String (i + 1) + " (" + id + "): ";
 
-        if (cmd == nullptr)
+        if (entry == nullptr)
             return CommandResult::fail (where + "comando desconhecido.");
+
+        const auto* cmd = &entry->info;
 
         if (id == "project.new" || id == "project.open")
             return CommandResult::fail (where + "não entra num lote, porque limpa o histórico de desfazer."_t);
 
         if (! cmd->changesModel)
             return CommandResult::fail (where + "só comandos que mudam o projeto entram num lote."_t);
+
+        // os parâmetros de todos os passos, antes de rodar o primeiro
+        if (const auto problem = problemIn (*entry, steps.getReference (i)["params"]); problem.isNotEmpty())
+            return CommandResult::fail (where + problem);
     }
 
     // Cada passo roda pelo run() normal: normaliza, volta sozinho se falhar e chama o changed(), para o
@@ -219,11 +499,14 @@ CommandResult CommandRegistry::runBatch (const juce::Array<juce::var>& steps, co
 
             if (! result.ok)
             {
+                auto error = "Passo "_t + juce::String (i + 1) + " (" + step["id"].toString() + "): " + result.error;
+
                 // o passo que falhou já voltou sozinho; os anteriores voltam com a foto de antes
                 if (wnl::toJson (model.get()) != before)
-                    applySnapshot (before);
+                    if (const auto back = applySnapshot (before); back.failed())
+                        error += " (e o projeto não voltou ao estado de antes do lote: "_t + back.getErrorMessage() + ")";
 
-                return CommandResult::fail ("Passo "_t + juce::String (i + 1) + " (" + step["id"].toString() + "): " + result.error);
+                return CommandResult::fail (error);
             }
 
             results.add (result.value);
@@ -241,29 +524,55 @@ CommandResult CommandRegistry::runBatch (const juce::Array<juce::var>& steps, co
     return CommandResult::success (juce::var (out));
 }
 
-void CommandRegistry::applySnapshot (const juce::String& json)
+juce::Result CommandRegistry::applySnapshot (const juce::String& json)
 {
     Project p;
 
-    if (wnl::fromJson (json, p).wasOk())
-        model.replace (std::move (p));
+    if (const auto read = readSnapshot ? readSnapshot (json, p) : wnl::fromJson (json, p); read.failed())
+        return read;
+
+    model.replace (std::move (p));
+    return juce::Result::ok();
 }
 
-bool CommandRegistry::undo()
+void CommandRegistry::applyHistoryStep (const juce::String& json)
+{
+    // devolvendo um passo ao lugar, ou uma foto deste mesmo passo já falhou: o projeto não muda
+    if (replayingHistory || historyError.isNotEmpty())
+        return;
+
+    if (const auto applied = applySnapshot (json); applied.failed())
+        historyError = "A foto deste passo do histórico não abriu, e o projeto ficou como estava: "_t + applied.getErrorMessage();
+}
+
+bool CommandRegistry::stepHistory (bool forward)
 {
     if (beforeAnything)
         beforeAnything();
 
-    return undoManager.undo();
+    historyError.clear();
+
+    if (! (forward ? undoManager.redo() : undoManager.undo()))
+        return false;   // não havia passo
+
+    if (historyError.isEmpty())
+        return true;
+
+    // A foto não abriu e o projeto ficou como estava, mas o UndoManager já levou o passo para o outro lado do
+    // histórico: desfeito sem desfazer, o próximo Ctrl+Z pularia um passo. Devolve o passo ao lugar, sem aplicar
+    // foto nenhuma (cada passo tem uma ação só: as SnapshotAction de uma transação se fundem).
+    const juce::ScopedValueSetter<bool> replay (replayingHistory, true);
+
+    if (forward)
+        undoManager.undo();
+    else
+        undoManager.redo();
+
+    return false;
 }
 
-bool CommandRegistry::redo()
-{
-    if (beforeAnything)
-        beforeAnything();
-
-    return undoManager.redo();
-}
+bool CommandRegistry::undo()   { return stepHistory (false); }
+bool CommandRegistry::redo()   { return stepHistory (true); }
 
 void CommandRegistry::beginGesture (const juce::String& name)
 {
@@ -335,7 +644,31 @@ namespace params
             return fallback;
 
         const auto& v = p[key];
-        return (v.isDouble() || v.isInt() || v.isInt64()) ? (double) v : v.toString().getDoubleValue();
+        const double raw = (v.isDouble() || v.isInt() || v.isInt64()) ? (double) v : v.toString().getDoubleValue();
+
+        // Quem chama converte para int ou float na mesma linha (são dezenas de `(int) params::number (...)` nos
+        // comandos), e NaN, infinito ou 1e300 em int é comportamento indefinido: o número já sai daqui finito e
+        // dentro da faixa do int. Só a semente passa de 32 bits (synth.vary devolve e aceita uma de 32 bits sem
+        // sinal; pianoroll.transform lê em 64): para ela, a faixa do int64.
+        return std::strcmp (key, "seed") == 0 ? saturatedWide (raw, fallback) : saturated (raw, fallback);
+    }
+
+    int integer (const juce::var& p, const char* key, int fallback)
+    {
+        return has (p, key) ? toInt (number (p, key, (double) fallback), fallback) : fallback;
+    }
+
+    juce::int64 integer64 (const juce::var& p, const char* key, juce::int64 fallback)
+    {
+        if (! has (p, key))
+            return fallback;
+
+        const auto& v = p[key];
+
+        if (v.isInt() || v.isInt64())
+            return (juce::int64) v;   // sem passar por double: acima de 2^53 perderia os bits de baixo
+
+        return (juce::int64) toInt64 (v.isDouble() ? (double) v : v.toString().getDoubleValue(), (std::int64_t) fallback);
     }
 
     bool boolean (const juce::var& p, const char* key, bool fallback)

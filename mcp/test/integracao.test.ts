@@ -73,7 +73,9 @@ test('cliente 2026-07-28: discover, tools, comandos, resumo, lote e os recusados
     const list = await client.listTools();
     assert.deepEqual(list.tools.map((t) => t.name), ['command_list', 'command_run', 'command_batch', 'render_preview', 'screenshot', 'get_project']);
     assert.equal(list.tools[0].annotations?.readOnlyHint, true);
-    assert.equal(list.tools[1].annotations?.destructiveHint, false);
+    assert.equal(list.tools[1].annotations?.destructiveHint, true, 'command_run roda comandos que apagam e gravam por cima');
+    assert.equal(list.tools[3].annotations?.readOnlyHint, false, 'render_preview grava um WAV na pasta da IA');
+    assert.equal(list.tools[4].annotations?.readOnlyHint, false, 'screenshot grava um PNG e pode trocar de tela');
 
     // a primeira tool liga a ponte e abre o app sem janela
     const t0 = performance.now();
@@ -194,6 +196,57 @@ test('cliente antigo (2025-11-25, com initialize) também lista e usa as tools',
     assert.ok(await gone(appPid, 10000));
     assert.ok(!existsSync(controlFile), 'o app fechou pelo app.quit e apagou o arquivo de controle');
     assert.ok(Date.now() - t0 < 5000, `fechou em ${Date.now() - t0} ms, sem esperar o tempo de fechar à força`);
+  } finally {
+    await client.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// O app sem janela cai (auditoria de 10/11/2026). ESCRITO SEM NODE NEM APP NA MÁQUINA: nunca rodou.
+// A intenção: depois da queda, a PRIMEIRA tool não roda e devolve o aviso (com o caminho do último projeto salvo);
+// o servidor já abriu outro app, com projeto vazio, e NÃO reabriu o projeto sozinho; a tool seguinte funciona normal.
+test('app sem janela que cai: a tool seguinte avisa uma vez, com o caminho do projeto, e não roda; depois segue no app novo',
+     { skip, timeout: 180000 }, async () => {
+  // a pasta do teste não é pasta permitida: salvar e abrir nela pedem confirmação, e a "pessoa" do teste diz sim
+  const { client, dir, controlFile } = await start({ mode: { pin: '2026-07-28' } }, () => ({ action: 'accept', content: { confirmar: true } }));
+
+  try {
+    // um projeto com cara própria (97 BPM), salvo, para o servidor saber o caminho
+    const savedPath = join(dir, 'queda.wnl');
+    const bpm = await client.callTool({ name: 'command_run', arguments: { id: 'transport.setBpm', params: { bpm: 97 } } });
+    assert.ok(!bpm.isError, textOf(bpm));
+    const saved = await client.callTool({ name: 'command_run', arguments: { id: 'project.save', params: { path: savedPath } } });
+    assert.ok(!saved.isError, textOf(saved));
+    assert.ok(existsSync(savedPath), 'o projeto foi salvo');
+
+    // derruba o app por fora (no Windows, o process.kill termina o processo na hora, como uma queda)
+    const firstPid = JSON.parse(readFileSync(controlFile, 'utf8')).pid as number;
+    process.kill(firstPid);
+    assert.ok(await gone(firstPid, 10000), 'o app morreu');
+    await sleep(1000);   // o servidor ouve o fim do processo e o fechamento do WebSocket
+
+    // a primeira tool depois da queda: o aviso, e o comando NÃO roda
+    const warned = await client.callTool({ name: 'command_run', arguments: { id: 'transport.setBpm', params: { bpm: 111 } } });
+    assert.ok(warned.isError, 'a queda chega como erro da tool');
+    assert.match(textOf(warned), /A WHYNOT LAB fechou inesperadamente/);
+    assert.match(textOf(warned), /projeto vazio/);
+    assert.match(textOf(warned), /este pedido NÃO rodou/);
+    assert.ok(textOf(warned).includes(savedPath), `o aviso traz o caminho do último projeto (${savedPath}): ${textOf(warned)}`);
+
+    // já há outro app de pé, e é outro processo
+    const secondPid = JSON.parse(readFileSync(controlFile, 'utf8')).pid as number;
+    assert.notEqual(secondPid, firstPid);
+
+    // a tool seguinte funciona, sem aviso repetido; o projeto é o vazio de sempre (140 BPM): nem o 97 salvo, nem o 111 recusado
+    const summary = await client.callTool({ name: 'get_project', arguments: {} });
+    assert.ok(!summary.isError, textOf(summary));
+    assert.match(textOf(summary), /^Projeto "[^"]+" · 140 BPM/, 'ninguém reabriu o projeto sozinho, e o pedido do aviso não rodou');
+    assert.match(textOf(summary), /nunca salvo/);
+
+    // quem reabre é a IA, com o caminho do aviso
+    const reopened = await client.callTool({ name: 'command_run', arguments: { id: 'project.open', params: { path: savedPath } } });
+    assert.ok(!reopened.isError, textOf(reopened));
+    assert.match(textOf(await client.callTool({ name: 'get_project', arguments: {} })), /· 97 BPM/);
   } finally {
     await client.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });

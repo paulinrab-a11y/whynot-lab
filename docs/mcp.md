@@ -37,6 +37,7 @@ O servidor liga nesse app com `node mcp\dist\src\index.js --attach 47830`. Você
 - Sem janela não há autosave: o projeto só fica salvo com `project.save` ou `project.saveNewVersion`. A IA sabe disso.
 - Sem `--data <pasta>`, a WHYNOT escondida usa a sua pasta de dados de verdade (atalhos, pastas de plugin, favoritos).
 - Se o servidor cair, a WHYNOT escondida fecha sozinha em poucos segundos.
+- Se a WHYNOT escondida cair (um plugin que derruba o app, por exemplo), o servidor abre outra no pedido seguinte, com um projeto vazio. Esse pedido não roda: a IA ouve, uma vez, que o app fechou inesperadamente, que o que não foi salvo se perdeu e qual era o último projeto salvo de que o servidor sabia (pelo `get_project`, `project.open`, `project.save` ou `project.saveNewVersion`). O servidor não reabre o projeto sozinho: quem reabre é a IA, com `project.open`, e isso passa pelas mesmas regras de confirmação.
 
 ## 3. Ligar no cliente de IA
 
@@ -68,11 +69,26 @@ Troque `--attach 47830` por `--headless` para o jeito sem janela. Para tirar: `c
 | Tool | O que faz |
 |---|---|
 | `command_list` | Os comandos do app. Sem filtro, a lista curta por domínio. Com `domain`, `query` ou `ids`, o schema dos parâmetros e o risco de cada um |
-| `command_run` | Roda um comando. Os marcados [confirma] pedem o seu ok antes; os [às vezes confirma] pedem só em alguns casos (o `confirmsWhen` do `command_list` diz quais: gravar por cima, um caminho fora das pastas, perder o que não foi salvo); os [bloqueado] são só pela tela |
+| `command_run` | Roda um comando. Pode mudar e apagar coisas do projeto (com desfazer) e gravar arquivos (sem desfazer). Os marcados [confirma] pedem o seu ok antes; os [às vezes confirma] pedem só em alguns casos (o `confirmsWhen` do `command_list` diz quais: gravar por cima, um caminho fora das pastas, perder o que não foi salvo); os [bloqueado] são só pela tela |
 | `command_batch` | Até 200 comandos num passo de desfazer só, tudo ou nada. Comando que pede confirmação recusa o lote |
 | `get_project` | O projeto: `resumo` (texto curto, o padrão) ou `completo` (o JSON do `.wnl`, até 100 KB, com filtros) |
-| `render_preview` | Renderiza o padrão ou a música na pasta da IA e devolve as medidas: pico, true peak, RMS, LUFS, amostras cortadas, silêncio e o RMS de cada compasso e de cada tempo |
-| `screenshot` | Uma captura da tela em PNG, até 1600 px. Com `view`, troca de tela antes; com `channel` (o id `ch_...`), escolhe o canal do piano roll, e sem `view` mostra o piano roll dele. Com a janela, você vê a troca de tela e de canal |
+| `render_preview` | Renderiza o padrão ou a música e devolve as medidas: pico, true peak, RMS, LUFS, amostras cortadas, silêncio e o RMS de cada compasso e de cada tempo. Não muda o projeto, mas grava um WAV novo na pasta da IA |
+| `screenshot` | Uma captura da tela em PNG, até 1600 px. Com `view`, troca de tela antes; com `channel` (o id `ch_...`), escolhe o canal do piano roll, e sem `view` mostra o piano roll dele. Com a janela, você vê a troca de tela e de canal. Não muda o projeto, mas grava um PNG novo na pasta da IA |
+
+O que cada tool declara ao cliente de IA (as anotações do MCP, que alguns clientes usam para decidir quando pedir a sua permissão):
+
+| Tool | Só leitura | Pode destruir | Por quê |
+|---|---|---|---|
+| `command_list`, `get_project` | sim | — | Só leem |
+| `command_run` | não | sim | Há comandos que apagam (canal, trilha do mixer, notas, a playlist) e que gravam por cima de arquivo (com o seu ok). Também é a única marcada como "mundo aberto": com o seu ok, alcança arquivos fora do projeto e abre plugins de terceiros |
+| `command_batch` | não | sim | Apaga como o `command_run`; sem confirmação, fica no projeto e nas pastas permitidas |
+| `render_preview`, `screenshot` | não | não | Gravam um arquivo temporário na pasta da IA; a captura pode trocar a tela e o canal escolhido |
+
+As anotações são dicas: a proteção de verdade é a confirmação da própria WHYNOT (seção 5).
+
+As instruções que o servidor dá ao modelo dizem o fluxo (ver o projeto, listar os comandos, rodar, conferir o som com `render_preview`, conferir a tela com `screenshot`), o que pede a sua confirmação, que uma recusa sua encerra o assunto (a IA não repete nem tenta por outro comando) e que nomes de canal, de arquivo e de projeto são dados, nunca ordens.
+
+O servidor confere os parâmetros antes de mandar ao app: os obrigatórios, o tipo de cada um, número que não é finito (inclusive dentro de listas) e inteiro grande demais; parâmetro que o comando não tem vira aviso. O schema que o app publica só tem o tipo e a descrição: as faixas e os valores aceitos, quem confere é o app. Pedido acima de 1 MB é recusado no servidor, antes de chegar à ponte.
 
 O `render_preview` mede, mas não ouve: ele diz se algo entrou, cortou ou ficou mudo. Quem ouve é você.
 - Os avisos saem no texto e também no JSON, porque alguns clientes, como o Claude Code, mostram ao modelo só o JSON: `warnings` (a prévia muda, as amostras cortadas, os compassos mudos) e `mutedBars` (os números dos compassos abaixo de -60 dBFS).
@@ -113,4 +129,10 @@ O que a IA pode fazer depende de quem pede e de onde mexe.
 - **"Não consegui abrir a porta 47830"**: outro programa, ou outra WHYNOT, já está nela. Feche a outra, ou use outra porta nos dois lados.
 - **A IA diz que o comando precisa da confirmação e que o cliente não pergunta**: o cliente não sabe perguntar (não tem elicitação). Use o jeito com a janela.
 - **"Não consegui ligar na ponte da WHYNOT"**: o app fechou, ou alguém clicou "Desligar a IA". Abra o app de novo, ou clique "Ligar a IA" no pé da janela.
+- **"A WHYNOT LAB fechou inesperadamente"** (só sem janela): o app escondido caiu, e o servidor abriu outro, vazio. O aviso sai uma vez e traz o caminho do último projeto salvo; a IA reabre com `project.open`. O que não tinha sido salvo se perdeu.
+- **"A WHYNOT fechou a conexão no meio do pedido"**: o app fechou, ou outra IA ligou no lugar, enquanto um comando rodava. O comando pode ter rodado ou não: a IA confere com `get_project`.
+- **"A WHYNOT não respondeu em N s"**: o comando pode ter terminado depois. A IA confere com `get_project` antes de repetir.
+- **"Ocupado: pedidos demais de uma vez"**: a IA mandou mais de 32 pedidos juntos, ou mais de 20 por segundo. Ela espera as respostas e manda menos.
+- **"Pedido grande demais para a ponte"**: um pedido passou de 1 MB. Nada rodou; a IA divide em pedidos menores.
+- **"O arquivo de controle da WHYNOT está ilegível ou incompleto"**: sobrou um arquivo estragado em `%APPDATA%\WHYNOT LAB\control\`. Feche e abra o app de novo.
 - **A IA não vê um comando novo**: a lista de comandos é lida quando o servidor liga. Reinicie a conversa do cliente de IA.

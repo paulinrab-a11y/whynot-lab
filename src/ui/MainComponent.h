@@ -5,6 +5,7 @@
 #include "AiBridgeUi.h"
 #include "BeatKeyNotice.h"
 #include "ChannelRack.h"
+#include "CommandPalette.h"
 #include "ExportDialogs.h"
 #include "Fluid.h"
 #include "MixerView.h"
@@ -186,6 +187,7 @@ private:
     juce::String selectedChannel;
     StatusBar statusBar;           // o pé: mensagem, erro que fica até fechar, teclado-piano e escala (Design)
     WelcomeCard welcome;           // "Comece aqui": só num projeto novo, até fechar (Design)
+    CommandPalette palette { app }; // a busca de ações (ação view.commandPalette do KeyMap), por cima das telas
     bool wasPlaying = false;       // para avisar "sem saída de som" quando o play começa
     refreshplan::Screens pendingScreens = 0;   // telas escondidas que esperam o refresh (ui-atualizacao, 10/11)
 

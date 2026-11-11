@@ -346,6 +346,17 @@ No preset **WHYNOT** muda isto:
 | Ctrl+Alt+N | Salvar nova versão |
 | Ctrl+Alt+R | Exportar stems |
 
+## 8b. Paleta de comandos (buscar uma ação)
+
+A paleta acha qualquer ação pelo nome, sem decorar o atalho nem procurar no menu. A ação se chama **Paleta de comandos** (`view.commandPalette`) e fica no editor de atalhos, no grupo Telas; a tecla prevista é **Ctrl+Shift+P**.
+
+- Ela abre no alto da janela. Digite um pedaço do nome: "exportar", "bpm", "mixer". Acento e maiúscula não importam, e as letras não precisam estar coladas ("exwav" acha Exportar WAV). Também vale o id da ação, que aparece apagado ao lado do nome.
+- À direita de cada linha fica o atalho da ação, quando ela tem um.
+- **Setas** escolhem a linha (Page Up e Page Down pulam uma tela; Ctrl+Home e Ctrl+End vão à primeira e à última). **Enter** ou um clique executa e fecha. **Esc**, um clique fora ou a mesma tecla de novo fecham sem fazer nada.
+- Com a busca vazia, as ações que você usou por último nesta sessão vêm primeiro.
+- Aparecem as ações do editor de atalhos e os comandos que rodam sem pedir nada (Parar, Novo padrão, Limpar playlist...). O que precisa de um valor (mudar o BPM, renomear) ainda não entra.
+- Se o comando falhar, o motivo aparece na barra de status, como nas outras telas.
+
 ## 9. Áudio
 
 **F10** (ou Arquivo → Áudio e MIDI) abre quatro coisas:

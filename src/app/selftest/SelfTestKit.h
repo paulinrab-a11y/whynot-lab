@@ -112,6 +112,7 @@ void runGrooveSelfTest (SelfTestContext&);         // swing global, groove das n
 void runBpmLiveSelfTest (SelfTestContext&);        // BPM com o motor vivo (10/11): os clipes MIDI ficam, o render sai igual (bpm)
 void runWnlFuzzSelfTest (SelfTestContext&);        // .wnl de terceiros (10/11): caminhos, tetos, app mais novo e fuzz do fromJson (wnl-seguro)
 void runAutosaveGuardSelfTest (SelfTestContext&);   // app-autosave (10/11): autosave que espera o gesto, plugins sujos e suspeitos de queda (Autosave e queda)
+void runPaletteSelfTest (SelfTestContext&);        // paleta de comandos (10/11): o que entra, a busca, as teclas, executar e a captura (Paleta)
 void runInvalidFilesSelfTest (SelfTestContext&);  // fecha o relatório (núcleo)
 
 } // namespace whynot::selftest

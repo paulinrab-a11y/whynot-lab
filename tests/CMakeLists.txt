@@ -236,3 +236,17 @@ else()
 endif()
 
 add_test(NAME rt_bench COMMAND whynot_rt_bench --check)
+
+# Sobreamostrador 4x (10/11, frente oversampler): custo por bloco da ida e volta e só da ida, lado a lado com a versão
+# antiga (tests/dsp/OversamplerReference.h), e o limitador do master inteiro. Só mede e imprime: não entra no ctest.
+add_executable(whynot_oversampler_bench
+    perf/bench_oversampler.cpp
+    ../src/dsp/LoudnessMeter.cpp
+    ../src/dsp/Master.cpp)
+target_compile_features(whynot_oversampler_bench PRIVATE cxx_std_20)
+
+if(MSVC)
+    target_compile_options(whynot_oversampler_bench PRIVATE /W4 /utf-8 /O2)
+else()
+    target_compile_options(whynot_oversampler_bench PRIVATE -Wall -Wextra -O2)
+endif()

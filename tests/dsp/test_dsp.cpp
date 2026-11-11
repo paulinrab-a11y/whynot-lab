@@ -22,9 +22,11 @@
 #include "../../src/dsp/Vintage.h"
 #include "../../src/dsp/Vocal.h"
 #include "../../src/dsp/VoicePitch.h"
+#include "OversamplerReference.h"
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <random>
 #include <string>
@@ -277,6 +279,243 @@ static void testOversampler()
     const double aliasOs = db (toneAmplitude (clipped, 3000.0, 4000, 48000));
     const double aliasNaive = db (toneAmplitude (naive, 3000.0, 4000, 48000));
     CHECK (aliasOs < -45.0 && aliasNaive > -20.0, "aliasing em 3 kHz: %.1f dB com 4x, %.1f dB sem", aliasOs, aliasNaive);
+}
+
+//==============================================================================
+// Passada de desempenho de 10/11: o sobreamostrador novo (produto interno em SSE) contra o antigo, guardado em
+// OversamplerReference.h. A ordem das somas mudou, então a saída não é bit a bit igual; tem que ficar no
+// nível do arredondamento do float. Um passo do float (1 ulp) perto de 1,0 já vale -138,5 dBFS e perto de 2,0
+// (a ida passa de 1,0 entre as amostras) -132,5: com sinal de fundo de escala, duas ordens de soma diferem de
+// alguns ulps no pior ponto, então o pico da diferença fica por volta de -123 dBFS e a média (rms) em -144.
+// Para saber qual das duas está mais certa, as duas são comparadas com a mesma conta em double.
+
+/** A ida e volta sem clip, em double, com os mesmos coeficientes (convolução direta, sem histórico). */
+static std::vector<double> oversampleRoundTripExact (const std::vector<float>& x)
+{
+    const auto s1 = reference::HalfbandDesign::make (Oversampler4x::taps1);
+    const auto s2 = reference::HalfbandDesign::make (Oversampler4x::taps2);
+
+    auto up = [] (const std::vector<double>& in, const reference::HalfbandDesign& d)
+    {
+        std::vector<double> out (in.size() * 2, 0.0);
+
+        for (size_t n = 0; n < in.size(); ++n)
+            for (int p = 0; p < 2; ++p)
+            {
+                double acc = 0.0;
+
+                for (auto& t : d.phase[p])
+                    if (const size_t ago = (size_t) ((t.index - p) / 2); ago <= n)
+                        acc += (double) t.coeff * in[n - ago];
+
+                out[2 * n + (size_t) p] = 2.0 * acc;
+            }
+
+        return out;
+    };
+
+    auto down = [] (const std::vector<double>& in, const reference::HalfbandDesign& d)
+    {
+        std::vector<double> out (in.size() / 2, 0.0);
+
+        for (size_t m = 0; m < out.size(); ++m)
+            for (int p = 0; p < 2; ++p)
+                for (auto& t : d.phase[p])
+                    if ((size_t) t.index <= 2 * m)
+                        out[m] += (double) t.coeff * in[2 * m - (size_t) t.index];
+
+        return out;
+    };
+
+    return down (down (up (up (std::vector<double> (x.begin(), x.end()), s1), s2), s2), s1);
+}
+
+template <int N>
+static bool dotPathsMatch (std::mt19937& rng)
+{
+    std::uniform_real_distribution<float> u (-1.0f, 1.0f);
+    float c[64], x[64];
+
+    for (int round = 0; round < 200; ++round)
+    {
+        for (int i = 0; i < 64; ++i)
+        {
+            c[i] = u (rng);
+            x[i] = u (rng);
+        }
+
+        const float a = fir::dot<N> (c, x), b = fir::dotScalar<N> (c, x);
+
+        if (std::memcmp (&a, &b, sizeof (float)) != 0)
+            return false;
+    }
+
+    return true;
+}
+
+static void testOversamplerAgainstReference()
+{
+    std::printf ("Sobreamostragem 4x: nova contra a antiga\n");
+
+    // O caminho sem SSE faz as mesmas somas na mesma ordem: bit a bit igual.
+    std::mt19937 rng (2026);
+    const bool same = dotPathsMatch<1> (rng) && dotPathsMatch<3> (rng) && dotPathsMatch<4> (rng) && dotPathsMatch<7> (rng)
+                   && dotPathsMatch<8> (rng) && dotPathsMatch<9> (rng) && dotPathsMatch<12> (rng) && dotPathsMatch<13> (rng)
+                   && dotPathsMatch<14> (rng) && dotPathsMatch<16> (rng) && dotPathsMatch<23> (rng) && dotPathsMatch<32> (rng)
+                   && dotPathsMatch<33> (rng);
+    CHECK (same, "produto interno: caminho SSE = caminho escalar, bit a bit (13 tamanhos, 200 sorteios cada)");
+
+    // Mesmos coeficientes (os mesmos floats) e mesma latência.
+    {
+        Oversampler4x now;
+        reference::Oversampler4x before;
+        now.prepare();
+        before.prepare();
+        bool coeffs = true;
+
+        for (int taps : { Oversampler4x::taps1, Oversampler4x::taps2 })
+        {
+            const auto a = HalfbandDesign::make (taps);
+            const auto b = reference::HalfbandDesign::make (taps);
+            coeffs = coeffs && a.dense.size() == b.phase[a.densePhase].size() && b.phase[a.densePhase ^ 1].size() == 1
+                  && a.centreCoeff == b.phase[a.densePhase ^ 1][0].coeff && a.centreCoeff == 0.5f;
+
+            for (size_t j = 0; coeffs && j < a.dense.size(); ++j)
+                coeffs = a.dense[j] == b.phase[a.densePhase][j].coeff && b.phase[a.densePhase][j].index == 2 * (int) j + a.densePhase;
+        }
+
+        CHECK (coeffs && HalfbandUp<Oversampler4x::taps1>::numDense == 32 && HalfbandDown<Oversampler4x::taps2>::numDense == 14,
+               "os coeficientes são os mesmos floats da versão antiga (32 + centro e 14 + centro)");
+        CHECK (now.latency() == before.latency() && now.upsampleLatency() == before.upsampleLatency() && now.latency() == 38,
+               "latência igual à antiga: %d amostras na ida e volta, %d só na ida", now.latency(), now.upsampleLatency());
+    }
+
+    const int length = 48000;
+    std::vector<std::pair<const char*, std::vector<float>>> signals;
+    {
+        std::vector<float> noise ((size_t) length);
+        std::uniform_real_distribution<float> u (-1.0f, 1.0f);
+        for (auto& v : noise) v = u (rng);
+        signals.push_back ({ "ruído", noise });
+        signals.push_back ({ "seno 1 kHz", sine (1000.0, 1.0, length) });
+        signals.push_back ({ "seno 18 kHz", sine (18000.0, 1.0, length) });
+        std::vector<float> impulse ((size_t) length, 0.0f);
+        impulse[100] = 1.0f;
+        impulse[20000] = -1.0f;
+        signals.push_back ({ "impulso", impulse });
+        signals.push_back ({ "DC", std::vector<float> ((size_t) length, 1.0f) });
+        signals.push_back ({ "silêncio", std::vector<float> ((size_t) length, 0.0f) });
+    }
+
+    double worstAll = 0.0, worstRms = 0.0;
+    bool silenceExact = true, finite = true;
+
+    for (auto& [name, x] : signals)
+    {
+        Oversampler4x now, nowClip, nowUp;
+        reference::Oversampler4x before, beforeClip, beforeUp;
+        for (auto* o : { &now, &nowClip, &nowUp }) o->prepare();
+        for (auto* o : { &before, &beforeClip, &beforeUp }) o->prepare();
+
+        double worstPass = 0.0, worstClip = 0.0, worstUp = 0.0, sumSq = 0.0;
+        double errNow = 0.0, errBefore = 0.0, errNowSq = 0.0, errBeforeSq = 0.0;
+        const auto exact = oversampleRoundTripExact (x);
+        size_t at = 0;
+        auto pass = [] (float s) { return s; };
+        auto clip = [] (float s) { return std::clamp (s, -0.5f, 0.5f); };
+
+        for (float v : x)
+        {
+            const float a = now.process (v, pass);
+            const float b = before.process (v, pass);
+            worstPass = std::max (worstPass, (double) std::abs (a - b));
+            sumSq += ((double) a - b) * ((double) a - b);
+            finite = finite && std::isfinite (a);
+            const double ea = (double) a - exact[at], eb = (double) b - exact[at];
+            ++at;
+            errNow = std::max (errNow, std::abs (ea));
+            errBefore = std::max (errBefore, std::abs (eb));
+            errNowSq += ea * ea;
+            errBeforeSq += eb * eb;
+
+            worstClip = std::max (worstClip, (double) std::abs (nowClip.process (v, clip) - beforeClip.process (v, clip)));
+
+            float ua[4], ub[4];
+            nowUp.upsample (v, ua);
+            beforeUp.upsample (v, ub);
+
+            for (int k = 0; k < 4; ++k)
+                worstUp = std::max (worstUp, (double) std::abs (ua[k] - ub[k]));
+        }
+
+        const double worst = std::max ({ worstPass, worstClip, worstUp });
+        worstAll = std::max (worstAll, worst);
+
+        if (std::string_view (name) == "silêncio")
+            silenceExact = worst == 0.0;
+
+        const double rmsDiff = std::sqrt (sumSq / length);
+        worstRms = std::max (worstRms, rmsDiff);
+        CHECK (worst < 1.0e-6 && db (rmsDiff) < -138.0,
+               "%s: diferença máxima %.1f dBFS na ida e volta (rms %.1f), %.1f com clip, %.1f só na ida",
+               name, db (worstPass), db (rmsDiff), db (worstClip), db (worstUp));
+
+        // Contra a conta em double: a nova não pode errar mais que a antiga (as somas em paralelo arredondam menos),
+        // a não ser que as duas já estejam abaixo de 1 ulp (-140 dBFS), como no impulso.
+        const double rmsNow = std::sqrt (errNowSq / length), rmsBefore = std::sqrt (errBeforeSq / length);
+        CHECK ((rmsNow <= rmsBefore * 1.05 && errNow <= errBefore * 2.0) || errNow < 1.0e-7,
+               "%s: erro contra a conta em double: nova %.1f dBFS de pico (rms %.1f), antiga %.1f (rms %.1f)",
+               name, db (errNow), db (rmsNow), db (errBefore), db (rmsBefore));
+    }
+
+    CHECK (silenceExact && finite, "silêncio sai zero exato e nada vira NaN/Inf");
+    CHECK (db (worstAll) < -120.0 && db (worstRms) < -138.0,
+           "pior diferença contra a versão antiga: pico %.1f dBFS, rms %.1f dBFS (arredondamento do float)", db (worstAll), db (worstRms));
+
+    // Limitador do master (quatro sobreamostradores e mais dois no medidor): a saída não depende do tamanho do
+    // bloco, nem com bloco de 1 amostra, nem com blocos irregulares.
+    {
+        std::vector<float> l ((size_t) length), r ((size_t) length);
+        std::normal_distribution<float> noise (0.0f, 0.25f);
+
+        for (size_t i = 0; i < l.size(); ++i)
+        {
+            l[i] = noise (rng) + 0.5f * (float) std::sin (2.0 * pi * 60.0 * (double) i / rate);
+            r[i] = noise (rng) + 0.5f * (float) std::sin (2.0 * pi * 90.0 * (double) i / rate);
+        }
+
+        auto limit = [&] (auto&& nextBlock)
+        {
+            LimiterProcessor lim;
+            lim.prepare (rate, 1024);
+            lim.setParam (LimiterProcessor::gain, 9.0f);
+            lim.setParam (LimiterProcessor::ceiling, -1.0f);
+            lim.setParam (LimiterProcessor::clip, 50.0f);
+            lim.snapToTargets();
+            auto outL = l, outR = r;
+
+            for (size_t start = 0; start < outL.size();)
+            {
+                const int n = (int) std::min<size_t> ((size_t) nextBlock(), outL.size() - start);
+                AudioBlock b { outL.data() + start, outR.data() + start, n };
+                lim.process (b);
+                start += (size_t) n;
+            }
+
+            outL.insert (outL.end(), outR.begin(), outR.end());
+            return outL;
+        };
+
+        const auto base = limit ([] { return 256; });
+        bool equal = true;
+
+        for (int size : { 1, 64, 1024 })
+            equal = equal && limit ([size] { return size; }) == base;
+
+        std::uint32_t seed = 99;
+        equal = equal && limit ([&seed] { seed = seed * 1664525u + 1013904223u; return 1 + (int) ((seed >> 16) % 700u); }) == base;
+        CHECK (equal, "limitador: blocos de 1, 64, 256, 1024 e irregulares (1 a 700) dão a mesma saída, bit a bit");
+    }
 }
 
 //==============================================================================
@@ -3362,6 +3601,7 @@ int main()
 
     testFilters();
     testOversampler();
+    testOversamplerAgainstReference();
     testLoudness();
     testDynamics();
     testColor();

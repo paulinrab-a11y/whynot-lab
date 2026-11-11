@@ -1003,6 +1003,24 @@ static void testCommandPaths()
            && is (one ("project.open", "path", false, "\\\\host\\share\\p.wnl"), Want::refused),
            "os comandos de um caminho só seguem iguais: o kit é só leitura (exportar para ele confirma) e UNC é recusado");
 
+    // O caso do autoteste da ponte ("sample do kit (pasta permitida): o canal entra"): um arquivo que EXISTE numa
+    // pasta só de leitura, num comando de um caminho só, com outros parâmetros junto. Roda sem perguntar, e o
+    // caminho devolvido é o do disco. (Se este passa e o do autoteste falha, o disco é que resolve o arquivo para
+    // outro lugar que a pasta: o AppData virtualizado de um processo filho de app empacotado.)
+    {
+        { std::ofstream kick (base / "Kit" / "WHYNOT Kick.wav", std::ios::binary); kick << "RIFF"; }
+
+        const auto kit = check ("channel.addSampler", { { "path", -1, b + "\\Kit\\WHYNOT Kick.wav" }, { "name", -1, "Kick" } }, "");
+        CHECK (is (kit, Want::inside) && kit.paths[0].param == "path" && kit.paths[0].index == -1 && kit.paths[0].access == Access::read
+               && kit.paths[0].path == readRoots.back() + "\\WHYNOT Kick.wav",
+               "channel.addSampler com um sample que existe na pasta do kit (só leitura), sem projeto salvo: livre, com o caminho do disco (%s)",
+               ! kit.paths.empty() ? kit.paths[0].path.c_str() : kit.reason.c_str());
+
+        const auto slash = check ("channel.addSampler", { { "path", -1, b + "/Kit/whynot kick.WAV" } }, "");
+        CHECK (is (slash, Want::inside) && slash.paths[0].path == kit.paths[0].path,
+               "o mesmo sample com / e em outra caixa: livre, e o comando recebe o nome como está no disco");
+    }
+
     // project.exportPack: a pasta é escrita e a tag é leitura, cada uma contra as pastas dela
     {
         const auto both = check ("project.exportPack", { { "folder", -1, b + "\\Projeto\\Pacote" }, { "tag", -1, b + "\\Kit\\tag.wav" } }, project);

@@ -280,3 +280,19 @@ else()
 endif()
 
 add_test(NAME wnl_paths COMMAND whynot_wnl_paths_tests)
+# Registro de queda e log de sessão (frente crash-log, 10/11): o texto do .txt, o rodízio dos arquivos, o módulo de
+# um endereço, o log em arquivo e, no Windows, processos filhos que caem de propósito para conferir o .dmp. Sem JUCE.
+# Nenhum deles abre janela (o teste desliga as do Windows e as da biblioteca C).
+add_executable(whynot_crash_tests
+    app/test_crash.cpp
+    ../src/app/CrashReport.cpp
+    ../src/common/Log.cpp)
+target_compile_features(whynot_crash_tests PRIVATE cxx_std_20)
+
+if(MSVC)
+    target_compile_options(whynot_crash_tests PRIVATE /W4 /utf-8 /O2)
+else()
+    target_compile_options(whynot_crash_tests PRIVATE -Wall -Wextra -O2)
+endif()
+
+add_test(NAME crash COMMAND whynot_crash_tests)

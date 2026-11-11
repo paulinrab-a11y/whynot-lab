@@ -1,5 +1,8 @@
 #include "Session.h"
 
+#include "../common/Log.h"
+#include "../common/Text.h"
+
 #if JUCE_WINDOWS
 // Só o necessário do kernel32, sem puxar o <windows.h> inteiro para perto do JUCE.
 extern "C"
@@ -107,6 +110,19 @@ Session::Session (const juce::File& dataFolder)
         f.deleteFile();
     }
 
+    // o porquê da queda, se o registro de queda (CrashReport) deixou um .txt que ninguém viu ainda
+    crashRecord = CrashReport::lastCrash (std::filesystem::path (dataFolder.getChildFile ("quedas").getFullPathName().toWideCharPointer()));
+
+    if (crashRecord.found)
+    {
+        recovery.crash = juce::String::fromUTF8 (crashRecord.sentence().c_str());
+        whynot::log ("A sessão anterior "_t + recovery.crash + ". Registro: "_t
+                       + juce::String (crashRecord.textFile.wstring().c_str()));
+    }
+
+    if (recovery.autosave != juce::File())
+        whynot::log ("Sessão anterior não fechou direito; autosave a oferecer: "_t + recovery.autosave.getFullPathName());
+
     marker = folder.getChildFile ("sessao-" + juce::String (currentPid()) + ".txt");
     marker.replaceWithText ({});
 }
@@ -119,6 +135,7 @@ Session::~Session()
 void Session::noteAutosave (const juce::File& autosave, const juce::File& original)
 {
     marker.replaceWithText (autosave.getFullPathName() + "\n" + original.getFullPathName() + "\n");
+    whynot::log ("Autosave: "_t + autosave.getFullPathName());
 }
 
 } // namespace whynot

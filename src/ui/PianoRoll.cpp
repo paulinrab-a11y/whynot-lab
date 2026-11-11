@@ -3153,15 +3153,25 @@ void PianoRoll::resized()
     dividers.clear();
     const int c = theme::metric::control, gap = theme::metric::gap * 2;
 
-    channelBox.setBounds (bar.removeFromLeft (narrow ? 150 : 180));
+    // O Seguir (só o ícone) não pode tirar largura do resto: a 1240 px a barra já está no limite (a escala em 68).
+    // Com espaço, os 34 px dele (botão + fresta) saem da caixa do canal; na barra estreita ele some e fica a tecla.
+    const int followWidth = c + 2;
+    followButton.setVisible (! narrow);
+
+    channelBox.setBounds (bar.removeFromLeft (narrow ? 150 : 180 - followWidth));
     bar.removeFromLeft (gap / 2);
     dividers.add (bar.getX());
     bar.removeFromLeft (gap / 2);
     toolSwitch.setBounds (bar.removeFromLeft (toolSwitch.getIdealWidth()));
     bar.removeFromLeft (theme::metric::gap);
     snapBox.setBounds (bar.removeFromLeft (narrow ? 140 : 156));
-    bar.removeFromLeft (2);
-    followButton.setBounds (bar.removeFromLeft (followButton.getIdealWidth (c)));   // só o ícone: a largura é a altura
+
+    if (! narrow)
+    {
+        bar.removeFromLeft (2);
+        followButton.setBounds (bar.removeFromLeft (c));   // só o ícone: quadrado, do tamanho dos outros
+    }
+
     bar.removeFromLeft (gap / 2);
     dividers.add (bar.getX());
     bar.removeFromLeft (gap / 2);

@@ -81,6 +81,14 @@ Detalhes técnicos que importam no uso:
   transição suave (testado em `tests/dsp`).
 - **Latência compensada:** saturador, Comp FET, Console e clipper (38 amostras), lo-fi (6 ms), gate (1,5 ms), limitador (~3 ms), afinação (15 ms),
   limpa-voz (21 ms a 48 kHz), tom da voz e harmonia (50 ms) informam a latência e o motor alinha o resto (conferido no autoteste: o ataque não sai do lugar).
+- **Sobreamostragem 4x (10/11):** dois meios-banda FIR de fase linear (63 e 29 coeficientes; os zeros do meia banda são pulados)
+  em estrutura polifásica, com o produto interno em SSE (4 produtos por instrução; caminho escalar equivalente para outros alvos).
+  Mesmos coeficientes e mesma latência (38 amostras na ida e volta, 19 só na ida). A ordem das somas mudou em relação à versão
+  escalar, então a saída difere no arredondamento do float: no pior ponto -123 dBFS com ruído de fundo de escala (rms -144 dBFS);
+  no limitador do master, no máximo -125 dBFS (pico real, LUFS e redução mudam menos de 0,00001 dB). Contra a conta em double, a
+  versão nova erra menos que a antiga. Custo (bloco de 256, i5-9400F): ida e volta estéreo de 62 para 28 µs; limitador de 180 para 88 µs
+  (3,1% para 1,5% do bloco a 44,1 kHz; 6,7% para 3,3% a 96 kHz). Medida: `whynot_oversampler_bench` (`tests/perf/bench_oversampler.cpp`);
+  comparação com a versão antiga: `tests/dsp` ("nova contra a antiga").
 - **Disparo de outra trilha (sidechain):** no compressor, nos comps óptico e FET, no gate, na multibanda e no EQ dinâmico.
 - **Render igual ao que se ouve:** os valores entram sem rampa no começo do export.
 

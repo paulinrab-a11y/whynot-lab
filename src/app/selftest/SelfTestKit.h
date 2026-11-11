@@ -110,6 +110,7 @@ void runUxReviewSelfTest (SelfTestContext&);       // revisão de usabilidade (2
 void runHeavyProjectSelfTest (SelfTestContext&);    // desempenho (29/10): voz picotada com 300 blocos e 2000 notas num canal mono, tempos do motor e das telas (Desempenho)
 void runGrooveSelfTest (SelfTestContext&);         // swing global, groove das notas, humanizar e o começo do play no PAT (29/10) (Swing e início do play)
 void runBpmLiveSelfTest (SelfTestContext&);        // BPM com o motor vivo (10/11): os clipes MIDI ficam, o render sai igual (bpm)
+void runWnlFuzzSelfTest (SelfTestContext&);        // .wnl de terceiros (10/11): caminhos, tetos, app mais novo e fuzz do fromJson (wnl-seguro)
 void runInvalidFilesSelfTest (SelfTestContext&);  // fecha o relatório (núcleo)
 
 } // namespace whynot::selftest

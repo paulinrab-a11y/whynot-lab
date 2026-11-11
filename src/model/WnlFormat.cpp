@@ -4,6 +4,7 @@
 #include "../common/FolderHints.h"
 #include "../common/SafeJson.h"
 #include "NoteCurves.h"
+#include "WnlPaths.h"
 #include "../dsp/FxCatalog.h"
 #include "../audio/PianoPresets.h"
 #include "../synth/SynthParams.h"
@@ -12,7 +13,9 @@
 #include <charconv>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <set>
+#include <unordered_set>
 
 namespace whynot::wnl
 {
@@ -74,6 +77,14 @@ namespace
         return v.isBool() ? (bool) v : fallback;
     }
 
+    /** Número do arquivo → float que cabe num float: 1e308 viraria infinito, que o toJson escreve como um
+        texto que não é JSON (o projeto salvo não abriria mais). */
+    float finiteFloat (double v)
+    {
+        constexpr double top = (double) std::numeric_limits<float>::max();
+        return std::isfinite (v) ? (float) juce::jlimit (-top, top, v) : 0.0f;
+    }
+
     int sanitiseRoll (int roll)
     {
         for (int allowed : { 1, 2, 3, 4, 6, 8 })
@@ -112,17 +123,156 @@ namespace
         return o;
     }
 
-    PluginRef pluginFromJson (const juce::var& o)
+    /** external: o arquivo veio de fora. Aí um plugin apontado para a rede fica sem caminho (aparece como
+        plugin ausente): abrir o projeto de alguém não carrega código de um servidor. */
+    PluginRef pluginFromJson (const juce::var& o, bool external)
     {
         PluginRef r;
         r.name = getString (o, "name");
         r.manufacturer = getString (o, "manufacturer");
         r.format = getString (o, "format", r.format);
         r.file = getString (o, "file");
+
+        if (external && paths::classify (r.file.toStdString()) == paths::Kind::network)
+        {
+            juce::Logger::writeToLog ("Projeto: plugin com caminho de rede fica sem caminho ("_t + r.name.substring (0, 80) + ")");
+            r.file = {};
+        }
+
         r.uid = getString (o, "uid");
         r.instrument = getBool (o, "instrument", false);
         r.state = getString (o, "state");
         return r;
+    }
+
+    //==========================================================================
+    // Recursos opcionais mais novos que o esquema (10/11). Até aqui, campo opcional novo entrava sem subir o
+    // esquema, e um app do mesmo esquema que não conhecia o campo abria o arquivo, descartava o campo e o
+    // apagava ao salvar, sem aviso. Daqui para frente: TODO campo opcional novo ganha uma linha aqui (o nome
+    // e como saber se o projeto usa). O toJson grava em app.features os nomes que o projeto usa; um app que
+    // não conhece algum deles abre o arquivo, avisa (LoadReport::unknownFeatures) e, ao salvar por cima,
+    // guarda o original em history/ (keepOlderSchema). Projeto que não usa nada daqui sai sem "features":
+    // o arquivo de hoje não muda. Os campos que já existiam em 10/11 (swing, bend, fades, stretch...) não
+    // entram: todo app que lê "features" já conhece todos.
+    struct Feature
+    {
+        const char* name;                  // curto, sem acento, fixo para sempre: "nome-do-recurso"
+        bool (*used) (const Project&);     // o projeto tem algum valor desse campo que sai no arquivo?
+    };
+
+    const std::vector<Feature>& featureTable()
+    {
+        static const std::vector<Feature> table
+        {
+            // { "exemplo", [] (const Project& p) { return p.exemplo != 0; } },
+        };
+
+        return table;
+    }
+
+    /** Os nomes de app.features de um arquivo que este app não conhece (até 50, cada um com até 80 letras). */
+    juce::StringArray unknownFeaturesOf (const juce::var& root)
+    {
+        juce::StringArray unknown;
+
+        if (auto* list = root["app"]["features"].getArray())
+        {
+            for (auto& v : *list)
+            {
+                if (! v.isString() || unknown.size() >= 50)
+                    continue;
+
+                const auto name = v.toString().substring (0, 80);
+                const auto& table = featureTable();
+
+                if (name.isNotEmpty() && std::none_of (table.begin(), table.end(), [&name] (const Feature& f) { return name == f.name; }))
+                    unknown.addIfNotAlreadyThere (name);
+            }
+        }
+
+        return unknown;
+    }
+
+    juce::Result tooMany (const juce::String& what, int count, int limit)
+    {
+        return juce::Result::fail ("O projeto tem "_t + what + " demais para abrir ("_t + juce::String (count) + "; o limite é "_t
+                                   + juce::String (limit) + "). O arquivo pode estar corrompido."_t);
+    }
+
+    juce::Result tooBig (juce::int64 bytes)
+    {
+        return juce::Result::fail ("O arquivo é grande demais para ser um projeto ("_t + juce::String (bytes / (1024 * 1024))
+                                   + " MB; o limite é "_t + juce::String (limits::fileBytes / (1024 * 1024)) + " MB)."_t);
+    }
+
+    /** O grafo do mixer (saída, envios e sidechain, as mesmas ligações do Project::successors) tem algum laço?
+        Em índices, num passo só (ordenação de Kahn). O conserto de laços do normaliseMixing chama o
+        Project::reaches para cada envio e cada sidechain, e cada chamada anda o grafo inteiro: num mixer grande
+        isso leva minutos. Projeto são não tem laço (os comandos recusam), então a conta cara só roda no arquivo
+        estragado. Id repetido conta como laço: cai no caminho antigo. */
+    bool mixerHasCycle (const Project& p)
+    {
+        const int count = (int) p.mixer.size();
+        std::map<juce::String, int> index;
+
+        for (int i = 0; i < count; ++i)
+            if (! index.emplace (p.mixer[(size_t) i].id, i).second)
+                return true;
+
+        std::vector<std::vector<int>> next ((size_t) count);
+        std::vector<int> incoming ((size_t) count, 0);
+
+        auto link = [&] (int from, int to)
+        {
+            next[(size_t) from].push_back (to);
+            ++incoming[(size_t) to];
+        };
+
+        const auto master = index.find (masterTrackId);
+
+        for (int i = 0; i < count; ++i)
+        {
+            const auto& m = p.mixer[(size_t) i];
+
+            if (! m.isMaster())
+            {
+                // a saída vazia ou que não existe vai para o master (Project::resolveOutput)
+                const auto to = m.output.isEmpty() ? master : index.find (m.output);
+
+                if (to != index.end())              link (i, to->second);
+                else if (master != index.end())     link (i, master->second);
+
+                for (auto& s : m.sends)
+                    if (const auto it = index.find (s.to); it != index.end())
+                        link (i, it->second);
+            }
+
+            // sidechain: a trilha de onde vem o sinal precisa estar pronta antes desta
+            for (auto& ins : m.inserts)
+                if (const auto it = index.find (ins.sidechain); it != index.end() && ! p.mixer[(size_t) it->second].isMaster())
+                    link (it->second, i);
+        }
+
+        std::vector<int> ready;
+
+        for (int i = 0; i < count; ++i)
+            if (incoming[(size_t) i] == 0)
+                ready.push_back (i);
+
+        int done = 0;
+
+        while (! ready.empty())
+        {
+            const int i = ready.back();
+            ready.pop_back();
+            ++done;
+
+            for (int to : next[(size_t) i])
+                if (--incoming[(size_t) to] == 0)
+                    ready.push_back (to);
+        }
+
+        return done != count;
     }
 }
 
@@ -186,7 +336,8 @@ static void normaliseMixing (Project& p)
     }
 
     // Nada pode voltar para a própria trilha: envios e sidechains que fecham um laço saem.
-    for (bool changed = true; changed;)
+    // (sem laço nenhum, que é o caso de todo projeto são, não há o que procurar: ver mixerHasCycle)
+    for (bool changed = mixerHasCycle (p); changed;)
     {
         changed = false;
 
@@ -284,14 +435,22 @@ void normalise (Project& p)
             std::stable_sort (notes.begin(), notes.end(), [] (const Note& a, const Note& b)
                               { return a.start != b.start ? a.start < b.start : a.key < b.key; });
 
-            std::vector<int> seen;
+            std::unordered_set<int> seen;   // era uma lista varrida a cada nota: 100 mil notas numa raia travavam a abertura
+            seen.reserve (notes.size());
 
             for (auto& n : notes)
             {
-                if (n.id <= 0 || std::find (seen.begin(), seen.end(), n.id) != seen.end())
-                    n.id = ++maxId;
+                if (n.id <= 0 || seen.count (n.id) > 0)
+                {
+                    if (maxId == std::numeric_limits<int>::max())   // id no teto do int (arquivo estragado): recomeça a contagem
+                        maxId = 0;
 
-                seen.push_back (n.id);
+                    while (seen.count (++maxId) > 0) {}
+
+                    n.id = maxId;
+                }
+
+                seen.insert (n.id);
             }
 
             ++it;
@@ -544,7 +703,7 @@ void normalise (Project& p)
     // e o fim da linha do tempo, v entre 0 e 1, ordenados, um por t: o último vence). A curva de uma
     // trilha ou efeito que saiu vai junto, com aviso no log (o desfazer devolve os dois).
     std::vector<AutomationLane> lanes;
-    std::set<juce::String> laneIds;
+    std::set<juce::String> laneIds, laneTargets;
 
     for (auto& lane : p.automation)
     {
@@ -556,7 +715,7 @@ void normalise (Project& p)
             continue;
         }
 
-        if (std::any_of (lanes.begin(), lanes.end(), [&] (const AutomationLane& l) { return l.target.key() == target.key(); }))
+        if (! laneTargets.insert (target.key()).second)   // uma curva por alvo: a primeira fica
             continue;
 
         std::vector<automation::Point> points;
@@ -640,6 +799,17 @@ juce::String toJsonReference (const Project& p)
     auto app = obj();
     set (app, "name", "WHYNOT LAB");
     set (app, "version", ProjectInfo::versionString);
+
+    if (const auto features = usedFeatures (p); ! features.isEmpty())   // só quando o projeto usa um recurso da tabela
+    {
+        juce::Array<juce::var> list;
+
+        for (auto& f : features)
+            list.add (f);
+
+        set (app, "features", list);
+    }
+
     set (root, "app", app);
 
     auto proj = obj();
@@ -1415,6 +1585,17 @@ juce::String toJson (const Project& p)
     w.key ("app").beginObject();
     w.member ("name", "WHYNOT LAB");
     w.member ("version", ProjectInfo::versionString);
+
+    if (const auto features = usedFeatures (p); ! features.isEmpty())   // só quando o projeto usa um recurso da tabela
+    {
+        w.key ("features").beginArray();
+
+        for (auto& f : features)
+            w.item().value (f);
+
+        w.endArray();
+    }
+
     w.endObject();
 
     w.key ("project").beginObject();
@@ -2036,8 +2217,24 @@ juce::String toJson (const Project& p)
 }
 
 //==============================================================================
-juce::Result fromJson (const juce::String& json, Project& out)
+juce::StringArray usedFeatures (const Project& p)
 {
+    juce::StringArray names;
+
+    for (auto& f : featureTable())
+        if (f.used (p))
+            names.add (f.name);
+
+    return names;
+}
+
+/** A leitura. external: o texto veio de um arquivo (tetos, caminhos conferidos e o relatório); senão é o
+    texto que o próprio app escreveu nesta sessão (o desfazer), lido como está. */
+static juce::Result readProject (const juce::String& json, Project& out, LoadReport* report, bool external)
+{
+    if (external && (juce::int64) json.getNumBytesAsUTF8() > limits::fileBytes)
+        return tooBig ((juce::int64) json.getNumBytesAsUTF8());
+
     juce::var root;
     const auto parsed = parseJsonSafely (json, root);   // recusa aninhamento demais antes do parser recursivo
 
@@ -2060,9 +2257,70 @@ juce::Result fromJson (const juce::String& json, Project& out)
     // Esquema 1 → 2 só acrescentou campos opcionais (inserts, envios, papel): nada a converter.
     // Esquema 2 → 3: o corte do clipe de áudio era em ticks e virou segundos do arquivo (ver os itens da playlist).
 
+    LoadReport localReport;
+    auto& rep = report != nullptr ? *report : localReport;
+    rep = {};
+
+    if (external)
+        rep.unknownFeatures = unknownFeaturesOf (root);
+
+    if (rep.savedByNewerApp())
+        juce::Logger::writeToLog ("Projeto: salvo por um app mais novo; recursos que este não conhece: "_t + rep.unknownFeatures.joinIntoString (", "));
+
+    // Os tetos (wnl::limits): só no arquivo de fora. O primeiro que estoura vira a mensagem de erro.
+    auto problem = juce::Result::ok();
+    auto fits = [&problem, external] (const juce::Array<juce::var>* list, int limit, const juce::String& what)
+    {
+        if (! external || list == nullptr || list->size() <= limit)
+            return true;
+
+        problem = tooMany (what, list->size(), limit);
+        return false;
+    };
+
+    // Id e nome: no arquivo de fora, id enorme é como id vazio (o item não entra) e nome enorme é cortado.
+    auto readId = [external] (const juce::var& o)
+    {
+        const auto id = getString (o, "id");
+        return external && id.length() > limits::idLength ? juce::String() : id;
+    };
+
+    auto readName = [external] (const juce::var& o, const juce::String& fallback)
+    {
+        const auto name = getString (o, "name", fallback);
+        return external ? name.substring (0, limits::nameLength) : name;
+    };
+
+    // Caminho de arquivo (sample, camada, áudio do bloco): no arquivo de fora, o que é de rede, sai da pasta do
+    // projeto ou é inválido vira só o nome do arquivo (src/model/WnlPaths.h). O app procura por esse nome na
+    // pasta do projeto e, sem achar, mostra o sample como ausente; nada toca a rede.
+    auto readPath = [&rep, external] (const juce::var& o, const char* key)
+    {
+        auto raw = getString (o, key);
+
+        if (! external)
+            return raw;
+
+        raw = raw.trim();   // antes de conferir: o normalise tira os espaços das pontas, e o que sobra tem de ser o conferido
+        const auto text = raw.toStdString();
+        const auto kind = paths::classify (text);
+
+        if (paths::isUsable (kind))
+            return raw;
+
+        if (++rep.refusedPathCount <= 50)
+        {
+            rep.refusedPaths.add (raw.substring (0, 300));
+            juce::Logger::writeToLog ("Projeto: caminho recusado ("_t + juce::String::fromUTF8 (paths::describe (kind)) + "): " + raw.substring (0, 300));
+        }
+
+        const auto name = paths::safeFileName (text);
+        return juce::String::fromUTF8 (name.data(), (int) name.size());
+    };
+
     Project p;
     const auto& proj = root["project"];
-    p.name = getString (proj, "name", p.name);
+    p.name = readName (proj, p.name);
     p.bpm = juce::jlimit (20.0, 999.0, getDouble (proj, "bpm", p.bpm));
 
     if (auto* ts = proj["timeSignature"].getArray(); ts != nullptr && ts->size() == 2)
@@ -2084,18 +2342,26 @@ juce::Result fromJson (const juce::String& json, Project& out)
 
     if (auto* channels = root["channels"].getArray())
     {
+        if (! fits (channels, limits::channels, "canais"))
+            return problem;
+
         for (auto& co : *channels)
         {
             Channel c;
-            c.id = getString (co, "id");
+            c.id = readId (co);
 
             if (c.id.isEmpty() || p.findChannel (c.id) != nullptr)
                 continue;
 
-            c.name = getString (co, "name", "Canal");
+            c.name = readName (co, "Canal");
             c.colour = getString (co, "color", c.colour);
-            c.samplePath = getString (co["sample"], "path");
+            c.samplePath = readPath (co["sample"], "path");
             c.originalPath = getString (co["sample"], "originalPath");
+
+            // o caminho de origem é só uma pista para achar o sample que sumiu: o que não é usável sai, sem aviso
+            if (external && ! paths::isUsable (paths::classify (c.originalPath.toStdString())))
+                c.originalPath = {};
+
             c.rootKey = juce::jlimit (0, 127, getInt (co["sampler"], "rootKey", c.rootKey));
             c.oneShot = getBool (co["sampler"], "oneShot", c.oneShot);
             c.cutItself = getBool (co["sampler"], "cutItself", c.cutItself);
@@ -2118,17 +2384,28 @@ juce::Result fromJson (const juce::String& json, Project& out)
             c.loopXfadeMs = (float) getDouble (co["sampler"], "loopXfadeMs", c.loopXfadeMs);
 
             if (auto* starts = co["sampler"]["slicesPpm"].getArray())   // fatiador: campos opcionais
+            {
+                if (! fits (starts, limits::smallList, "fatias num canal"))
+                    return problem;
+
                 for (auto& v : *starts)
                     if (v.isDouble() || v.isInt() || v.isInt64())
                         c.slices.push_back ((float) ((double) v / 1.0e6));
+            }
 
             c.sliceKey = getInt (co["sampler"], "sliceKey", c.sliceKey);
             c.sliceBpm = (float) getDouble (co["sampler"], "sliceBpm", c.sliceBpm);
 
             if (auto* layers = co["sampler"]["layers"].getArray())   // camadas por força (bloco 4f); o normalise confere
+            {
+                if (! fits (layers, limits::smallList, "camadas num canal"))
+                    return problem;
+
                 for (auto& lo : *layers)
-                    c.layers.push_back ({ getString (lo, "path"), getInt (lo, "minVelocity", 100) });
-            c.plugin = pluginFromJson (co["plugin"]);
+                    c.layers.push_back ({ readPath (lo, "path"), getInt (lo, "minVelocity", 100) });
+            }
+
+            c.plugin = pluginFromJson (co["plugin"], external);
             c.synthPreset = getString (co["synth"], "preset");
 
             if (auto* sp = co["synth"]["params"].getDynamicObject())
@@ -2144,6 +2421,9 @@ juce::Result fromJson (const juce::String& json, Project& out)
 
             if (auto* notes = co["noteTune"]["notes"].getArray())   // afinação nota a nota (27/10): opcional; o normalise confere
             {
+                if (! fits (notes, limits::tunedNotes, "notas afinadas num canal"))
+                    return problem;
+
                 c.tuneFormantFollows = getBool (co["noteTune"], "formantFollows", false);
 
                 for (auto& no : *notes)
@@ -2170,15 +2450,18 @@ juce::Result fromJson (const juce::String& json, Project& out)
 
     if (auto* tracks = root["mixer"]["tracks"].getArray())
     {
+        if (! fits (tracks, limits::mixerTracks, "trilhas no mixer"))
+            return problem;
+
         for (auto& mo : *tracks)
         {
             MixerTrack m;
-            m.id = getString (mo, "id");
+            m.id = readId (mo);
 
             if (m.id.isEmpty() || p.findMixer (m.id) != nullptr)
                 continue;
 
-            m.name = getString (mo, "name", "Mixer");
+            m.name = readName (mo, "Mixer");
             m.colour = getString (mo, "color", m.colour);
             m.volumeDb = (float) juce::jlimit (-100.0, 12.0, getDouble (mo, "volumeDb", 0.0));
             m.pan = (float) juce::jlimit (-1.0, 1.0, getDouble (mo, "pan", 0.0));
@@ -2195,6 +2478,9 @@ juce::Result fromJson (const juce::String& json, Project& out)
             {
                 for (auto& io : *inserts)
                 {
+                    if (external && (int) m.inserts.size() >= maxInserts)   // o normalise fica com os primeiros maxInserts
+                        break;
+
                     Insert ins;
                     ins.id = getString (io, "id");
                     ins.kind = getString (io, "kind", "whynot");
@@ -2202,12 +2488,12 @@ juce::Result fromJson (const juce::String& json, Project& out)
                     ins.bypass = getBool (io, "bypass", false);
                     ins.preset = getString (io, "preset");
                     ins.sidechain = getString (io, "sidechain");
-                    ins.plugin = pluginFromJson (io["plugin"]);
+                    ins.plugin = pluginFromJson (io["plugin"], external);
 
                     if (auto* params = io["params"].getDynamicObject())
                         for (auto& prop : params->getProperties())
                             if (prop.value.isDouble() || prop.value.isInt() || prop.value.isInt64() || prop.value.isBool())
-                                ins.params[prop.name.toString()] = (float) (double) prop.value;
+                                ins.params[prop.name.toString()] = finiteFloat ((double) prop.value);   // efeito desconhecido e VST3 guardam o valor como veio
 
                     if (ins.type.isNotEmpty())
                         m.inserts.push_back (ins);
@@ -2215,8 +2501,13 @@ juce::Result fromJson (const juce::String& json, Project& out)
             }
 
             if (auto* sends = mo["sends"].getArray())
+            {
+                if (! fits (sends, limits::sends, "envios numa trilha do mixer"))
+                    return problem;
+
                 for (auto& so : *sends)
                     m.sends.push_back ({ getString (so, "to"), (float) getDouble (so, "db", -12.0), getBool (so, "pre", false) });
+            }
 
             if (auto* macroList = mo["macros"].getArray())   // o rack (bloco 4c); o normalise confere os links
             {
@@ -2226,13 +2517,18 @@ juce::Result fromJson (const juce::String& json, Project& out)
                         break;
 
                     Macro mac;
-                    mac.name = getString (ao, "name");
+                    mac.name = readName (ao, {});
                     mac.value = (float) getDouble (ao, "value", 0.0);
 
                     if (auto* links = ao["links"].getArray())
+                    {
+                        if (! fits (links, limits::smallList, "links num macro"))
+                            return problem;
+
                         for (auto& lo : *links)
                             mac.links.push_back ({ getString (lo, "insert"), getString (lo, "param"),
                                                    (float) getDouble (lo, "min", 0.0), (float) getDouble (lo, "max", 1.0) });
+                    }
 
                     m.macros.push_back (mac);
                 }
@@ -2244,16 +2540,32 @@ juce::Result fromJson (const juce::String& json, Project& out)
 
     if (auto* patterns = root["patterns"].getArray())
     {
+        if (! fits (patterns, limits::patterns, "padrões"_t))
+            return problem;
+
+        // Cada padrão ganha no normalise uma raia de passos por canal: canais x padrões é o que pesa na memória.
+        // A conta vem antes de ler os padrões (ids vazios ou repetidos não entram, então ela é o teto).
+        const auto laneCount = (juce::int64) p.channels.size() * (juce::int64) juce::jmax (1, patterns->size());
+
+        if (external && laneCount > limits::lanes)
+            return tooMany ("raias (canais x padrões)"_t, (int) laneCount, limits::lanes);
+
+        juce::int64 noteCount = 0, stepCells = 0;
+
         for (auto& po : *patterns)
         {
             Pattern pat;
-            pat.id = getString (po, "id");
+            pat.id = readId (po);
 
             if (pat.id.isEmpty() || p.findPattern (pat.id) != nullptr)
                 continue;
 
-            pat.name = getString (po, "name", "Padrão"_t);
+            pat.name = readName (po, "Padrão"_t);
             pat.lengthSteps = juce::jlimit (1, 256, getInt (po, "lengthSteps", 16));
+            stepCells += (juce::int64) pat.lengthSteps * (juce::int64) p.channels.size();
+
+            if (external && stepCells > limits::stepCells)
+                return tooMany ("passos (canais x padrões x tamanho)"_t, (int) stepCells, limits::stepCells);
 
             if (auto* lanes = po["lanes"].getDynamicObject())
             {
@@ -2288,6 +2600,11 @@ juce::Result fromJson (const juce::String& json, Project& out)
 
                     if (auto* list = lane.value["notes"].getArray())
                     {
+                        noteCount += list->size();
+
+                        if (external && noteCount > limits::notes)
+                            return tooMany ("notas", (int) noteCount, limits::notes);
+
                         auto& notes = pat.notes[channelId];
 
                         for (auto& no : *list)
@@ -2321,9 +2638,12 @@ juce::Result fromJson (const juce::String& json, Project& out)
     {
         for (auto& to : *tracks)
         {
+            if (external && (int) p.playlistTracks.size() >= maxPlaylistTracks)   // o normalise fica com as primeiras
+                break;
+
             PlaylistTrack t;
-            t.id = getString (to, "id");
-            t.name = getString (to, "name", "Raia");
+            t.id = readId (to);
+            t.name = readName (to, "Raia");
             t.recordTrack = getString (to, "recordTrack");   // gravar voz (21/10); o normalise confere
             t.colour = getString (to, "colour");             // bloco 4 (23/10): cor, mudo e solo da raia; opcionais
             t.muted = getBool (to, "muted", false);
@@ -2336,10 +2656,15 @@ juce::Result fromJson (const juce::String& json, Project& out)
 
     if (auto* items = root["playlist"]["items"].getArray())
     {
+        if (! fits (items, limits::playlistItems, "blocos na playlist"))
+            return problem;
+
+        std::set<juce::String> itemIds;   // o findItem a cada bloco era quadrático: 50 mil blocos levavam segundos
+
         for (auto& io : *items)
         {
             PlaylistItem i;
-            i.id = getString (io, "id");
+            i.id = readId (io);
             i.kind = getString (io, "kind", "pattern");
             i.ref = getString (io, "ref");
             i.track = getString (io, "track");
@@ -2364,15 +2689,18 @@ juce::Result fromJson (const juce::String& json, Project& out)
             i.reversed = getBool (io, "reversed", false);
             i.pan = (float) getDouble (io, "pan", 0.0);   // playlist fatia 6 (27/10, noite); o normalise limita
             i.locked = getBool (io, "locked", false);
-            i.file = getString (io, "file");
+            i.file = readPath (io, "file");
 
-            if (i.id.isNotEmpty() && p.findItem (i.id) == nullptr)
+            if (i.id.isNotEmpty() && itemIds.insert (i.id).second)
                 p.playlistItems.push_back (i);
         }
     }
 
     if (auto* marks = root["playlist"]["markers"].getArray())   // marcadores (bloco 1, 22/10); o normalise confere
     {
+        if (! fits (marks, limits::markers, "marcadores"))
+            return problem;
+
         for (auto& mo : *marks)
         {
             const double tick = getDouble (mo, "t", -1.0);
@@ -2383,6 +2711,9 @@ juce::Result fromJson (const juce::String& json, Project& out)
 
     if (auto* lanes = root["automation"].getArray())
     {
+        if (! fits (lanes, limits::automationLanes, "curvas de automação"_t))
+            return problem;
+
         for (auto& lo : *lanes)
         {
             AutomationLane lane;
@@ -2396,6 +2727,9 @@ juce::Result fromJson (const juce::String& json, Project& out)
 
             if (auto* points = lo["points"].getArray())
             {
+                if (! fits (points, limits::automationPoints, "pontos numa curva de automação"_t))
+                    return problem;
+
                 for (auto& pt : *points)
                 {
                     const double tick = getDouble (pt, "t", -1.0), value = getDouble (pt, "v", 0.0);
@@ -2412,13 +2746,28 @@ juce::Result fromJson (const juce::String& json, Project& out)
     }
 
     if (auto* links = root["midiMap"].getArray())   // MIDI learn (bloco 4d); o normalise confere os alvos
+    {
+        if (! fits (links, limits::midiLinks, "links de MIDI"))
+            return problem;
+
         for (auto& lo : *links)
             p.midiMap.push_back ({ getInt (lo, "channel", 0), getInt (lo, "cc", -1), getString (lo, "kind"), getString (lo, "track"),
                                    getString (lo, "insert"), getString (lo, "param") });
+    }
 
     normalise (p);
     out = std::move (p);
     return juce::Result::ok();
+}
+
+juce::Result fromJson (const juce::String& json, Project& out, LoadReport* report)
+{
+    return readProject (json, out, report, true);
+}
+
+juce::Result fromSnapshot (const juce::String& json, Project& out)
+{
+    return readProject (json, out, nullptr, false);
 }
 
 //==============================================================================
@@ -2436,20 +2785,42 @@ juce::File keepOlderSchema (const juce::File& file)
         const int got = in.openedOk() ? in.read (head, (int) sizeof (head) - 1) : 0;
         const auto start = juce::String::fromUTF8 (head, juce::jmax (0, got));
 
-        if (start.contains ("\"format\": \"" + juce::String (formatName) + "\",\n  \"schemaVersion\": " + juce::String (currentSchemaVersion) + ",\n"))
+        // (o "features" fica logo depois da versão do app, dentro desses 255 bytes: com ele, lê o arquivo inteiro)
+        if (start.contains ("\"format\": \"" + juce::String (formatName) + "\",\n  \"schemaVersion\": " + juce::String (currentSchemaVersion) + ",\n")
+            && ! start.contains ("\"features\""))
             return {};
     }
 
+    if (file.getSize() > limits::fileBytes)   // não é um projeto que este app abriria: nada a guardar
+        return {};
+
     // O arquivo que vai ser sobrescrito pode ser qualquer coisa: lido com o teto de aninhamento.
     juce::var old;
-    const int version = parseJsonSafely (file.loadFileAsString(), old).wasOk()
-                            ? getInt (old, "schemaVersion", currentSchemaVersion) : currentSchemaVersion;
+    const bool parsed = parseJsonSafely (file.loadFileAsString(), old).wasOk();
+    const int version = parsed ? getInt (old, "schemaVersion", currentSchemaVersion) : currentSchemaVersion;
+    const auto history = file.getParentDirectory().getChildFile ("history");
+
+    // Esquema atual, mas salvo por um app mais novo, com recursos que este não conhece (app.features): este
+    // app vai gravar sem eles. O original fica em history/, sempre (cada arquivo assim é um original diferente).
+    if (parsed && version == currentSchemaVersion && ! unknownFeaturesOf (old).isEmpty())
+    {
+        const auto name = file.getFileNameWithoutExtension() + " (app mais novo)";
+        const auto first = history.getChildFile (name + ".wnl");
+
+        if (first.existsAsFile() && first.hasIdenticalContentTo (file))
+            return first;
+
+        if (! history.createDirectory())
+            return {};
+
+        const auto copy = history.getNonexistentChildFile (name, ".wnl", false);
+        return file.copyFileTo (copy) ? copy : juce::File();
+    }
 
     if (version < 1 || version >= currentSchemaVersion)
         return {};
 
-    const auto backup = file.getParentDirectory().getChildFile ("history")
-                            .getChildFile (file.getFileNameWithoutExtension() + " (esquema " + juce::String (version) + ").wnl");
+    const auto backup = history.getChildFile (file.getFileNameWithoutExtension() + " (esquema " + juce::String (version) + ").wnl");
 
     if (! backup.existsAsFile() && backup.getParentDirectory().createDirectory())
         file.copyFileTo (backup);
@@ -2457,7 +2828,7 @@ juce::File keepOlderSchema (const juce::File& file)
     return backup;
 }
 
-juce::Result save (Project& p, const juce::File& file, bool collectSamples, const juce::File& previousFolder)
+juce::Result save (Project& p, const juce::File& file, bool collectSamples, const juce::File& previousFolder, SaveReport* report)
 {
     const auto folder = file.getParentDirectory();
 
@@ -2466,60 +2837,44 @@ juce::Result save (Project& p, const juce::File& file, bool collectSamples, cons
 
     keepOlderSchema (file);   // o app antigo não abre o arquivo convertido: o original fica em history/
 
+    if (report != nullptr)
+        *report = {};
+
     if (collectSamples)
     {
         const auto samplesDir = folder.getChildFile ("samples");
+        const auto base = previousFolder != juce::File() ? previousFolder : folder;
 
-        // as camadas por força (bloco 4f) vão junto, como o sample do canal (sem o originalPath)
-        for (auto& c : p.channels)
+        // Um caminho do projeto (sample, camada, áudio do bloco) → dentro da pasta do projeto. O que já está nela
+        // só vira relativo; o que está fora é copiado para samples/. `originalPath` guarda de onde veio.
+        auto collect = [&] (juce::String& path, juce::String* originalPath, const juce::String& what) -> juce::Result
         {
-            for (auto& l : c.layers)
-            {
-                const juce::File src = juce::File::isAbsolutePath (l.samplePath)
-                                         ? juce::File (l.samplePath)
-                                         : (previousFolder != juce::File() ? previousFolder : folder).getChildFile (l.samplePath);
+            if (path.isEmpty())
+                return juce::Result::ok();
 
-                if (! src.existsAsFile())
-                    continue;
-
-                if (src.isAChildOf (folder))
-                {
-                    l.samplePath = relativeTo (src, folder);
-                    continue;
-                }
-
-                if (! samplesDir.createDirectory())
-                    return juce::Result::fail ("Não consegui criar a pasta de samples em "_t + folder.getFullPathName() + "."
-                                               + noPermissionHint (folder, "salve"));
-
-                auto dest = samplesDir.getChildFile (src.getFileName());
-
-                if (dest.existsAsFile() && ! dest.hasIdenticalContentTo (src))
-                    dest = samplesDir.getNonexistentChildFile (src.getFileNameWithoutExtension(), src.getFileExtension(), false);
-
-                if (! dest.existsAsFile() && ! src.copyFileTo (dest))
-                    return juce::Result::fail ("Não consegui copiar o sample "_t + src.getFullPathName());
-
-                l.samplePath = relativeTo (dest, folder);
-            }
-        }
-
-        for (auto& c : p.channels)
-        {
-            if (c.samplePath.isEmpty())
-                continue;
-
-            juce::File src = juce::File::isAbsolutePath (c.samplePath)
-                               ? juce::File (c.samplePath)
-                               : (previousFolder != juce::File() ? previousFolder : folder).getChildFile (c.samplePath);
+            const juce::File src = juce::File::isAbsolutePath (path) ? juce::File (path) : base.getChildFile (path);
 
             if (! src.existsAsFile())
-                continue;   // sample faltando: mantém a referência como está
+                return juce::Result::ok();   // arquivo faltando (ou uma pasta): mantém a referência como está
 
             if (src.isAChildOf (folder))
             {
-                c.samplePath = relativeTo (src, folder);
-                continue;
+                path = relativeTo (src, folder);
+                return juce::Result::ok();
+            }
+
+            // Fora da pasta do projeto, só áudio entra em samples/ (10/11). Um .wnl de terceiros pode apontar o
+            // "sample" para um documento deste computador; quem salva e devolve a pasta do projeto não leva o
+            // documento junto. O arquivo fica referenciado onde está, pelo caminho completo.
+            if (! paths::hasAudioExtension (src.getFileName().toStdString()))
+            {
+                juce::Logger::writeToLog ("Salvar: não é áudio, fica fora de samples/: "_t + src.getFullPathName());
+
+                if (report != nullptr)
+                    report->notCollected.addIfNotAlreadyThere (src.getFullPathName());
+
+                path = src.getFullPathName().replaceCharacter ('\\', '/');
+                return juce::Result::ok();
             }
 
             if (! samplesDir.createDirectory())
@@ -2533,47 +2888,29 @@ juce::Result save (Project& p, const juce::File& file, bool collectSamples, cons
                 dest = samplesDir.getNonexistentChildFile (src.getFileNameWithoutExtension(), src.getFileExtension(), false);
 
             if (! dest.existsAsFile() && ! src.copyFileTo (dest))
-                return juce::Result::fail ("Não consegui copiar o sample "_t + src.getFullPathName());
+                return juce::Result::fail ("Não consegui copiar "_t + what + " " + src.getFullPathName());
 
-            if (c.originalPath.isEmpty())
-                c.originalPath = src.getFullPathName().replaceCharacter ('\\', '/');
+            if (originalPath != nullptr && originalPath->isEmpty())
+                *originalPath = src.getFullPathName().replaceCharacter ('\\', '/');
 
-            c.samplePath = relativeTo (dest, folder);
-        }
+            path = relativeTo (dest, folder);
+            return juce::Result::ok();
+        };
+
+        // as camadas por força (bloco 4f) vão junto, como o sample do canal (sem o originalPath)
+        for (auto& c : p.channels)
+            for (auto& l : c.layers)
+                if (const auto r = collect (l.samplePath, nullptr, "o sample"); r.failed())
+                    return r;
+
+        for (auto& c : p.channels)
+            if (const auto r = collect (c.samplePath, &c.originalPath, "o sample"); r.failed())
+                return r;
 
         // o arquivo próprio de um bloco (o consolidado sem canal novo, playlist fatia 6) vai junto, como o sample
         for (auto& i : p.playlistItems)
-        {
-            if (i.file.isEmpty())
-                continue;
-
-            const juce::File src = juce::File::isAbsolutePath (i.file)
-                                     ? juce::File (i.file)
-                                     : (previousFolder != juce::File() ? previousFolder : folder).getChildFile (i.file);
-
-            if (! src.existsAsFile())
-                continue;
-
-            if (src.isAChildOf (folder))
-            {
-                i.file = relativeTo (src, folder);
-                continue;
-            }
-
-            if (! samplesDir.createDirectory())
-                return juce::Result::fail ("Não consegui criar a pasta de samples em "_t + folder.getFullPathName() + "."
-                                           + noPermissionHint (folder, "salve"));
-
-            auto dest = samplesDir.getChildFile (src.getFileName());
-
-            if (dest.existsAsFile() && ! dest.hasIdenticalContentTo (src))
-                dest = samplesDir.getNonexistentChildFile (src.getFileNameWithoutExtension(), src.getFileExtension(), false);
-
-            if (! dest.existsAsFile() && ! src.copyFileTo (dest))
-                return juce::Result::fail ("Não consegui copiar o áudio do bloco "_t + src.getFullPathName());
-
-            i.file = relativeTo (dest, folder);
-        }
+            if (const auto r = collect (i.file, nullptr, "o áudio do bloco"_t); r.failed())
+                return r;
     }
 
     juce::TemporaryFile temp (file);
@@ -2589,12 +2926,15 @@ juce::Result save (Project& p, const juce::File& file, bool collectSamples, cons
     return juce::Result::ok();
 }
 
-juce::Result load (const juce::File& file, Project& out)
+juce::Result load (const juce::File& file, Project& out, LoadReport* report)
 {
     if (! file.existsAsFile())
         return juce::Result::fail ("Arquivo não encontrado: "_t + file.getFullPathName());
 
-    return fromJson (file.loadFileAsString(), out);
+    if (file.getSize() > limits::fileBytes)   // antes de ler: o arquivo inteiro vai para a memória
+        return tooBig (file.getSize());
+
+    return fromJson (file.loadFileAsString(), out, report);
 }
 
 } // namespace whynot::wnl

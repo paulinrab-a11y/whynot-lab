@@ -528,7 +528,8 @@ juce::Result CommandRegistry::applySnapshot (const juce::String& json)
 {
     Project p;
 
-    if (const auto read = readSnapshot ? readSnapshot (json, p) : wnl::fromJson (json, p); read.failed())
+    // texto do próprio app (desfazer): sem os tetos e as regras de caminho do arquivo de fora
+    if (const auto read = readSnapshot ? readSnapshot (json, p) : wnl::fromSnapshot (json, p); read.failed())
         return read;
 
     model.replace (std::move (p));

@@ -16,6 +16,44 @@ if(MSVC)
     add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:/d1trimfile:${whynot_source_native}>")
 endif()
 
+#==============================================================================
+# Opções do CI (.github/workflows, docs/como-rodar.md seção 13). Todas desligadas por padrão: sem elas na linha
+# de comando, o build é o mesmo de antes.
+option(WHYNOT_TESTS_ONLY "Configura só os testes sem JUCE (tests/); não precisa do submódulo do Tracktion" OFF)
+option(WHYNOT_WERROR "Aviso vira erro (/WX) nos fontes da WHYNOT e nos testes; o JUCE e o Tracktion ficam de fora" OFF)
+option(WHYNOT_ASAN "AddressSanitizer (/fsanitize=address) em tudo o que este build compila" OFF)
+option(WHYNOT_GUARD_CF "Control Flow Guard (/guard:cf) no compilador e no linker" OFF)
+
+if(WHYNOT_ASAN)
+    if(MSVC)
+        if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+            # o Debug do CMake liga o /RTC1, que o cl recusa junto com o /fsanitize=address
+            message(FATAL_ERROR "WHYNOT_ASAN: use -DCMAKE_BUILD_TYPE=Release ou RelWithDebInfo (o /RTC1 do Debug não combina com o ASan)")
+        endif()
+
+        # /Z7 e /DEBUG: o relatório do ASan sai com arquivo e linha. O runtime do ASan é uma DLL do MSVC
+        # (clang_rt.asan_dynamic-x86_64.dll): rode os testes num prompt com o vcvars64, que põe a pasta dela no PATH.
+        add_compile_options(/fsanitize=address /Z7)
+        add_link_options(/DEBUG /INCREMENTAL:NO)
+    else()
+        add_compile_options(-fsanitize=address -fno-omit-frame-pointer -g)
+        add_link_options(-fsanitize=address)
+    endif()
+endif()
+
+# Só o /guard:cf: o /DYNAMICBASE, o /NXCOMPAT e o /HIGHENTROPYVA o linker já liga sozinho em x64. O /Qspectre fica de
+# fora: precisa das bibliotecas "Spectre-mitigated" instaladas à parte e custa CPU justo nos laços do áudio.
+if(WHYNOT_GUARD_CF AND MSVC)
+    add_compile_options(/guard:cf)
+    add_link_options(/guard:cf)
+endif()
+
+if(WHYNOT_TESTS_ONLY)
+    enable_testing()
+    add_subdirectory(tests)
+    return()
+endif()
+
 # JUCE 8.0.13, na versão exata que o Tracktion Engine fixa como submódulo.
 add_subdirectory(external/tracktion_engine/modules/juce EXCLUDE_FROM_ALL)
 # Registra tracktion_core, tracktion_graph e tracktion_engine (aliases tracktion::).
@@ -350,4 +388,9 @@ if(MSVC)
     # Literais em UTF-8 (textos em português) e avisos no nível 4 só no nosso código.
     target_compile_options(whynot_lab PRIVATE /utf-8)
     set_source_files_properties(${WHYNOT_SOURCES} PROPERTIES COMPILE_OPTIONS "/W4")
+endif()
+
+# CI: aviso vira erro só nos nossos fontes (a propriedade é por arquivo, como o /W4 acima).
+if(WHYNOT_WERROR AND MSVC)
+    set_property(SOURCE ${WHYNOT_SOURCES} APPEND PROPERTY COMPILE_OPTIONS "/WX")
 endif()

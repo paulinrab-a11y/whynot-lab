@@ -1,0 +1,190 @@
+# CI da WHYNOT LAB: os testes sem JUCE, o app com o autoteste e o servidor MCP.
+# O guia está em docs/como-rodar.md, seção 13. Os scripts que os passos chamam ficam em tools/ci/.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# só leitura: nenhum job daqui escreve no repositório
+permissions:
+  contents: read
+
+# um push novo no mesmo branch (ou no mesmo PR) cancela a execução anterior
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  #----------------------------------------------------------------------------
+  # Os testes sem JUCE (tests/CMakeLists.txt). Não baixa o submódulo: o WHYNOT_TESTS_ONLY pula o JUCE e o Tracktion.
+  testes-rapidos:
+    name: Testes sem JUCE
+    # windows-2022 = VS 2022 (MSVC 19.4x), o que o docs/como-rodar.md testa. A windows-latest pode trocar de
+    # Visual Studio sem aviso; o tools/ci/ambiente-msvc.ps1 ainda exige a faixa 17.x.
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Ambiente do MSVC
+        run: ./tools/ci/ambiente-msvc.ps1
+
+      - name: Configurar (só os testes, aviso vira erro)
+        run: cmake -S . -B build-testes -G Ninja -DCMAKE_BUILD_TYPE=Release -DWHYNOT_TESTS_ONLY=ON -DWHYNOT_WERROR=ON
+
+      - name: Compilar
+        run: cmake --build build-testes
+
+      # o ctest inteiro, sem lista de nomes: alvo novo no tests/CMakeLists.txt entra sozinho.
+      # Um por vez (sem -j): o rt_bench e o perf medem tempo.
+      - name: ctest
+        run: ctest --test-dir build-testes --output-on-failure --timeout 600
+
+  #----------------------------------------------------------------------------
+  # O app inteiro: build Release, ctest, autoteste e os testes do MCP contra o app sem janela.
+  app:
+    name: App, autoteste e MCP com o app
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Como o README manda: o JUCE entra como submódulo do Tracktion, com o endereço trocado de SSH para HTTPS.
+      - name: Submódulos (Tracktion e JUCE)
+        id: sub
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          git submodule update --init external/tracktion_engine
+          git -C external/tracktion_engine config submodule.modules/juce.url https://github.com/juce-framework/JUCE.git
+          git -C external/tracktion_engine submodule update --init --depth 1
+          "tracktion=$(git rev-parse HEAD:external/tracktion_engine)" >> $env:GITHUB_OUTPUT
+
+      - name: Ambiente do MSVC
+        id: msvc
+        run: ./tools/ci/ambiente-msvc.ps1
+
+      # LAME e ASIO SDK: os arquivos baixados ficam em cache; o sha256 é conferido a cada execução (docs/licencas.md).
+      - name: Cache dos arquivos do LAME e do ASIO SDK
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/wnl-terceiros
+          key: terceiros-${{ hashFiles('tools/ci/terceiros.ps1') }}
+
+      - name: LAME e ASIO SDK (baixar, conferir o sha256, extrair)
+        run: ./tools/ci/terceiros.ps1 -Baixar -Exigir
+
+      # A pasta build/ do último build do main com o mesmo compilador e o mesmo Tracktion. O build do zero leva
+      # vários minutos; com o cache, só recompila o que mudou (ver tools/ci/datas-do-cache.ps1).
+      - name: Cache da pasta build (restaurar)
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build
+          key: build-v1-${{ steps.msvc.outputs.chave }}-${{ steps.sub.outputs.tracktion }}-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt', 'tests/plugins/CMakeLists.txt') }}-${{ github.sha }}
+          restore-keys: |
+            build-v1-${{ steps.msvc.outputs.chave }}-${{ steps.sub.outputs.tracktion }}-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt', 'tests/plugins/CMakeLists.txt') }}-
+            build-v1-${{ steps.msvc.outputs.chave }}-${{ steps.sub.outputs.tracktion }}-
+
+      - name: Datas dos fontes iguais aos do cache
+        run: ./tools/ci/datas-do-cache.ps1 -Acao Restaurar
+
+      # Se a pasta do cache não configurar (imagem do runner mudou por baixo), joga fora e configura do zero.
+      - name: Configurar (Release, aviso vira erro nos fontes da WHYNOT)
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DWHYNOT_WERROR=ON
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host 'A pasta build do cache não serviu: configurando do zero.'
+            Remove-Item -Recurse -Force build
+            cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DWHYNOT_WERROR=ON
+          }
+          exit $LASTEXITCODE
+
+      # Sem --target: o app, os quatro plugins de teste e todos os alvos de teste (o que o ctest precisa).
+      - name: Compilar
+        run: cmake --build build -j 4
+
+      - name: Guardar as datas dos fontes deste build
+        if: github.ref_name == github.event.repository.default_branch
+        run: ./tools/ci/datas-do-cache.ps1 -Acao Guardar
+
+      # Só o branch principal grava cache (os PRs leem o dele); grava antes dos testes, para o que eles criam não entrar.
+      - name: Cache da pasta build (guardar)
+        if: github.ref_name == github.event.repository.default_branch && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: build
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+      - name: ctest
+        run: ctest --test-dir build --output-on-failure --timeout 600
+
+      # O autoteste roda sem janela e sem placa de som: o app abre em modo headless (não inicia o aparelho de
+      # áudio; a prévia é testada chamando o callback à mão) e as telas são desenhadas fora da área de trabalho.
+      # Precisa dos plugins de build\test_plugins (compilados acima). Sem o Salamander, a parte do piano que
+      # depende da biblioteca se pula sozinha.
+      # ATENÇÃO, não verificado num runner: as áreas Fluidity, Performance e HeavyProject medem tempo de desenho
+      # e de render; numa máquina virtual sem GPU elas podem passar do limite. Se for esse o caso, o relatório
+      # (artifact abaixo) diz qual linha falhou.
+      - name: Autoteste (--self-test)
+        run: ./tools/ci/autoteste.ps1 -Relatorio build\selftest\relatorio.txt
+
+      - name: Publicar o relatório do autoteste
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: autoteste-relatorio
+          path: build/selftest/relatorio.txt
+          if-no-files-found: warn
+
+      # Os testes de integração do mcp/ abrem o app com --headless e uma pasta de dados temporária.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: mcp/package-lock.json
+
+      - name: MCP com o app (testes de integração)
+        working-directory: mcp
+        env:
+          WHYNOT_EXE: ${{ github.workspace }}\build\whynot_lab_artefacts\Release\WHYNOT LAB.exe
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          npm ci
+          npm test
+
+  #----------------------------------------------------------------------------
+  # O servidor MCP sozinho: rápido, sem o app. Os testes de integração (mcp/test/integracao.test.ts) se pulam
+  # quando não acham o exe; eles rodam no job "app", com o WHYNOT_EXE.
+  mcp:
+    name: MCP (sem o app)
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # o mcp/package.json pede "node": ">=24"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: mcp/package-lock.json
+
+      - name: npm ci e npm test
+        working-directory: mcp
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          npm ci
+          npm test

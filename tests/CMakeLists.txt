@@ -333,3 +333,27 @@ else()
 endif()
 
 add_test(NAME palette COMMAND whynot_palette_tests)
+# CI (frente ci, 10/11): com -DWHYNOT_WERROR=ON, aviso vira erro em todos os executáveis de teste desta pasta.
+# A chamada fica adiada para o fim do arquivo (cmake_language DEFER): pega também os alvos de blocos que entrarem
+# depois deste. O WHYNOT_ASAN e o WHYNOT_GUARD_CF vêm do CMakeLists.txt da raiz e já valem aqui.
+function(whynot_ci_test_options)
+    if(NOT WHYNOT_WERROR)
+        return()
+    endif()
+
+    get_property(whynot_test_targets DIRECTORY "${CMAKE_CURRENT_FUNCTION_LIST_DIR}" PROPERTY BUILDSYSTEM_TARGETS)
+
+    foreach(whynot_test_target IN LISTS whynot_test_targets)
+        get_target_property(whynot_test_type ${whynot_test_target} TYPE)
+
+        if(whynot_test_type STREQUAL "EXECUTABLE")
+            if(MSVC)
+                target_compile_options(${whynot_test_target} PRIVATE /WX)
+            else()
+                target_compile_options(${whynot_test_target} PRIVATE -Werror)
+            endif()
+        endif()
+    endforeach()
+endfunction()
+
+cmake_language(DEFER CALL whynot_ci_test_options)

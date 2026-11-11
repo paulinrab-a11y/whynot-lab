@@ -20,8 +20,12 @@ WhynotSamplerPlugin::~WhynotSamplerPlugin()
 //==============================================================================
 void WhynotSamplerPlugin::initialise (const te::PluginInitialisationInfo& info)
 {
-    // Pode rodar enquanto o grafo antigo ainda toca este plugin: só avisamos a
-    // thread de áudio, que prepara as vozes ela mesma no próximo bloco.
+    // O Tracktion só chama initialise() sem nenhum grafo processando o plugin (conferido em 10/11 no
+    // Plugin::baseClassInitialise: com o plugin em uso e a mesma taxa e bloco, quem roda é o
+    // initialiseWithoutStopping; taxa ou bloco novos, o EditPlaybackContext::createNode destrói o grafo
+    // velho antes de montar o novo, e o render e o congelar soltam o contexto de playback antes). Daria
+    // para preparar aqui; a flag fica porque já é segura e não custa nada: a thread de áudio prepara as
+    // vozes (sem alocar) no primeiro bloco do grafo novo.
     requestedSampleRate = info.sampleRate;
     needsPrepare = true;
 }
@@ -111,29 +115,15 @@ audio::VoiceParams WhynotSamplerPlugin::voiceParams() const noexcept
 
 void WhynotSamplerPlugin::tryPublishPending()
 {
-    // "O mais novo vence": se a troca não entrar agora (áudio parado), fica
-    // guardada aqui e o Timer tenta de novo.
-    if (pendingSample == nullptr)
-        return;
-
-    // Vozes soando: primeiro elas saem (3 ms, na thread de áudio, ainda no sample velho); a troca vem no
-    // próximo Timer. Com o áudio parado ou já em silêncio, troca na hora.
-    if (! voicesSilent.load() && audioRunning)
-    {
-        fadeForSwap = true;
-        return;
-    }
-
-    sampleSlot.publish (pendingSample);   // o fadeForSwap a thread de áudio limpa, quando vê o sample novo
+    // "O mais novo vence": se a troca não entrar agora (áudio parado, ou conjuntos velhos demais ainda presos
+    // por vozes), fica guardada aqui e o Timer tenta de novo. Com vozes soando a troca entra do mesmo jeito:
+    // elas acabam no sample em que começaram.
+    if (pendingSample != nullptr)
+        sampleSlot.publish (pendingSample);
 }
 
 void WhynotSamplerPlugin::timerCallback()
 {
-    // Os blocos andaram desde o último Timer? Senão o áudio está parado (ou é um render que ainda não começou).
-    const auto blocks = blocksRendered.load();
-    audioRunning = blocks != blocksSeen;
-    blocksSeen = blocks;
-
     sampleSlot.collectGarbage();
     tryPublishPending();
 }
@@ -145,7 +135,6 @@ void WhynotSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         return;
 
     juce::ScopedNoDenormals noDenormals;
-    blocksRendered.fetch_add (1, std::memory_order_relaxed);
 
     if (needsPrepare.exchange (false))
     {
@@ -189,42 +178,29 @@ void WhynotSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         buffer.clear (ch, start, num);
 
     const auto* ref = sampleSlot.current();
-    const auto* data = ref != nullptr ? ref->data.get() : nullptr;
+    const bool playable = ref != nullptr && ref->data != nullptr;   // o canal tem sample: notas novas tocam
 
-    if (ref != lastRef)   // a troca aconteceu: notas novas voltam a valer
+    if (ref != lastRef)
     {
+        // A troca aconteceu. As vozes que soam continuam no sample em que começaram (o conjunto de antes fica
+        // aposentado no slot até a última acabar) e as notas deste bloco já tocam o novo. As de dois conjuntos
+        // atrás saem em 3 ms, uma vez só, para uma nota longa não prender a fila de trocas.
+        for (int i = 0; i < numVoices; ++i)
+            if (voices[(size_t) i].isActive() && voiceRef[(size_t) i] != lastRef && voiceRef[(size_t) i] != ref)
+                voices[(size_t) i].fadeOut (3.0f);
+
         lastRef = ref;
-        fadeForSwap.store (false);
-        swapFading = false;
-        // uma voz que sobrou (a troca sem fade, com o áudio recomeçando) continua na camada se ela está no conjunto novo
-        // (o cache devolve o mesmo sample para o arquivo que não mudou); senão, lê o sample do canal. Só compara o endereço.
-        for (auto& own : voiceData)
-        {
-            bool kept = false;
-
-            for (int k = 0; ref != nullptr && k < ref->numLayers && ! kept; ++k)
-                kept = own != nullptr && ref->layers[(size_t) k].data.get() == own;
-
-            if (! kept)
-                own = nullptr;
-        }
     }
 
-    if (data == nullptr || numChannels == 0)
+    if (numChannels == 0)   // sem canal de saída nada soa: as vozes param, para não prender um conjunto velho
+        for (auto& v : voices)
+            v.reset();
+
+    if (numChannels == 0 || (! playable && ! anyVoiceActive()))
     {
-        voicesSilent.store (true);
-        swapFading = false;
+        releaseUnusedSamples (ref);
         return;
     }
-
-    // Um sample novo espera: as vozes saem em 3 ms, ainda neste sample (o velho), e notas novas esperam a troca.
-    const bool swapping = fadeForSwap.load();
-
-    if (swapping && ! swapFading)
-        for (auto& v : voices)
-            v.fadeOut (3.0f);
-
-    swapFading = swapping;
 
     float* out[2] = { buffer.getWritePointer (0), buffer.getWritePointer (numChannels > 1 ? 1 : 0) };
     int position = 0;
@@ -243,18 +219,18 @@ void WhynotSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             const int when = juce::jlimit (position, num,
                                            (int) std::lround ((m.getTimeStamp() + fc.midiBufferOffset) * audioSampleRate));
 
-            renderVoices (*data, out, numChannels, start + position, when - position);
+            renderVoices (out, numChannels, start + position, when - position);
             position = when;
 
             if (m.isNoteOn())
             {
-                const float pan = takePan (sampleClock + when);   // também no swapping, para a fila andar junto
+                const float pan = takePan (sampleClock + when);   // também sem sample, para a fila andar junto
 
-                if (! swapping)
+                if (playable)
                     noteOn (m.getNoteNumber(), m.getFloatVelocity(), *ref, pan);
             }
             else if (m.isNoteOff())
-                noteOff (m.getNoteNumber(), *ref);
+                noteOff (m.getNoteNumber(), playable ? ref : nullptr);
             else if (m.isController() && m.getControllerNumber() == 10)
             {
                 // o pan da nota que vem neste instante (passo, 26/10); fila cheia: o mais velho sai
@@ -277,19 +253,46 @@ void WhynotSamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         }
     }
 
-    renderVoices (*data, out, numChannels, start + position, num - position);
+    renderVoices (out, numChannels, start + position, num - position);
     sampleClock += num;
-
-    bool anyActive = false;
-
-    for (auto& v : voices)
-        anyActive = anyActive || v.isActive();
-
-    voicesSilent.store (! anyActive);
+    releaseUnusedSamples (ref);
 }
 
-void WhynotSamplerPlugin::renderVoices (const audio::SampleData& data, float* const* out, int numChannels,
-                                        int start, int num) noexcept
+void WhynotSamplerPlugin::setVoiceSample (int voice, const SampleRef& ref, const audio::SampleData& sample) noexcept
+{
+    voiceSample[(size_t) voice] = &sample;
+    voiceRef[(size_t) voice] = &ref;
+}
+
+void WhynotSamplerPlugin::releaseUnusedSamples (const SampleRef* current) noexcept
+{
+    // Fim do bloco. Sem conjunto aposentado (o caso de sempre) não há nada a fazer.
+    if (sampleSlot.numRetiredObjects() == 0)
+        return;
+
+    // Uma voz calada não guarda ponteiro para um conjunto velho: ele vai ser apagado, e o endereço pode voltar
+    // num conjunto novo.
+    for (int i = 0; i < numVoices; ++i)
+    {
+        if (! voices[(size_t) i].isActive() && voiceRef[(size_t) i] != current)
+        {
+            voiceRef[(size_t) i] = nullptr;
+            voiceSample[(size_t) i] = nullptr;
+        }
+    }
+
+    // O conjunto que nenhuma voz lê mais volta para a thread de mensagem apagar (só ponteiros, sem liberar aqui).
+    sampleSlot.releaseUnused ([this] (const SampleRef* old)
+    {
+        for (int i = 0; i < numVoices; ++i)
+            if (voices[(size_t) i].isActive() && voiceRef[(size_t) i] == old)
+                return true;
+
+        return false;
+    });
+}
+
+void WhynotSamplerPlugin::renderVoices (float* const* out, int numChannels, int start, int num) noexcept
 {
     if (num <= 0)
         return;
@@ -307,8 +310,11 @@ void WhynotSamplerPlugin::renderVoices (const audio::SampleData& data, float* co
             if (! voices[(size_t) i].isActive())
                 continue;
 
-            const auto* own = voiceData[(size_t) i];
-            voices[(size_t) i].render (own != nullptr ? *own : data, offset, numChannels, n, bent);
+            // cada voz lê o sample em que começou (o do canal ou a camada da força), mesmo depois de uma troca
+            if (const auto* sample = voiceSample[(size_t) i])
+                voices[(size_t) i].render (*sample, offset, numChannels, n, bent);
+            else
+                voices[(size_t) i].reset();   // não acontece: toda nota guarda o sample dela
 
             if (! voices[(size_t) i].isActive())
                 voiceKey[(size_t) i] = -1;
@@ -437,7 +443,7 @@ void WhynotSamplerPlugin::noteOn (int key, float velocity, const SampleRef& ref,
         const int chosen = allocateVoice();
         voices[(size_t) chosen].noteOn (data.rootKey, velocity, false, sliceParams);
         voiceKey[(size_t) chosen] = key;
-        voiceData[(size_t) chosen] = nullptr;   // fatiado: só o sample do canal
+        setVoiceSample (chosen, ref, data);   // fatiado: só o sample do canal
         voiceStart[(size_t) chosen] = ++voiceCounter;
         return;
     }
@@ -447,23 +453,23 @@ void WhynotSamplerPlugin::noteOn (int key, float velocity, const SampleRef& ref,
 
     // A camada da força (bloco 4f), e a nota de raiz do canal soa no tom original dela.
     const auto& layer = ref.forVelocity (velocity);
-    const auto* own = &layer == &data ? nullptr : &layer;
     const int sampleKey = key - rootKey.load() + layer.rootKey;
 
     if (mono.load())
     {
         // Legato: chegou nota nova com outra ainda segurada -> desliza, sem reiniciar o sample.
-        const bool legato = monoVoice >= 0 && voices[(size_t) monoVoice].isActive() && numHeld > 0;
+        // (Uma voz que ainda soa o sample de antes de uma troca não desliza: sai, e a nota nova começa no novo.)
+        const bool legato = monoVoice >= 0 && voices[(size_t) monoVoice].isActive() && numHeld > 0
+                             && voiceRef[(size_t) monoVoice] == &ref;
         pushHeld (key, velocity);
 
         if (legato)
         {
             // deslizando, a voz continua na camada em que começou; sem glide (0 ms) a nota recomeça, já na camada da força dela
             if (params.glideMs <= 0.0f)
-                voiceData[(size_t) monoVoice] = own;
+                setVoiceSample (monoVoice, ref, layer);
 
-            const auto* current = voiceData[(size_t) monoVoice];
-            voices[(size_t) monoVoice].noteOn (key - rootKey.load() + (current != nullptr ? current : &data)->rootKey, velocity, true, params);
+            voices[(size_t) monoVoice].noteOn (key - rootKey.load() + voiceSample[(size_t) monoVoice]->rootKey, velocity, true, params);
             voiceKey[(size_t) monoVoice] = key;
             monoKey = key;
             return;
@@ -476,7 +482,7 @@ void WhynotSamplerPlugin::noteOn (int key, float velocity, const SampleRef& ref,
         const int v = allocateVoice();
         voices[(size_t) v].noteOn (sampleKey, velocity, false, params);
         voiceKey[(size_t) v] = key;
-        voiceData[(size_t) v] = own;
+        setVoiceSample (v, ref, layer);
         voiceStart[(size_t) v] = ++voiceCounter;
         monoVoice = v;
         monoKey = key;
@@ -493,14 +499,12 @@ void WhynotSamplerPlugin::noteOn (int key, float velocity, const SampleRef& ref,
     const int chosen = allocateVoice();
     voices[(size_t) chosen].noteOn (sampleKey, velocity, false, params);
     voiceKey[(size_t) chosen] = key;
-    voiceData[(size_t) chosen] = own;
+    setVoiceSample (chosen, ref, layer);
     voiceStart[(size_t) chosen] = ++voiceCounter;
 }
 
-void WhynotSamplerPlugin::noteOff (int key, const SampleRef& ref) noexcept
+void WhynotSamplerPlugin::noteOff (int key, const SampleRef* ref) noexcept
 {
-    const auto& data = *ref.data;
-
     if (mono.load() && numSlices.load (std::memory_order_relaxed) == 0)
     {
         removeHeld (key);
@@ -508,25 +512,23 @@ void WhynotSamplerPlugin::noteOff (int key, const SampleRef& ref) noexcept
         if (key != monoKey || monoVoice < 0)
             return;   // soltou uma nota que já não soa (fim do legato de um slide)
 
-        if (numHeld > 0)
+        if (numHeld > 0 && ref != nullptr)
         {
             // ainda há tecla segurada: volta deslizando para ela
             const auto params = voiceParams();
             const int back = held[(size_t) numHeld - 1];
 
-            if (params.glideMs <= 0.0f)   // sem glide a nota de volta recomeça: na camada da força dela
-            {
-                const auto& layer = ref.forVelocity (heldVelocity[(size_t) numHeld - 1]);
-                voiceData[(size_t) monoVoice] = &layer == &data ? nullptr : &layer;
-            }
+            // Sem glide a nota de volta recomeça: na camada da força dela. O mesmo se a voz já não guarda sample
+            // nenhum (acabou num conjunto que uma troca tirou): recomeça no conjunto atual.
+            if (params.glideMs <= 0.0f || voiceSample[(size_t) monoVoice] == nullptr)
+                setVoiceSample (monoVoice, *ref, ref->forVelocity (heldVelocity[(size_t) numHeld - 1]));
 
-            const auto* current = voiceData[(size_t) monoVoice];
-            voices[(size_t) monoVoice].noteOn (back - rootKey.load() + (current != nullptr ? current : &data)->rootKey,
+            voices[(size_t) monoVoice].noteOn (back - rootKey.load() + voiceSample[(size_t) monoVoice]->rootKey,
                                                heldVelocity[(size_t) numHeld - 1], true, params);
             voiceKey[(size_t) monoVoice] = back;
             monoKey = back;
         }
-        else if (! oneShot.load())
+        else if (numHeld > 0 || ! oneShot.load())   // (tecla segurada mas o canal ficou sem sample: não há para onde voltar)
         {
             voices[(size_t) monoVoice].noteOff();
             monoKey = -1;

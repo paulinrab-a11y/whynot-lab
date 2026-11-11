@@ -17,7 +17,11 @@ bool PreviewPlayer::play (const juce::File& file, juce::AudioFormatManager& form
     reader->read (&clip->audio, 0, frames, 0, true, channels > 1);
     clip->sampleRate = reader->sampleRate;
     clip->id = nextId++;
-    lastId = clip->id;
+
+    if (nextId == 0)   // 0 quer dizer "nenhuma"
+        nextId = 1;
+
+    lastId = newestId = clip->id;
 
     // sem denormais: o callback não precisa de proteção extra na cauda
     for (int ch = 0; ch < channels; ++ch)
@@ -46,7 +50,9 @@ void PreviewPlayer::stop() noexcept
         lastId = 0;
     }
 
-    stopRequests.fetch_add (1);
+    // Vale para tudo o que já foi pedido até aqui (a que soa e as que estão na fila), e só para isso: um
+    // play() logo depois ganha um id maior e nasce tocando, mesmo que o áudio veja os dois no mesmo bloco.
+    stopMark.request (newestId);
 }
 
 void PreviewPlayer::service() noexcept
@@ -87,11 +93,8 @@ void PreviewPlayer::audioDeviceIOCallbackWithContext (const float* const*, int, 
         finished = false;
     }
 
-    if (const auto stops = stopRequests.load(); stops != seenStops)
-    {
-        seenStops = stops;
+    if (! stopping && stopMark.covers (playingId))   // o stop() foi pedido com esta prévia já existindo
         stopping = true;
-    }
 
     if (finished)
         return;

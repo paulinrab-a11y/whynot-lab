@@ -1,6 +1,8 @@
 #include "WhynotSynth.h"
 #include "SynthState.h"
 
+#include "../audio/BlockSlices.h"
+
 namespace whynot
 {
 
@@ -114,18 +116,45 @@ void WhynotSynthPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     }
 
     float* left = buffer.getWritePointer (0, start);
-    float* right = channels > 1 ? buffer.getWritePointer (1, start)
-                                : (num <= scratch.getNumSamples() ? scratch.getWritePointer (0) : left);
-
-    engine.process (left, right, num, events.data(), numEvents);
-
-    for (int c = 2; c < channels; ++c)
-        buffer.clear (c, start, num);
-
     float peak = 0.0f;
 
-    for (int i = 0; i < num; ++i)
-        peak = juce::jmax (peak, std::abs (left[i]), std::abs (right[i]));
+    if (channels > 1)
+    {
+        float* right = buffer.getWritePointer (1, start);
+        engine.process (left, right, num, events.data(), numEvents);
+
+        for (int c = 2; c < channels; ++c)
+            buffer.clear (c, start, num);
+
+        for (int i = 0; i < num; ++i)
+            peak = juce::jmax (peak, std::abs (left[i]), std::abs (right[i]));
+    }
+    else
+    {
+        // Trilha mono: o lado direito vai para o rascunho. O Tracktion pode mandar um bloco maior que o do
+        // initialise(): em pedaços do tamanho do rascunho (sem alocar), cada um com os eventos dele. Antes o direito
+        // virava o próprio esquerdo e o motor somava os dois lados no mesmo buffer (som dobrado). O bloco que cabe
+        // é um pedaço só, com todos os eventos.
+        if (scratch.getNumChannels() == 0 || scratch.getNumSamples() == 0)
+        {
+            buffer.clear (0, start, num);
+            return;
+        }
+
+        float* right = scratch.getWritePointer (0);
+        int cursor = 0;
+
+        audio::forEachSlice (num, scratch.getNumSamples(), [&] (int offset, int n)
+        {
+            const int first = cursor;
+            const int count = audio::takeSliceEvents (events.data(), numEvents, cursor, offset, n, offset + n >= num,
+                                                      &synth::Event::sampleOffset);
+            engine.process (left + offset, right, n, events.data() + first, count);
+
+            for (int i = 0; i < n; ++i)
+                peak = juce::jmax (peak, std::abs (left[offset + i]), std::abs (right[i]));
+        });
+    }
 
     level.store (juce::jmax (peak, level.load (std::memory_order_relaxed) * 0.85f), std::memory_order_relaxed);
 }

@@ -3,7 +3,7 @@
 #include <JuceHeader.h>
 
 #include "../audio/ChannelPitch.h"
-#include "../audio/RtObjectSlot.h"
+#include "../audio/RtRetainedSlot.h"
 #include "../audio/SampleVoice.h"
 
 #include <array>
@@ -37,11 +37,14 @@ struct SamplerShape
     Thread de áudio: applyToBuffer() — sem alocação, sem trava, sem I/O.
     Thread de mensagem: setSample(), setChannel() e o Timer de coleta.
 
-    O sample chega por RtObjectSlot: a thread de áudio só troca ponteiros, e o
-    sample antigo é liberado aqui, na thread de mensagem. Com vozes soando, a troca
-    espera: a thread de áudio as tira em 3 ms (fadeForSwap) e avisa quando ficou em
-    silêncio (voicesSilent); o Timer publica o sample novo. Sem isso as vozes passavam
-    a ler o sample novo na posição do velho, com um corte seco.
+    O sample chega por RtRetainedSlot: a thread de áudio só troca ponteiros, e o
+    sample antigo é liberado aqui, na thread de mensagem. A troca vale na hora, mesmo
+    com vozes soando (10/11): cada voz guarda o sample em que começou e acaba nele; as
+    notas novas já tocam o sample novo. O conjunto velho fica aposentado no slot até a
+    última voz dele acabar (a thread de áudio nunca libera memória). Para um conjunto
+    não ficar preso por uma nota longa, as vozes de dois conjuntos atrás saem em 3 ms.
+    (Antes a troca esperava as vozes saírem, e as notas que chegavam nessa espera, de
+    até ~100 ms, eram descartadas.)
 
     Pitch bend e mod wheel desenhados na nota (27/10): o pitch wheel (no bendRange do canal, ou no RPN 0 do MIDI)
     e o CC1 (um vibrato leve) viram um desvio de tom do canal (audio::ChannelPitch) que todas as vozes somam; sem
@@ -89,7 +92,7 @@ public:
 
     // Thread de mensagem
     /** O sample do canal e as camadas por força (em ordem de força; as que passam de maxLayers ficam de fora). A troca
-        é uma só: as vozes saem do conjunto velho antes. */
+        é uma só (sample e camadas juntos) e vale já na próxima nota; as vozes que soam acabam no conjunto velho. */
     void setSample (std::shared_ptr<const audio::SampleData>, std::vector<Layer> layers = {});
     void setChannel (int rootKey, bool oneShot, bool cutItself, bool mono, float glideMs);
     void setShape (const SamplerShape&);
@@ -138,19 +141,24 @@ private:
     std::int64_t sampleClock = 0;
     float takePan (std::int64_t now) noexcept;
     void noteOn (int key, float velocity, const SampleRef&, float pan = 0.0f) noexcept;
-    void noteOff (int key, const SampleRef&) noexcept;
+    void noteOff (int key, const SampleRef* current) noexcept;   // nulo = o canal está sem sample agora
     int allocateVoice() noexcept;
     void pushHeld (int key, float velocity) noexcept;
     void removeHeld (int key) noexcept;
     void releaseAll() noexcept;
     void chokeAll() noexcept;
-    void renderVoices (const audio::SampleData&, float* const* out, int numChannels, int start, int num) noexcept;
+    void renderVoices (float* const* out, int numChannels, int start, int num) noexcept;
     bool anyVoiceActive() const noexcept;
+    void setVoiceSample (int voice, const SampleRef&, const audio::SampleData&) noexcept;
+    void releaseUnusedSamples (const SampleRef* current) noexcept;
 
     // Só a thread de áudio
     std::array<audio::SampleVoice, numVoices> voices;
     std::array<int, numVoices> voiceKey {};
-    std::array<const audio::SampleData*, numVoices> voiceData {};   // a camada que cada voz lê (nulo = a do canal)
+    // O sample que cada voz lê (o do canal ou uma camada) e o conjunto a que ele pertence. Valem juntos, desde a
+    // nota até a voz acabar; no fim de cada bloco, voz calada aponta para o conjunto atual ou para nada.
+    std::array<const audio::SampleData*, numVoices> voiceSample {};
+    std::array<const SampleRef*, numVoices> voiceRef {};
     std::array<juce::uint32, numVoices> voiceStart {};
     juce::uint32 voiceCounter = 0;
     double audioSampleRate = 48000.0;
@@ -170,7 +178,7 @@ private:
     bool lastMono = false;
 
     // Mensagem → áudio
-    audio::RtObjectSlot<SampleRef> sampleSlot;
+    audio::RtRetainedSlot<SampleRef> sampleSlot;
     std::unique_ptr<const SampleRef> pendingSample;   // só a thread de mensagem
     std::atomic<double> requestedSampleRate { 48000.0 };
     std::atomic<bool> needsPrepare { true };
@@ -185,14 +193,7 @@ private:
     std::atomic<float> loopStart { 0.0f }, loopEnd { 1.0f }, loopXfadeMs { 20.0f }, releaseMs { 30.0f };
     std::atomic<float> bendRange { 2.0f };
 
-    // Troca de sample com vozes soando (mensagem <-> áudio).
-    std::atomic<bool> fadeForSwap { false };     // mensagem -> áudio: tire as vozes, um sample novo espera
-    std::atomic<bool> voicesSilent { true };     // áudio -> mensagem: no fim do último bloco, nenhuma voz soava
-    std::atomic<juce::uint32> blocksRendered { 0 };
-    juce::uint32 blocksSeen = 0;                 // só a thread de mensagem: o contador no último Timer
-    bool audioRunning = false;                   // só a thread de mensagem: os blocos andaram desde o último Timer
-    bool swapFading = false;                     // só a thread de áudio: as vozes já estão saindo
-    const SampleRef* lastRef = nullptr;          // só a thread de áudio: o sample do bloco anterior
+    const SampleRef* lastRef = nullptr;          // só a thread de áudio: o conjunto do bloco anterior
 
     // Fatias: a thread de mensagem escreve numSlices = 0, os começos e depois o número novo; a de áudio
     // lê o número e só então os começos. Uma nota no meio da troca toca a fatia velha ou a nova, nunca lixo.

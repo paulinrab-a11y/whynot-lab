@@ -1,12 +1,17 @@
 // Testes do núcleo de tempo real (sem JUCE): glide do 808, troca de objetos entre threads e o pitch bend do canal.
 // Uso: whynot_audio_tests [arquivo.wav]  (grava o áudio do teste de glide para ouvir)
 
+#include "../../src/audio/BlockSlices.h"
 #include "../../src/audio/ChannelPitch.h"
 #include "../../src/audio/Onsets.h"
 #include "../../src/audio/PianoVoice.h"
 #include "../../src/audio/RtObjectSlot.h"
+#include "../../src/audio/RtRetainedSlot.h"
 #include "../../src/audio/SampleVoice.h"
+#include "../../src/audio/StopMark.h"
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -14,8 +19,10 @@
 #include <cstdint>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace whynot::audio;
@@ -1098,6 +1105,436 @@ static void testSlotAcrossThreads()
 }
 
 //==============================================================================
+// Troca de sample com vozes soando (10/11): o sample velho só vai para o descarte quando nenhuma voz o lê.
+
+struct Tracked
+{
+    static inline std::atomic<int> alive { 0 };
+    static inline std::atomic<bool> destroyedInUse { false };
+    int value = 0;
+    mutable std::atomic<int> users { 0 };   // vozes lendo este objeto (só a thread de áudio mexe)
+    explicit Tracked (int v) : value (v) { ++alive; }
+    ~Tracked() { if (users.load() != 0) destroyedInUse = true; --alive; }
+};
+
+static void testRetainedSlot()
+{
+    std::printf ("Troca de sample com vozes soando: o velho fica até a última voz acabar\n");
+
+    {
+        RtRetainedSlot<Counted> slot;
+        const int before = Counted::alive.load();
+        std::unique_ptr<const Counted> a = std::make_unique<Counted> (1), b = std::make_unique<Counted> (2), c = std::make_unique<Counted> (3);
+        const auto* pa = a.get();
+        const auto* pb = b.get();
+
+        CHECK (slot.publish (a) && slot.current() == pa && slot.numRetiredObjects() == 0, "o primeiro objeto entra sem aposentar ninguém");
+        CHECK (slot.publish (b) && slot.current() == pb && slot.numRetiredObjects() == 1 && slot.newestRetired() == pa,
+               "a troca aposenta o antigo em vez de mandá-lo para o descarte");
+
+        slot.releaseUnused ([] (const Counted*) { return true; });
+        slot.collectGarbage();
+        CHECK (Counted::alive.load() == before + 3 && pa->value == 1, "em uso, o antigo continua vivo e legível depois da coleta");
+
+        CHECK (slot.publish (c) && slot.numRetiredObjects() == 1 && slot.current() != pb && slot.numRetiredObjects() == 2 && slot.newestRetired() == pb,
+               "outra troca: dois aposentados, o mais novo é o que acabou de sair");
+
+        slot.releaseUnused ([pa] (const Counted* x) { return x == pa; });
+        slot.collectGarbage();
+        CHECK (Counted::alive.load() == before + 2 && slot.numRetiredObjects() == 1 && slot.newestRetired() == pa,
+               "só o aposentado sem uso foi apagado (na thread de mensagem); o que tem voz ficou");
+
+        // preso por uma voz, o antigo conta no limite, mas as trocas seguintes continuam entrando
+        int accepted = 0;
+
+        for (int i = 0; i < 20; ++i)
+        {
+            std::unique_ptr<const Counted> next = std::make_unique<Counted> (100 + i);
+
+            if (slot.publish (next))
+                ++accepted;
+
+            slot.current();
+            slot.releaseUnused ([pa] (const Counted* x) { return x == pa; });
+        }
+
+        CHECK (accepted == 20 && slot.numRetiredObjects() == 1, "com um aposentado preso, as trocas seguintes continuam entrando (%d de 20)", accepted);
+
+        accepted = 0;
+
+        for (int i = 0; i < 20; ++i)   // o áudio parado: nada é consumido
+        {
+            std::unique_ptr<const Counted> next = std::make_unique<Counted> (200 + i);
+
+            if (slot.publish (next))
+                ++accepted;
+        }
+
+        CHECK (accepted > 0 && accepted < (int) RtRetainedSlot<Counted>::queueSize, "com o áudio parado o publish recusa em vez de estourar (%d aceitos)", accepted);
+
+        slot.current();
+        slot.releaseUnused ([] (const Counted*) { return false; });
+        slot.collectGarbage();
+        CHECK (Counted::alive.load() == before + 1, "soltos todos, só o ativo continua vivo (%d)", Counted::alive.load() - before);
+    }
+
+    CHECK (Counted::alive.load() == 0, "nenhum vazamento depois de destruir o slot (%d vivos)", Counted::alive.load());
+
+    // Duas threads de verdade: a de mensagem troca o sample 5.000 vezes; a de áudio começa uma nota por bloco no
+    // sample atual, deixa as vozes lerem o sample em que nasceram até acabar e tira as de dois samples atrás.
+    {
+        RtRetainedSlot<Tracked> slot;
+        std::atomic<bool> running { true };
+        std::atomic<int> lastSeen { -1 };
+        std::atomic<bool> wrongRead { false }, noteOnOldSample { false };
+        std::atomic<int> notesStarted { 0 }, blocksWithSample { 0 }, maxRetired { 0 };
+
+        std::thread audio ([&]
+        {
+            struct Voice { const Tracked* sample = nullptr; int value = 0, blocksLeft = 0; };
+            std::array<Voice, 32> voices {};
+            const Tracked* last = nullptr;
+            std::uint32_t seed = 12345;
+            int next = 0;
+
+            auto stop = [] (Voice& v) { v.sample->users.fetch_sub (1); v.sample = nullptr; };
+
+            auto block = [&] (bool startNote)
+            {
+                const auto* cur = slot.current();
+
+                if (cur != last)   // a troca: quem lê o sample de antes segue; os mais velhos saem logo
+                {
+                    for (auto& v : voices)
+                        if (v.sample != nullptr && v.sample != last && v.sample != cur)
+                            v.blocksLeft = std::min (v.blocksLeft, 1);
+
+                    last = cur;
+                }
+
+                if (cur != nullptr && startNote)   // uma nota por bloco, sempre no sample atual: nenhuma é descartada
+                {
+                    auto& v = voices[(size_t) (next++ % 32)];
+
+                    if (v.sample != nullptr)
+                        stop (v);   // voz roubada
+
+                    seed = seed * 1664525u + 1013904223u;
+                    v.sample = cur;
+                    v.value = cur->value;
+                    v.blocksLeft = 1 + (int) ((seed >> 16) % 40);
+                    cur->users.fetch_add (1);
+                    notesStarted.fetch_add (1);
+                    blocksWithSample.fetch_add (1);
+
+                    if (cur->value < lastSeen.load())
+                        noteOnOldSample = true;
+
+                    lastSeen = cur->value;
+                }
+
+                for (auto& v : voices)   // o "render": cada voz lê o sample em que nasceu
+                {
+                    if (v.sample == nullptr)
+                        continue;
+
+                    if (v.sample->value != v.value)
+                        wrongRead = true;
+
+                    if (--v.blocksLeft <= 0)
+                        stop (v);
+                }
+
+                slot.releaseUnused ([&voices] (const Tracked* r)
+                {
+                    for (auto& v : voices)
+                        if (v.sample == r)
+                            return true;
+
+                    return false;
+                });
+
+                maxRetired = std::max (maxRetired.load(), slot.numRetiredObjects());
+            };
+
+            while (running.load())
+                block (true);
+
+            for (int i = 0; i < 64; ++i)   // as últimas vozes acabam
+                block (false);
+        });
+
+        constexpr int total = 5000;
+
+        for (int published = 0; published < total; ++published)
+        {
+            std::unique_ptr<const Tracked> next = std::make_unique<Tracked> (published);
+
+            while (! slot.publish (next))
+                std::this_thread::yield();
+        }
+
+        while (lastSeen.load() != total - 1)
+            std::this_thread::yield();
+
+        running = false;
+        audio.join();
+        slot.collectGarbage();
+
+        CHECK (! Tracked::destroyedInUse.load(), "nenhum sample foi apagado com uma voz ainda lendo (5.000 trocas, duas threads)");
+        CHECK (! wrongRead.load(), "cada voz leu até o fim o sample em que nasceu");
+        CHECK (notesStarted.load() == blocksWithSample.load() && ! noteOnOldSample.load(),
+               "nenhuma nota esperou a troca: todas começaram no bloco em que chegaram, no sample atual (%d notas)", notesStarted.load());
+        CHECK (maxRetired.load() < (int) RtRetainedSlot<Tracked>::queueSize, "a lista de aposentados nunca encheu (máximo %d de %d)", maxRetired.load(), (int) RtRetainedSlot<Tracked>::queueSize);
+        CHECK (Tracked::alive.load() == 1, "com as vozes caladas, só o sample ativo continua vivo (%d)", Tracked::alive.load());
+    }
+
+    CHECK (Tracked::alive.load() == 0, "nenhum vazamento depois de destruir o slot (%d vivos)", Tracked::alive.load());
+}
+
+//==============================================================================
+// Bloco maior que o buffer de rascunho (10/11): processa em pedaços, sem alocar e sem desistir.
+
+struct ToyEvent { int sampleOffset = 0; float value = 0.0f; };
+
+/** Um motor de brinquedo com a mesma forma do synth: eventos com a posição no bloco, estado que atravessa blocos. */
+struct ToyEngine
+{
+    float z[2] {}, gain = 1.0f;
+    long clock = 0;
+    std::vector<long> eventTimes;
+
+    void render (float* l, float* r, int n) noexcept
+    {
+        for (int i = 0; i < n; ++i, ++clock)
+        {
+            const float x = gain * (float) std::sin (0.01 * (double) clock);
+            l[i] = z[0] = z[0] * 0.95f + x;
+            r[i] = z[1] = z[1] * 0.90f - x;
+        }
+    }
+
+    void process (float* l, float* r, int n, const ToyEvent* events, int numEvents)
+    {
+        int position = 0;
+
+        for (int e = 0; e < numEvents; ++e)
+        {
+            const int when = std::clamp (events[e].sampleOffset, position, n);
+            render (l + position, r + position, when - position);
+            position = when;
+            gain = events[e].value;
+            eventTimes.push_back (clock);
+        }
+
+        render (l + position, r + position, n - position);
+    }
+};
+
+static void testBlockSlices()
+{
+    std::printf ("Bloco maior que o rascunho: em pedaços, igual ao bloco inteiro\n");
+
+    {
+        std::vector<std::pair<int, int>> calls;
+        forEachSlice (1000, 64, [&] (int offset, int n) { calls.push_back ({ offset, n }); });
+        bool contiguous = true;
+        int covered = 0;
+
+        for (auto& c : calls)
+        {
+            contiguous = contiguous && c.first == covered && c.second >= 1 && c.second <= 64;
+            covered += c.second;
+        }
+
+        CHECK (contiguous && covered == 1000 && calls.size() == 16 && calls.back().second == 40, "1000 amostras em pedaços de até 64: 16 pedaços seguidos, o último com 40");
+
+        calls.clear();
+        forEachSlice (512, 512, [&] (int offset, int n) { calls.push_back ({ offset, n }); });
+        forEachSlice (100, 512, [&] (int offset, int n) { calls.push_back ({ offset, n }); });
+        CHECK (calls.size() == 2 && calls[0] == std::make_pair (0, 512) && calls[1] == std::make_pair (0, 100), "o bloco que cabe no rascunho é uma chamada só, com o bloco inteiro (o caso normal não muda)");
+
+        calls.clear();
+        forEachSlice (100, 0, [&] (int offset, int n) { calls.push_back ({ offset, n }); });
+        forEachSlice (0, 64, [&] (int offset, int n) { calls.push_back ({ offset, n }); });
+        forEachSlice (-5, 64, [&] (int offset, int n) { calls.push_back ({ offset, n }); });
+        CHECK (calls.empty(), "rascunho sem tamanho ou bloco vazio: nenhuma chamada (e nenhum laço sem fim)");
+    }
+
+    // O synth numa trilha mono: left é o buffer, right é o rascunho (64), o bloco tem 1000 e eventos espalhados.
+    {
+        const std::vector<ToyEvent> blockEvents { { 0, 0.5f }, { 63, 1.0f }, { 64, 0.25f }, { 64, 0.75f }, { 500, 0.1f }, { 999, 0.9f } };
+        constexpr int num = 1000, blocksToRun = 3;
+
+        ToyEngine whole, sliced;
+        std::vector<float> wl ((size_t) num * blocksToRun), wr (wl.size()), sl (wl.size()), sr (wl.size()), scratch (64);
+        bool allEventsTaken = true;
+
+        for (int b = 0; b < blocksToRun; ++b)
+        {
+            auto events = blockEvents;
+            whole.process (wl.data() + b * num, wr.data() + b * num, num, events.data(), (int) events.size());
+
+            float* left = sl.data() + b * num;
+            int cursor = 0;
+
+            forEachSlice (num, (int) scratch.size(), [&] (int offset, int n)
+            {
+                const int first = cursor;
+                const int count = takeSliceEvents (events.data(), (int) events.size(), cursor, offset, n, offset + n >= num, &ToyEvent::sampleOffset);
+                sliced.process (left + offset, scratch.data(), n, events.data() + first, count);
+                std::copy (scratch.begin(), scratch.begin() + n, sr.begin() + b * num + offset);
+            });
+
+            allEventsTaken = allEventsTaken && cursor == (int) events.size();
+        }
+
+        CHECK (wl == sl && wr == sr, "o motor em pedaços de 64 dá o mesmo som, bit a bit, que o bloco de 1000 inteiro (3 blocos, com estado)");
+        CHECK (allEventsTaken && whole.eventTimes == sliced.eventTimes && whole.eventTimes.size() == blockEvents.size() * blocksToRun,
+               "cada evento vale na mesma amostra e na mesma ordem (%d eventos)", (int) sliced.eventTimes.size());
+        CHECK (wl != wr, "os dois lados saem diferentes: o direito nunca é o próprio esquerdo (era o som dobrado)");
+    }
+
+    // Eventos fora de ordem ou além do bloco: nenhum se perde, e a posição fica dentro do pedaço.
+    {
+        std::vector<ToyEvent> events { { 700, 1.0f }, { 10, 2.0f }, { 5000, 3.0f }, { -4, 4.0f } };
+        int cursor = 0, taken = 0;
+        bool inRange = true;
+
+        forEachSlice (1000, 256, [&] (int offset, int n)
+        {
+            const int first = cursor;
+            const int count = takeSliceEvents (events.data(), (int) events.size(), cursor, offset, n, offset + n >= 1000, &ToyEvent::sampleOffset);
+
+            for (int i = first; i < first + count; ++i)
+                inRange = inRange && events[(size_t) i].sampleOffset >= 0 && events[(size_t) i].sampleOffset < n;
+
+            taken += count;
+        });
+
+        CHECK (taken == 4 && cursor == 4 && inRange, "eventos fora de ordem ou além do fim: todos entregues, com a posição dentro do pedaço");
+    }
+
+    // O efeito numa trilha mono: copia o pedaço para o rascunho, processa os dois, fica o esquerdo.
+    {
+        constexpr int num = 1000;
+        std::vector<float> input ((size_t) num);
+
+        for (int i = 0; i < num; ++i)
+            input[(size_t) i] = (float) std::sin (0.05 * i);
+
+        auto fx = [] (float& state, float* l, float* r, int n)   // um passa-baixas com estado, mono somado
+        {
+            for (int i = 0; i < n; ++i)
+            {
+                state = state * 0.9f + 0.05f * (l[i] + r[i]);
+                l[i] = r[i] = state;
+            }
+        };
+
+        auto whole = input, sliced = input;
+        std::vector<float> big ((size_t) num), small (128);
+        float s1 = 0.0f, s2 = 0.0f;
+
+        std::copy (whole.begin(), whole.end(), big.begin());
+        fx (s1, whole.data(), big.data(), num);
+
+        forEachSlice (num, (int) small.size(), [&] (int offset, int n)
+        {
+            std::copy (sliced.begin() + offset, sliced.begin() + offset + n, small.begin());
+            fx (s2, sliced.data() + offset, small.data(), n);
+        });
+
+        CHECK (whole == sliced && sliced != input, "efeito em trilha mono com bloco de 1000 e rascunho de 128: processa tudo, igual ao rascunho grande");
+    }
+}
+
+//==============================================================================
+// Parar a prévia (10/11): o pedido de parar vale para o que já existia, não para a prévia seguinte.
+
+static void testStopMark()
+{
+    std::printf ("Parar a prévia e tocar outra em seguida\n");
+
+    {
+        StopMark mark;
+        CHECK (! mark.covers (1), "sem pedido nenhum, a primeira prévia toca");
+
+        mark.request (1);   // stop() com a prévia 1 tocando
+        CHECK (mark.covers (1) && ! mark.covers (2), "stop() e play() antes do próximo bloco: a prévia velha para, a nova nasce sem fade-out");
+
+        mark.request (3);   // stop() com a 3 ainda pendente: vale para a 2, que é a que soa
+        CHECK (mark.covers (2) && mark.covers (3) && ! mark.covers (4), "o pedido cobre tudo o que foi entregue até ele, e nada depois");
+
+        mark.request (0xffffffffu);
+        CHECK (mark.covers (0xfffffffeu) && mark.covers (0xffffffffu) && ! mark.covers (1), "segue certo quando o contador de ids dá a volta");
+    }
+
+    // Duas threads: a de mensagem faz stop() e play() colados, 20.000 vezes; a de áudio vê os dois de uma vez.
+    {
+        StopMark mark;
+        std::atomic<std::uint32_t> currentId { 0 }, acked { 0 };
+        std::atomic<int> bornStopped { 0 }, stopsSeen { 0 };
+        std::atomic<bool> running { true };
+
+        std::thread audio ([&]
+        {
+            std::uint32_t playing = 0;
+            bool stopping = false;
+
+            while (running.load())
+            {
+                const auto id = currentId.load();
+
+                if (id == 0)
+                    continue;
+
+                if (id != playing)   // prévia nova: começa do zero
+                {
+                    playing = id;
+                    stopping = false;
+
+                    if (mark.covers (playing))
+                        bornStopped.fetch_add (1);
+
+                    acked = id;
+                }
+                else if (! stopping && mark.covers (playing))
+                {
+                    stopping = true;
+                    stopsSeen.fetch_add (1);
+                }
+            }
+        });
+
+        constexpr std::uint32_t total = 20000;
+
+        for (std::uint32_t id = 1; id <= total; ++id)
+        {
+            if (id > 1)
+                mark.request (id - 1);   // stop(): para o que foi entregue até agora...
+
+            currentId = id;              // ...e play() logo em seguida
+
+            while (acked.load() != id)
+                std::this_thread::yield();
+        }
+
+        const int before = stopsSeen.load();
+        mark.request (total);
+
+        while (stopsSeen.load() == before)
+            std::this_thread::yield();
+
+        running = false;
+        audio.join();
+
+        CHECK (bornStopped.load() == 0, "nenhuma das 20.000 prévias nasceu em fade-out (%d)", bornStopped.load());
+        CHECK (stopsSeen.load() > before, "e o stop() de verdade chega à prévia que está tocando");
+    }
+}
+
+//==============================================================================
 // WHYNOT Piano (21/10): o começo do sample na memória e o resto por um anel que uma thread enche.
 
 // Uma zona sintética: senoide estéreo (esquerda e direita com fases diferentes) de `frames` quadros.
@@ -1691,6 +2128,9 @@ int main (int argc, char* argv[])
     testAntiAliasing();
     testSlideVelocityAndSteal();
     testSlotAcrossThreads();
+    testRetainedSlot();
+    testBlockSlices();
+    testStopMark();
     testPianoStreaming();
     testPitchWheel();
 

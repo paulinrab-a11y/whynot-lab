@@ -341,9 +341,11 @@ static void testGenerator()
                         ++extOutside;
 
             rm.progression = "i9 iv9 VII7 IIImaj7";   // extensões escritas (de menor natural)
-            for (auto& n : generate (rm).notes)
+            const auto extended = generate (rm);   // guardado: iterar/apontar para dentro de um temporário era uso de memória liberada (ASan)
+
+            for (auto& n : extended.notes)
             {
-                const auto* ev = chordAtTime (generate (rm).chords, n.start);
+                const auto* ev = chordAtTime (extended.chords, n.start);
                 const int rel = ev != nullptr ? pitchClass (n.key - ev->chord.root) : 0;
 
                 if (! rm.scale.contains (n.key) && ! (rel == 0 || rel == 3 || rel == 4 || rel == 6 || rel == 7 || rel == 8))

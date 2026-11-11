@@ -169,6 +169,13 @@ MainComponent::MainComponent (AppController& a)
         return {};
     };
     app.onPluginsChanged = [this] { browser.refresh(); };
+
+    // Um sample que acabou de carregar (ou falhou) fora da thread de mensagem: o aviso de "sem sample" é do rack.
+    app.getProjector().onSampleLoadsChanged = [this]
+    {
+        pendingScreens |= refreshplan::rack;
+        refreshScreens (shownScreens());
+    };
     app.onScanProgress = [this] (const juce::String& t, double p) { browser.setScanStatus (t, p); };
     browser.onStatus = toStatus;
     browser.onAddInstrument = [this] (const juce::PluginDescription& d)
@@ -383,6 +390,7 @@ MainComponent::~MainComponent()
     app.onBeatKey = nullptr;
     app.onNotice = nullptr;
     app.onPluginsChanged = nullptr;
+    app.getProjector().onSampleLoadsChanged = nullptr;
     app.onScanProgress = nullptr;
     PluginWindow::onClosed = nullptr;
     PluginWindow::nativeEditorFactory = nullptr;

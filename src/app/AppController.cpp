@@ -1436,7 +1436,11 @@ juce::String AppController::crashModuleFromReport() const
     //     return CrashReport::lastCrash().module;   // só o nome do arquivo, ou o caminho inteiro
     // O autosave::describeCrash compara com o arquivo de cada suspeito (sem diferenciar maiúsculas): se bater, esse
     // suspeito passa na frente da janela aberta e o aviso diz que o relatório aponta para ele. Vazio = sem relatório.
-    return {};
+    if (session == nullptr)
+        return {};
+
+    const auto& crash = session->lastCrash();
+    return juce::String::fromUTF8 ((crash.suspect.empty() ? crash.moduleName() : crash.suspect).c_str());
 }
 
 void AppController::collectCrashSuspects()

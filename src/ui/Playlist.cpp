@@ -381,26 +381,36 @@ void PlaylistGrid::setPlayhead (double ticks)
     if (std::abs (ticks - playhead) < 0.5)
         return;
 
-    // blocos tocando ganham a marca laranja: repinta tudo só quando essa lista muda
-    juce::StringArray live;
+    // Blocos tocando ganham a marca laranja. Isto roda a cada quadro (animateFrame): em vez de montar uma lista
+    // nova por quadro, compara bloco a bloco com a guardada; só os que entraram ou saíram são repintados (fluidez,
+    // 21/10) e a lista só é refeita nessa hora, no lugar, sem pedir memória.
+    auto isLive = [ticks] (const Block& b) { return ticks >= 0.0 && ticks >= b.item.start && ticks < b.item.end(); };
+    int liveCount = 0;
+    bool changed = false;
 
-    if (ticks >= 0.0)
+    for (auto& b : blocks)
+    {
+        const bool now = isLive (b);
+        liveCount += now ? 1 : 0;
+
+        if (now != liveItems.contains (b.item.id))
+        {
+            repaint (blockBounds (b).getSmallestIntegerContainer().expanded (1));
+            changed = true;
+        }
+    }
+
+    if (changed || liveCount != liveItems.size())   // a contagem pega o bloco que tocava e foi apagado
+    {
+        liveItems.clearQuick();
+
         for (auto& b : blocks)
-            if (ticks >= b.item.start && ticks < b.item.end())
-                live.add (b.item.id);
+            if (isLive (b))
+                liveItems.add (b.item.id);
+    }
 
     const int bottom = gridArea().getBottom();
     auto column = [this, bottom] (double t) { return juce::Rectangle<int> ((int) tickToX (t) - 2, 0, 5, bottom); };
-
-    if (live != liveItems)
-    {
-        // só os blocos que entraram ou saíram da lista ganham ou perdem a marca (fluidez, 21/10)
-        for (auto& b : blocks)
-            if (live.contains (b.item.id) != liveItems.contains (b.item.id))
-                repaint (blockBounds (b).getSmallestIntegerContainer().expanded (1));
-
-        liveItems = live;
-    }
 
     const bool started = playhead < 0.0 && ticks >= 0.0;
 
@@ -967,6 +977,19 @@ void PlaylistGrid::updateScrollBars()
     vScroll.setCurrentRange (scrollY, (double) g.getHeight(), juce::dontSendNotification);
     hScroll.setRangeLimits (0.0, (double) contentTicks(), juce::dontSendNotification);
     hScroll.setCurrentRange (scrollTicks, g.getWidth() / pxPerTick, juce::dontSendNotification);
+    notifyViewChanged();
+}
+
+void PlaylistGrid::notifyViewChanged()
+{
+    // Rolou ou mudou o zoom: a automação embaixo acompanha. Sai daqui, de onde a vista muda (toda mudança de
+    // scrollTicks e pxPerTick termina no updateScrollBars ou vem da barra de rolagem), e não mais do paint.
+    if (onViewChanged && (scrollTicks != notifiedScroll || pxPerTick != notifiedZoom))
+    {
+        notifiedScroll = scrollTicks;
+        notifiedZoom = pxPerTick;
+        onViewChanged();
+    }
 }
 
 void PlaylistGrid::scrollBarMoved (juce::ScrollBar* bar, double start)
@@ -977,6 +1000,7 @@ void PlaylistGrid::scrollBarMoved (juce::ScrollBar* bar, double start)
     if (bar == &vScroll) scrollY = start;
     else                 scrollTicks = start;
 
+    notifyViewChanged();
     repaint();
 }
 
@@ -985,14 +1009,6 @@ void PlaylistGrid::paint (juce::Graphics& g)
 {
     using namespace theme;
     g.fillAll (colour::background);
-
-    // toda rolagem e todo zoom repintam a grade: daqui a automação embaixo acompanha
-    if (scrollTicks != notifiedScroll || pxPerTick != notifiedZoom)
-    {
-        notifiedScroll = scrollTicks;
-        notifiedZoom = pxPerTick;
-        if (onViewChanged) onViewChanged();
-    }
 
     const bool showPunch = punchOn || punchDrag != PunchEdge::none;
     const int shownIn = punchDrag != PunchEdge::none ? dragIn : punchIn;

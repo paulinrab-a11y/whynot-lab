@@ -178,6 +178,7 @@ private:
     void scrollBarMoved (juce::ScrollBar*, double) override;
     void updateScrollBars();
     void clampScroll();
+    void notifyViewChanged();
     void followPlayhead (bool started);
 
     juce::Rectangle<int> gridArea() const;

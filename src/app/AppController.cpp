@@ -152,10 +152,14 @@ struct AppController::Housekeeping : juce::Timer
         if (! owner.registry.isInGesture() && owner.projector->isRefreezeDue())
             owner.syncProjector();
 
-        if (++ticks >= autosaveMinutes * 60 * 10)
+        // autosave: a cada 2 minutos, fora de gesto, gravação e export (autosave::Schedule)
+        owner.serviceAutosave();
+
+        // a cada 1 s: as janelas de plugin que fecharam saem da anotação de suspeitos
+        if (++windowTicks >= 10)
         {
-            ticks = 0;
-            owner.autosaveNow();
+            windowTicks = 0;
+            owner.refreshPluginWindowMarker();
         }
 
         // a cada 10 s: os samples que saíram do projeto (canal apagado, sample trocado) saem da memória
@@ -167,7 +171,7 @@ struct AppController::Housekeeping : juce::Timer
     }
 
     AppController& owner;
-    int ticks = 0, pruneTicks = 0;
+    int windowTicks = 0, pruneTicks = 0;
 };
 
 //==============================================================================
@@ -372,7 +376,9 @@ AppController::AppController (bool isHeadless, const juce::File& requestedDataFo
     if (! headless)
         pianoPrefetch = std::make_unique<piano::Prefetch>();
 
+    trackSuspects = ! headless;
     recoverFromPluginCrash();
+    collectCrashSuspects();
     catalog->fillKnownList (engine.getPluginManager().knownPluginList);
     installPluginLoader();
 
@@ -496,6 +502,9 @@ void AppController::setAutomationRecording (bool on)
 {
     if (automationRecording != nullptr)
         automationRecording->setArmed (on);
+
+    if (on)
+        dirtyPlugins.markAll();   // a automação gravada pode mexer em parâmetro de VST3 sem janela aberta
 }
 
 bool AppController::isAutomationRecording() const
@@ -515,6 +524,9 @@ AppController::~AppController()
     deferredSync = nullptr;
     *alive = false;
     housekeeping = nullptr;
+
+    if (wroteSuspects)
+        crashSuspectsFile().deleteFile();   // fechou direito: ninguém a culpar
 
     if (! headless)
         engine.getDeviceManager().deviceManager.removeAudioCallback (&preview);
@@ -578,6 +590,7 @@ void AppController::projectChanged (const ProjectModel&)
     }
 
     ++editsSinceAutosave;
+    noteInsertedPlugins();
 
     if (registry.isInGesture())
     {
@@ -941,7 +954,9 @@ juce::Result AppController::newProject()
     Project fresh;
     wnl::normalise (fresh);
     model.file = juce::File();
+    pluginBaselinePending = true;
     model.replace (fresh);
+    dirtyPlugins.clear();
 
     for (auto& sound : kit)
     {
@@ -1074,14 +1089,17 @@ juce::Result AppController::openProject (const juce::File& file)
 
     stop();
     model.file = file;
+    pluginBaselinePending = true;   // os plugins que vieram com o projeto não contam como "adicionados nesta sessão"
     model.replace (std::move (loaded));
     registry.clearHistory();
     model.dirty = false;
     pluginsTouched = false;
+    dirtyPlugins.clear();   // os plugins nasceram agora, com o estado do arquivo
     cache.prune();   // os samples do projeto anterior que ninguém mais usa saem da memória
 
-    // Gancho da frente gravacao: takes que ficaram sem fechar (o app caiu gravando) voltam a ser WAVs legíveis.
+    // Takes que ficaram sem fechar (o app caiu gravando) voltam a ser WAVs legíveis, e a pessoa é avisada.
     recoveredTakes = record::InputRecorder::recoverOrphanTakes (takeFolder());
+    offerRecoveredTakes ((int) recoveredTakes.size());
 
     if (projectLibrary != nullptr)
         projectLibrary->noteOpened (file);
@@ -1202,61 +1220,270 @@ void AppController::setPluginWindowFactory (std::function<std::unique_ptr<juce::
         ui->createWindow = [this, factory = std::move (factory)] (te::Plugin& p) -> std::unique_ptr<juce::Component>
         {
             pluginsTouched = true;   // com a janela aberta, o usuário pode mexer no plugin
-            return factory != nullptr ? factory (p) : nullptr;
+            notePluginWindowOpening (p);   // anota antes de criar o editor: se ele derrubar o app, a anotação fica
+            auto window = factory != nullptr ? factory (p) : nullptr;
+            openingWindowFile.clear();
+            return window;
         };
     }
 }
 
-bool AppController::capturePluginStates()
+namespace
 {
+    bool isWindowShowing (te::Plugin& p)   { return p.windowState != nullptr && p.windowState->isWindowShowing(); }
+
+    /** Cada VST3 vivo do projeto: o instrumento dos canais de plugin e os inserts "vst3" do mixer.
+        fn (chave do autosave::DirtyPlugins, o plugin vivo, o PluginRef dele no modelo). */
+    template <typename Fn>
+    void forEachLiveVst3 (Project& project, const Projector& projector, Fn&& fn)
+    {
+        for (auto& c : project.channels)
+            if (c.isPlugin())
+                if (auto* plugin = projector.instrumentFor (c.id))
+                    fn (autosave::DirtyPlugins::channelKey (c.id.toStdString()), *plugin, c.plugin);
+
+        for (auto& m : project.mixer)
+            for (auto& ins : m.inserts)
+                if (ins.kind == "vst3")
+                    if (auto* plugin = projector.insertPlugin (m.id, ins.id))
+                        fn (autosave::DirtyPlugins::insertKey (m.id.toStdString(), ins.id.toStdString()), *plugin, ins.plugin);
+    }
+}
+
+bool AppController::capturePluginStates (bool onlyDirty)
+{
+    // onlyDirty (o autosave periódico): lê só os plugins que podem ter mudado desde a última leitura, pelo mesmo
+    // critério do "projeto alterado" (janela aberta, parâmetro mudado por comando, automação gravando) e os que o
+    // modelo ainda não conhece. Salvar, exportar, fechar a janela e o project.autosave leem todos.
     bool changed = false, windowOpen = false;
 
-    auto isShowing = [] (te::Plugin* p) { return p != nullptr && p->windowState != nullptr && p->windowState->isWindowShowing(); };
+    if (! onlyDirty)
+        dirtyPlugins.clear();
 
-    for (auto& c : model.data().channels)
+    forEachLiveVst3 (model.data(), *projector, [&] (const std::string& key, te::Plugin& plugin, PluginRef& ref)
     {
-        if (! c.isPlugin())
-            continue;
+        const bool showing = isWindowShowing (plugin);
+        windowOpen = windowOpen || showing;
 
-        if (auto* plugin = projector->instrumentFor (c.id))
+        if (showing)
+            dirtyPlugins.mark (key);   // enquanto a janela estiver aberta, continua sujo
+
+        if (onlyDirty && ! dirtyPlugins.shouldCapture (key, showing, ref.state.isEmpty()))
+            return;
+
+        const auto state = plugin_host::readState (plugin);
+
+        if (state.isNotEmpty() && state != ref.state)
         {
-            windowOpen = windowOpen || isShowing (plugin);
-            const auto state = plugin_host::readState (*plugin);
-
-            if (state.isNotEmpty() && state != c.plugin.state)
-            {
-                c.plugin.state = state;   // direto no modelo: estado de plugin não é passo de desfazer
-                changed = true;
-            }
+            ref.state = state;   // direto no modelo: estado de plugin não é passo de desfazer
+            changed = true;
         }
-    }
 
-    // inserts VST3 do mixer
-    for (auto& m : model.data().mixer)
-    {
-        for (auto& ins : m.inserts)
-        {
-            if (ins.kind != "vst3")
-                continue;
+        dirtyPlugins.captured (key, showing);
+    });
 
-            if (auto* plugin = projector->insertPlugin (m.id, ins.id))
-            {
-                windowOpen = windowOpen || isShowing (plugin);
-                const auto state = plugin_host::readState (*plugin);
-
-                if (state.isNotEmpty() && state != ins.plugin.state)
-                {
-                    ins.plugin.state = state;
-                    changed = true;
-                }
-            }
-        }
-    }
+    if (onlyDirty)
+        dirtyPlugins.allCaptured();
 
     if (changed && (pluginsTouched || windowOpen))
         model.dirty = true;
 
     return changed;
+}
+
+//==============================================================================
+// Suspeitos de uma queda fora do carregamento: janela de plugin aberta e últimos plugins adicionados.
+
+juce::File AppController::crashSuspectsFile() const
+{
+    return dataFolder.getChildFile ("sessoes").getChildFile ("suspeitos-" + juce::String (Session::currentPid()) + ".txt");
+}
+
+void AppController::writeCrashSuspects()
+{
+    const auto file = crashSuspectsFile();
+
+    if (suspects.isEmpty())
+    {
+        if (wroteSuspects)
+            file.deleteFile();
+
+        return;
+    }
+
+    file.getParentDirectory().createDirectory();
+    const auto text = suspects.toText();
+    wroteSuspects = file.replaceWithText (juce::String::fromUTF8 (text.c_str(), (int) text.size())) || wroteSuspects;
+}
+
+void AppController::setCrashSuspectTracking (bool on)
+{
+    trackSuspects = on;
+
+    if (! on)
+    {
+        suspects = {};
+        writeCrashSuspects();
+    }
+}
+
+void AppController::notePluginWindowOpening (te::Plugin& p)
+{
+    // o estado deste plugin pode mudar daqui em diante: o autosave periódico volta a ler
+    bool found = false;
+
+    forEachLiveVst3 (model.data(), *projector, [&] (const std::string& key, te::Plugin& plugin, PluginRef&)
+    {
+        if (&plugin == &p)
+        {
+            dirtyPlugins.mark (key);
+            found = true;
+        }
+    });
+
+    if (! found)
+        dirtyPlugins.markAll();   // plugin que não achei no projeto: na dúvida, todos
+
+    // só os de fora: os plugins nativos da WHYNOT não entram na lista de suspeitos
+    if (auto* ext = dynamic_cast<te::ExternalPlugin*> (&p); ext != nullptr && trackSuspects)
+    {
+        openingWindowFile = ext->desc.fileOrIdentifier;
+        suspects.windowOpened (ext->desc.fileOrIdentifier.toStdString(), ext->desc.name.toStdString());
+        writeCrashSuspects();
+    }
+}
+
+void AppController::refreshPluginWindowMarker()
+{
+    if (suspects.windows.empty())
+        return;
+
+    juce::StringArray showing;
+
+    forEachLiveVst3 (model.data(), *projector, [&] (const std::string&, te::Plugin& plugin, PluginRef&)
+    {
+        if (auto* ext = dynamic_cast<te::ExternalPlugin*> (&plugin); ext != nullptr && isWindowShowing (plugin))
+            showing.add (ext->desc.fileOrIdentifier);
+    });
+
+    bool changed = false;
+
+    for (const auto& w : std::vector<autosave::Suspect> (suspects.windows))   // cópia: o laço tira itens
+    {
+        const auto file = juce::String::fromUTF8 (w.file.c_str(), (int) w.file.size());
+
+        // a janela que está sendo criada agora ainda não aparece: fica (um editor pode rodar mensagens ao abrir)
+        if (! showing.contains (file) && file != openingWindowFile)
+            changed = suspects.windowClosed (w.file) || changed;
+    }
+
+    if (changed)
+        writeCrashSuspects();
+}
+
+juce::StringArray AppController::openPluginWindowNames() const
+{
+    juce::StringArray names;
+
+    for (auto& w : suspects.windows)
+        names.add (juce::String::fromUTF8 (w.name.c_str(), (int) w.name.size()));
+
+    return names;
+}
+
+void AppController::noteInsertedPlugins()
+{
+    // Chamado a cada mudança do modelo: um plugin que o projeto não tinha foi adicionado nesta sessão. Os que
+    // vieram com o projeto (abrir, novo, recuperar) só refazem a lista. Barato: uma passada por canais e inserts.
+    const bool baseline = std::exchange (pluginBaselinePending, false);
+    bool added = false;
+
+    if (baseline)
+        knownPluginFiles.clear();
+
+    auto see = [&] (const PluginRef& ref)
+    {
+        if (ref.file.isEmpty() || knownPluginFiles.contains (ref.file))
+            return;
+
+        knownPluginFiles.add (ref.file);
+
+        if (! baseline && trackSuspects)
+        {
+            suspects.inserted (ref.file.toStdString(), ref.name.toStdString(),
+                               juce::Time::getCurrentTime().formatted ("%H:%M").toStdString());
+            added = true;
+        }
+    };
+
+    for (auto& c : model.get().channels)
+        if (c.isPlugin())
+            see (c.plugin);
+
+    for (auto& m : model.get().mixer)
+        for (auto& ins : m.inserts)
+            if (ins.kind == "vst3")
+                see (ins.plugin);
+
+    if (added)
+        writeCrashSuspects();
+}
+
+juce::String AppController::crashModuleFromReport() const
+{
+    // PONTO DE ENTRADA DA FRENTE crash-log: quando o src/app/CrashReport existir, o módulo (DLL ou .vst3) que o
+    // minidump da última queda culpa entra aqui, por exemplo:
+    //     return CrashReport::lastCrash().module;   // só o nome do arquivo, ou o caminho inteiro
+    // O autosave::describeCrash compara com o arquivo de cada suspeito (sem diferenciar maiúsculas): se bater, esse
+    // suspeito passa na frente da janela aberta e o aviso diz que o relatório aponta para ele. Vazio = sem relatório.
+    return {};
+}
+
+void AppController::collectCrashSuspects()
+{
+    // As anotações de sessões que não fecharam direito (o processo não é mais uma WHYNOT), como o Session faz
+    // com os autosaves. Lê e apaga.
+    autosave::SuspectLog fallen;
+
+    for (auto& f : dataFolder.getChildFile ("sessoes").findChildFiles (juce::File::findFiles, false, "suspeitos-*.txt"))
+    {
+        const int pid = f.getFileNameWithoutExtension().fromFirstOccurrenceOf ("suspeitos-", false, false).getIntValue();
+
+        if (Session::isWhynotProcess (pid))
+            continue;   // outra WHYNOT aberta agora: não é queda
+
+        fallen.merge (autosave::SuspectLog::fromText (f.loadFileAsString().toStdString()));
+        f.deleteFile();
+    }
+
+    // Se o carregando-plugin.txt já achou (e bloqueou) quem derrubou o app, o culpado é aquele: não há suspeitos.
+    if (fallen.isEmpty() || startupWarning.isNotEmpty())
+        return;
+
+    const auto message = autosave::describeCrash (fallen, crashModuleFromReport().toStdString());
+    auto text = [] (const std::string& s) { return juce::String::fromUTF8 (s.c_str(), (int) s.size()); };
+
+    startupWarning = text (message.status);
+
+    // Janela aberta não prova culpa (diferente do carregamento): só oferece o bloqueio, e a tela pergunta.
+    if (const auto file = text (message.suspect.file); ! catalog->isBlocked (file))
+        crashNotice = { text (message.question), file, text (message.suspect.name) };
+}
+
+juce::String AppController::blockSuspect (const CrashNotice& suspect)
+{
+    if (suspect.file.isEmpty())
+        return {};
+
+    catalog->block (suspect.file, suspect.name,
+                    "bloqueado por você depois de uma queda ("_t + juce::Time::getCurrentTime().formatted ("%d/%m/%Y %H:%M") + ")");
+    catalog->save();
+    catalog->fillKnownList (engine.getPluginManager().knownPluginList);
+
+    if (onPluginsChanged)
+        onPluginsChanged();
+
+    return suspect.name + " bloqueado. Para liberar: Plugins (F8), Bloqueados."_t;
 }
 
 juce::Array<juce::PluginDescription> AppController::knownPlugins() const
@@ -1420,6 +1647,7 @@ void AppController::pluginStateTouched()
 {
     pluginsTouched = true;
     model.dirty = true;
+    dirtyPlugins.markAll();   // o comando não diz qual plugin: na dúvida, todos
 }
 
 double AppController::fileDurationSeconds (const juce::File& file) const
@@ -2230,8 +2458,49 @@ juce::File AppController::autosaveFolder() const
 
 juce::File AppController::autosaveNow()
 {
-    const bool pluginsChanged = capturePluginStates();
+    // o comando project.autosave: na hora, lendo todos os plugins
+    return writeAutosave (capturePluginStates (false));
+}
 
+juce::File AppController::serviceAutosave()
+{
+    autosave::Busy busy;
+    busy.gesture = registry.isInGesture();
+    busy.recording = recording != nullptr && recording->isRecording();
+    busy.exporting = isExportingInBackground();
+
+    switch (autosaveSchedule.tick (busy))
+    {
+        case autosave::Action::save:
+            if (isAutomationRecording())
+                dirtyPlugins.markAll();
+
+            return writeAutosave (capturePluginStates (true));   // só os plugins que podem ter mudado
+
+        case autosave::Action::saveLight:
+            return writeAutosave (false);   // gravando ou exportando há muito tempo: o modelo vai, os plugins ficam para depois
+
+        case autosave::Action::wait:
+            break;
+    }
+
+    return {};
+}
+
+void AppController::offerRecoveredTakes (int howMany)
+{
+    // Gancho da frente gravacao (src/record/InputRecorder: recoverOrphanTakes). Ao abrir um projeto, os takes que
+    // uma queda deixou sem fechar na pasta de gravações já foram consertados e estão em `recoveredTakes`; aqui o
+    // app conta ao usuário. Os arquivos continuam em gravacoes/: nada entra no projeto sozinho.
+    if (howMany <= 0)
+        return;
+
+    notice (howMany == 1 ? "Uma gravação interrompida por uma queda foi recuperada. Ela está na pasta de gravações do projeto."_t
+                         : juce::String (howMany) + " gravações interrompidas por uma queda foram recuperadas. Elas estão na pasta de gravações do projeto."_t);
+}
+
+juce::File AppController::writeAutosave (bool pluginsChanged)
+{
     if (! model.dirty || (editsSinceAutosave == 0 && ! pluginsChanged))
         return {};   // nada novo desde o último salvar ou autosave
 
@@ -2299,10 +2568,12 @@ juce::Result AppController::recoverProject (const Session::Recovery& r)
 
     stop();
     model.file = r.original;   // "Salvar" grava no projeto de onde o autosave veio
+    pluginBaselinePending = true;
     model.replace (std::move (loaded));
     registry.clearHistory();
     model.dirty = true;        // o que foi recuperado ainda não está salvo no projeto
     pluginsTouched = false;
+    dirtyPlugins.clear();
     return juce::Result::ok();
 }
 

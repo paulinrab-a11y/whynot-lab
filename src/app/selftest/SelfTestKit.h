@@ -111,6 +111,7 @@ void runHeavyProjectSelfTest (SelfTestContext&);    // desempenho (29/10): voz p
 void runGrooveSelfTest (SelfTestContext&);         // swing global, groove das notas, humanizar e o começo do play no PAT (29/10) (Swing e início do play)
 void runBpmLiveSelfTest (SelfTestContext&);        // BPM com o motor vivo (10/11): os clipes MIDI ficam, o render sai igual (bpm)
 void runWnlFuzzSelfTest (SelfTestContext&);        // .wnl de terceiros (10/11): caminhos, tetos, app mais novo e fuzz do fromJson (wnl-seguro)
+void runAutosaveGuardSelfTest (SelfTestContext&);   // app-autosave (10/11): autosave que espera o gesto, plugins sujos e suspeitos de queda (Autosave e queda)
 void runInvalidFilesSelfTest (SelfTestContext&);  // fecha o relatório (núcleo)
 
 } // namespace whynot::selftest

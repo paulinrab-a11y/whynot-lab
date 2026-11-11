@@ -69,6 +69,7 @@ int runSelfTest (const juce::File& reportFile, const juce::File& workFolder)
     runBpmLiveSelfTest (ctx);
     runCommandParamsSelfTest (ctx);
     runWnlFuzzSelfTest (ctx);
+    runAutosaveGuardSelfTest (ctx);
     runInvalidFilesSelfTest (ctx);
 
     rep.lines.add ({});

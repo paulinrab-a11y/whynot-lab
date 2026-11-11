@@ -8,48 +8,75 @@ namespace whynot
 namespace
 {
     using KP = juce::KeyPress;
-    constexpr int ctrl = juce::ModifierKeys::commandModifier;
-    constexpr int shift = juce::ModifierKeys::shiftModifier;
-    constexpr int alt = juce::ModifierKeys::altModifier;
 
-    KP key (int code, int mods = 0)   { return KP (code, juce::ModifierKeys (mods), 0); }
+    // As teclas que não são caractere, no código do JUCE e no da tabela (KeyMapCore.h).
+    struct SpecialKey { int juceCode, coreCode; };
 
-    // As teclas iguais nos dois presets.
-    KeyMap::Bindings common()
+    const std::vector<SpecialKey>& specialKeys()
     {
-        return {
-            { "transport.togglePlay",  { key (KP::spaceKey) } },
-            { "transport.togglePause", { key (KP::spaceKey, ctrl) } },
-            { "transport.songMode",    { key ('L') } },
-            { "transport.metronome",   { key ('M', ctrl) } },
-            { "transport.record",      { key ('R') } },
-            { "transport.countIn",     { key ('P', ctrl) } },
-            { "file.open",             { key ('O', ctrl) } },
-            { "file.save",             { key ('S', ctrl) } },
-            { "file.saveAs",           { key ('S', ctrl | shift) } },
-            { "export.wav",            { key ('R', ctrl) } },
-            { "export.mp3",            { key ('R', ctrl | shift) } },
-            { "export.midi",           { key ('M', ctrl | shift) } },
-            { "pattern.new",           { key (KP::F4Key) } },
-            { "pattern.clone",         { key ('C', ctrl | shift) } },
-            { "pattern.next",          { key (KP::numberPadAdd) } },
-            { "pattern.previous",      { key (KP::numberPadSubtract) } },
-            { "view.playlist",         { key (KP::F5Key) } },
-            { "view.channelRack",      { key (KP::F6Key) } },
-            { "view.pianoRoll",        { key (KP::F7Key) } },
-            { "view.files",            { key (KP::F8Key, alt) } },
-            { "view.plugins",          { key (KP::F8Key) } },
-            { "view.mixer",            { key (KP::F9Key) } },
-            { "view.settings",         { key (KP::F10Key) } },
-            { "view.projects",         { key (KP::F11Key) } },
-            { "projects.switchDeck",   { key (KP::tabKey) } },
-            { "keyboard.typing",       { key ('T', ctrl) } },
-            { "playlist.addMarker",    { key ('T', alt) } },   // como o "Add marker" do FL (bloco 1, 22/10)
-            { "ui.zoomIn",             { key ('=', ctrl) } },
-            { "ui.zoomOut",            { key ('-', ctrl) } },
-            { "ui.zoomReset",          { key ('0', ctrl) } },
+        namespace c = keymap::code;
+        static const std::vector<SpecialKey> list {
+            { KP::spaceKey, c::space }, { KP::returnKey, c::enter }, { KP::escapeKey, c::escape }, { KP::tabKey, c::tab },
+            { KP::deleteKey, c::del }, { KP::backspaceKey, c::backspace }, { KP::insertKey, c::insert },
+            { KP::homeKey, c::home }, { KP::endKey, c::end }, { KP::pageUpKey, c::pageUp }, { KP::pageDownKey, c::pageDown },
+            { KP::leftKey, c::left }, { KP::rightKey, c::right }, { KP::upKey, c::up }, { KP::downKey, c::down },
+            { KP::numberPadAdd, c::numpadAdd }, { KP::numberPadSubtract, c::numpadSubtract },
+            { KP::F1Key, c::f1 }, { KP::F2Key, c::f2 }, { KP::F3Key, c::f3 }, { KP::F4Key, c::f4 },
+            { KP::F5Key, c::f5 }, { KP::F6Key, c::f6 }, { KP::F7Key, c::f7 }, { KP::F8Key, c::f8 },
+            { KP::F9Key, c::f9 }, { KP::F10Key, c::f10 }, { KP::F11Key, c::f11 }, { KP::F12Key, c::f12 },
         };
+
+        return list;
     }
+
+    // juce::KeyPress para a tecla da tabela. A letra vale em maiúscula ou minúscula, como no == do KeyPress.
+    keymap::Chord toChord (const KP& k)
+    {
+        const int code = k.getKeyCode();
+        const auto m = k.getModifiers();
+        const int mods = (m.isCommandDown() ? (int) keymap::ctrl : 0) | (m.isShiftDown() ? (int) keymap::shift : 0)
+                       | (m.isAltDown() ? (int) keymap::alt : 0);
+
+        for (auto& s : specialKeys())
+            if (s.juceCode == code)
+                return { s.coreCode, mods };
+
+        if (code > 0 && code < 256)
+            return { (int) juce::CharacterFunctions::toUpperCase ((juce::juce_wchar) code), mods };
+
+        return { code, mods };   // tecla rara (F13, teclado numérico): o código do JUCE mesmo
+    }
+
+    KP toKeyPress (keymap::Chord c)
+    {
+        int code = c.code;
+
+        for (auto& s : specialKeys())
+            if (s.coreCode == c.code)
+                code = s.juceCode;
+
+        const int mods = ((c.mods & keymap::ctrl) != 0 ? (int) juce::ModifierKeys::commandModifier : 0)
+                       | ((c.mods & keymap::shift) != 0 ? (int) juce::ModifierKeys::shiftModifier : 0)
+                       | ((c.mods & keymap::alt) != 0 ? (int) juce::ModifierKeys::altModifier : 0);
+
+        return KP (code, juce::ModifierKeys (mods), 0);
+    }
+
+    juce::Array<KP> toKeyPresses (const keymap::Keys& keys)
+    {
+        juce::Array<KP> list;
+        for (auto& c : keys) list.add (toKeyPress (c));
+        return list;
+    }
+
+    keymap::Keys toChords (const juce::Array<KP>& keys)
+    {
+        keymap::Keys list;
+        for (auto& k : keys) list.push_back (toChord (k));
+        return list;
+    }
+
+    juce::String toText (std::string_view s)   { return juce::String::fromUTF8 (s.data(), (int) s.size()); }
 
     juce::String modifierText (const juce::ModifierKeys& m)
     {
@@ -63,56 +90,16 @@ namespace
 
 const std::vector<ShortcutAction>& KeyMap::actions()
 {
-    static const std::vector<ShortcutAction> list {
-        { "transport.togglePlay",  "Tocar ou parar (volta à agulha)"_t,         "Transporte" },
-        { "transport.togglePause", "Tocar ou pausar (continua de onde parou)"_t, "Transporte" },
-        { "transport.songMode",    "Alternar PAT e SONG",                         "Transporte" },
-        { "transport.metronome",   "Metrônomo"_t,                                 "Transporte" },
-        { "transport.record",      "Gravar (liga e desliga o REC)",               "Transporte" },
-        { "transport.countIn",     "Contagem antes de gravar (liga e desliga)",   "Transporte" },
-        { "record.cancel",         "Cancelar o take (apaga o arquivo)",           "Transporte" },
-        { "transport.tapTempo",    "Tap tempo: bata no ritmo para achar o BPM",   "Transporte" },
+    // a tabela (ids, títulos, grupos, contextos e as teclas dos presets) é a do KeyMapCore.h
+    static const std::vector<ShortcutAction> list = []
+    {
+        std::vector<ShortcutAction> v;
 
-        { "file.new",              "Novo projeto",                                "Arquivo" },
-        { "file.open",             "Abrir projeto",                               "Arquivo" },
-        { "file.save",             "Salvar",                                      "Arquivo" },
-        { "file.saveAs",           "Salvar como",                                 "Arquivo" },
-        { "file.saveNewVersion",   "Salvar nova versão"_t,                        "Arquivo" },
-        { "file.importMidi",       "Importar MIDI no piano roll do canal",        "Arquivo" },
+        for (auto& a : keymap::actions())
+            v.push_back ({ toText (a.id), toText (a.title), toText (a.group), toText (a.context) });
 
-        { "export.wav",            "Exportar WAV",                                "Exportar" },
-        { "export.mp3",            "Exportar MP3",                                "Exportar" },
-        { "export.midi",           "Exportar MIDI",                               "Exportar" },
-        { "export.stems",          "Exportar stems (um WAV por trilha)",          "Exportar" },
-
-        { "pattern.new",           "Próximo padrão vazio (cria um se não houver)"_t, "Padrões"_t },
-        { "pattern.clone",         "Clonar o padrão atual"_t,                    "Padrões"_t },
-        { "pattern.next",          "Próximo padrão"_t,                           "Padrões"_t },
-        { "pattern.previous",      "Padrão anterior"_t,                          "Padrões"_t },
-
-        { "edit.undoToggle",       "Desfazer ou refazer a última edição"_t,       "Edição"_t },
-        { "edit.undo",             "Desfazer passo a passo",                      "Edição"_t },
-        { "edit.redo",             "Refazer",                                     "Edição"_t },
-        { "playlist.addMarker",    "Marcador na agulha (intro, verso, refrão)"_t, "Edição"_t },
-
-        { "view.playlist",         "Playlist",                                    "Telas" },
-        { "view.channelRack",      "Channel rack",                                "Telas" },
-        { "view.pianoRoll",        "Piano roll",                                  "Telas" },
-        { "view.files",            "Navegador de sons",                           "Telas" },
-        { "view.plugins",          "Plugins",                                     "Telas" },
-        { "view.mixer",            "Mixer",                                       "Telas" },
-        { "view.settings",         "Áudio e MIDI"_t,                              "Telas" },
-        { "view.projects",         "Projetos (ouvir sem abrir)",                  "Telas" },
-        { "projects.switchDeck",   "Projetos: trocar entre os decks A e B",       "Telas" },
-        { "view.shortcuts",        "Atalhos de teclado",                          "Telas" },
-
-        { "keyboard.typing",       "Teclado do computador como piano",           "Teclado" },
-        { "record.captureMidi",    "Capturar o que foi tocado (Capture MIDI)",   "Teclado" },
-
-        { "ui.zoomIn",             "Aumentar interface",                          "Interface" },
-        { "ui.zoomOut",            "Diminuir interface",                          "Interface" },
-        { "ui.zoomReset",          "Interface em 100%",                           "Interface" },
-    };
+        return v;
+    }();
 
     return list;
 }
@@ -133,26 +120,12 @@ juce::String KeyMap::presetTitle (const juce::String& name)
 
 KeyMap::Bindings KeyMap::preset (const juce::String& name)
 {
-    auto b = common();
+    Bindings b;
+    const auto presetName = name.toStdString();
 
-    if (name == "whynot")
-    {
-        b["file.new"]            = { key ('N', ctrl) };
-        b["file.saveNewVersion"] = { key ('N', ctrl | alt) };
-        b["edit.undo"]           = { key ('Z', ctrl) };
-        b["edit.redo"]           = { key ('Y', ctrl), key ('Z', ctrl | shift) };
-        b["export.stems"]        = { key ('R', ctrl | alt) };
-    }
-    else
-    {
-        // FL: Ctrl+N grava uma versão nova. O Ctrl+Z volta passo a passo, como o "Alternate undo mode"
-        // do FL e o padrão do Ableton (pedido do usuário, 21/10): o Ctrl+Z que alterna refazia o que
-        // a pessoa tinha acabado de apagar. O Ctrl+Alt+Z do FL continua desfazendo; o alternar fica
-        // no editor de atalhos, sem tecla.
-        b["file.saveNewVersion"] = { key ('N', ctrl) };
-        b["edit.undo"]           = { key ('Z', ctrl), key ('Z', ctrl | alt) };
-        b["edit.redo"]           = { key ('Y', ctrl), key ('Z', ctrl | shift) };
-    }
+    for (auto& a : keymap::actions())
+        if (const auto& keys = keymap::presetKeys (a, presetName); ! keys.empty())
+            b[toText (a.id)] = toKeyPresses (keys);
 
     return b;
 }
@@ -171,6 +144,7 @@ juce::String KeyMap::describe (const juce::KeyPress& k)
     else if (code == KP::tabKey)                    name = "Tab";
     else if (code == KP::deleteKey)                 name = "Delete";
     else if (code == KP::backspaceKey)              name = "Backspace";
+    else if (code == KP::insertKey)                 name = "Insert";
     else if (code == KP::homeKey)                   name = "Home";
     else if (code == KP::endKey)                    name = "End";
     else if (code == KP::pageUpKey)                 name = "Page Up";
@@ -207,8 +181,7 @@ KeyMap::KeyMap (const juce::File& f) : file (f) {}
 
 void KeyMap::load()
 {
-    presetName = "fl";
-    overrides.clear();
+    core.setPreset ("fl");   // também apaga as trocas
 
     if (! file.existsAsFile())
         return;
@@ -220,8 +193,7 @@ void KeyMap::load()
         return;
     const auto preset = json["preset"].toString();
 
-    if (presetNames().contains (preset))
-        presetName = preset;
+    core.setPresetKeepingOverrides (preset.toStdString());   // nome desconhecido: fica o "fl"
 
     if (auto* obj = json["overrides"].getDynamicObject())
     {
@@ -237,7 +209,7 @@ void KeyMap::load()
                     if (const auto kp = parse (k.toString()); kp.isValid())
                         keys.add (kp);
 
-            overrides[p.name.toString()] = keys;
+            core.setRaw (p.name.toString().toStdString(), toChords (keys));   // como está no arquivo
         }
     }
 }
@@ -248,14 +220,15 @@ bool KeyMap::save() const
         return false;
 
     auto root = new juce::DynamicObject();
-    root->setProperty ("preset", presetName);
+    root->setProperty ("preset", getPreset());
     auto obj = new juce::DynamicObject();
 
-    for (auto& [id, keys] : overrides)
+    // só as trocas do usuário vão para o arquivo
+    for (auto& [id, keys] : core.getOverrides())
     {
         juce::Array<juce::var> list;
-        for (auto& k : keys) list.add (k.getTextDescription());
-        obj->setProperty (id, list);
+        for (auto& k : keys) list.add (toKeyPress (k).getTextDescription());
+        obj->setProperty (juce::Identifier (juce::String (id)), list);
     }
 
     root->setProperty ("overrides", juce::var (obj));
@@ -265,18 +238,12 @@ bool KeyMap::save() const
 
 void KeyMap::setPreset (const juce::String& name)
 {
-    presetName = presetNames().contains (name) ? name : "fl";
-    overrides.clear();
+    core.setPreset (name.toStdString());
 }
 
 juce::Array<juce::KeyPress> KeyMap::keysFor (const juce::String& action) const
 {
-    if (auto it = overrides.find (action); it != overrides.end())
-        return it->second;
-
-    const auto b = preset (presetName);
-    auto it = b.find (action);
-    return it != b.end() ? it->second : juce::Array<juce::KeyPress>();
+    return toKeyPresses (core.keysFor (action.toStdString()));
 }
 
 juce::String KeyMap::describeKeys (const juce::String& action) const
@@ -291,44 +258,33 @@ juce::String KeyMap::describeKeys (const juce::String& action) const
 
 void KeyMap::setKeys (const juce::String& action, const juce::Array<juce::KeyPress>& keys)
 {
-    // uma tecla só dispara uma ação: tira das outras
-    for (auto& a : actions())
-    {
-        if (a.id == action)
-            continue;
-
-        auto current = keysFor (a.id);
-        bool changed = false;
-
-        for (auto& k : keys)
-            changed = current.removeAllInstancesOf (k) > 0 || changed;
-
-        if (changed)
-            overrides[a.id] = current;
-    }
-
-    overrides[action] = keys;
+    core.setKeys (action.toStdString(), toChords (keys));
 }
 
 void KeyMap::resetAction (const juce::String& action)
 {
-    overrides.erase (action);
+    core.reset (action.toStdString());
 }
 
 juce::String KeyMap::actionFor (const juce::KeyPress& k) const
 {
-    for (auto& a : actions())
-        for (auto& candidate : keysFor (a.id))
-            if (candidate == k)
-                return a.id;
+    return toText (core.actionFor (toChord (k), keymap::global));
+}
 
-    return {};
+juce::String KeyMap::actionFor (const juce::KeyPress& k, const char* context) const
+{
+    return toText (core.actionFor (toChord (k), context));
+}
+
+juce::String KeyMap::clashFor (const juce::String& action, const juce::KeyPress& k) const
+{
+    return toText (core.clashFor (action.toStdString(), toChord (k)));
 }
 
 juce::var KeyMap::toVar() const
 {
     auto root = new juce::DynamicObject();
-    root->setProperty ("preset", presetName);
+    root->setProperty ("preset", getPreset());
     juce::Array<juce::var> list;
 
     for (auto& a : actions())
@@ -337,6 +293,7 @@ juce::var KeyMap::toVar() const
         o->setProperty ("id", a.id);
         o->setProperty ("title", a.title);
         o->setProperty ("group", a.group);
+        o->setProperty ("context", a.context);
         juce::Array<juce::var> keys;
         for (auto& k : keysFor (a.id)) keys.add (describe (k));
         o->setProperty ("keys", keys);

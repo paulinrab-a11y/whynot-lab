@@ -357,3 +357,16 @@ function(whynot_ci_test_options)
 endfunction()
 
 cmake_language(DEFER CALL whynot_ci_test_options)
+# Editores (frente editores, 10/11): a tabela de atalhos com contexto (KeyMapCore.h: presets, trocas do usuário,
+# conflito) e o seguir a reprodução por página (TimelineFollow.h). Só cabeçalhos, sem JUCE.
+add_executable(whynot_editors_tests
+    editors/test_editors_core.cpp)
+target_compile_features(whynot_editors_tests PRIVATE cxx_std_20)
+
+if(MSVC)
+    target_compile_options(whynot_editors_tests PRIVATE /W4 /utf-8 /O2)
+else()
+    target_compile_options(whynot_editors_tests PRIVATE -Wall -Wextra -O2)
+endif()
+
+add_test(NAME editors COMMAND whynot_editors_tests)

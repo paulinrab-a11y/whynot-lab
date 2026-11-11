@@ -102,6 +102,8 @@ juce::String PlaylistGrid::stretchLabel (double stretch)
 //==============================================================================
 PlaylistGrid::PlaylistGrid (AppController& a) : app (a), stretchCursor (makeStretchCursor())
 {
+    follower.setOn (timegrid::loadViewFlag ("playlistFollow", true));
+
     // pinta o fundo inteiro: opaco, a agulha repinta só a grade (sem a tela de trás), fluidez 21/10
     setOpaque (true);
     setWantsKeyboardFocus (true);
@@ -379,30 +381,78 @@ void PlaylistGrid::setPlayhead (double ticks)
     if (std::abs (ticks - playhead) < 0.5)
         return;
 
-    // blocos tocando ganham a marca laranja: repinta tudo só quando essa lista muda
-    juce::StringArray live;
+    // Blocos tocando ganham a marca laranja. Isto roda a cada quadro (animateFrame): em vez de montar uma lista
+    // nova por quadro, compara bloco a bloco com a guardada; só os que entraram ou saíram são repintados (fluidez,
+    // 21/10) e a lista só é refeita nessa hora, no lugar, sem pedir memória.
+    auto isLive = [ticks] (const Block& b) { return ticks >= 0.0 && ticks >= b.item.start && ticks < b.item.end(); };
+    int liveCount = 0;
+    bool changed = false;
 
-    if (ticks >= 0.0)
+    for (auto& b : blocks)
+    {
+        const bool now = isLive (b);
+        liveCount += now ? 1 : 0;
+
+        if (now != liveItems.contains (b.item.id))
+        {
+            repaint (blockBounds (b).getSmallestIntegerContainer().expanded (1));
+            changed = true;
+        }
+    }
+
+    if (changed || liveCount != liveItems.size())   // a contagem pega o bloco que tocava e foi apagado
+    {
+        liveItems.clearQuick();
+
         for (auto& b : blocks)
-            if (ticks >= b.item.start && ticks < b.item.end())
-                live.add (b.item.id);
+            if (isLive (b))
+                liveItems.add (b.item.id);
+    }
 
     const int bottom = gridArea().getBottom();
     auto column = [this, bottom] (double t) { return juce::Rectangle<int> ((int) tickToX (t) - 2, 0, 5, bottom); };
 
-    if (live != liveItems)
-    {
-        // só os blocos que entraram ou saíram da lista ganham ou perdem a marca (fluidez, 21/10)
-        for (auto& b : blocks)
-            if (live.contains (b.item.id) != liveItems.contains (b.item.id))
-                repaint (blockBounds (b).getSmallestIntegerContainer().expanded (1));
-
-        liveItems = live;
-    }
+    const bool started = playhead < 0.0 && ticks >= 0.0;
 
     if (playhead >= 0.0) repaint (column (playhead));
     playhead = ticks;
     if (playhead >= 0.0) repaint (column (playhead));
+
+    followPlayhead (started);
+}
+
+void PlaylistGrid::followPlayhead (bool started)
+{
+    // roda a cada quadro (animateFrame): só contas, nada de alocação. O mouse apertado na grade é um gesto de edição.
+    const auto r = follower.step (playhead, started, isMouseButtonDown(), scrollTicks, (double) pxPerTick,
+                                  gridArea().getWidth() / (double) pxPerTick);
+
+    if (r.stateChanged && onFollowChanged)
+        onFollowChanged();
+
+    if (r.scroll == scrollTicks)
+        return;
+
+    const double before = scrollTicks;
+    scrollTicks = r.scroll;
+    clampScroll();
+
+    if (scrollTicks != before)
+    {
+        updateScrollBars();
+        repaint();
+    }
+
+    follower.settled (scrollTicks, (double) pxPerTick);
+}
+
+void PlaylistGrid::setFollowing (bool on)
+{
+    follower.setOn (on);
+    timegrid::saveViewFlag ("playlistFollow", on);
+
+    if (onFollowChanged)
+        onFollowChanged();
 }
 
 void PlaylistGrid::setNeedle (int ticks)
@@ -927,6 +977,19 @@ void PlaylistGrid::updateScrollBars()
     vScroll.setCurrentRange (scrollY, (double) g.getHeight(), juce::dontSendNotification);
     hScroll.setRangeLimits (0.0, (double) contentTicks(), juce::dontSendNotification);
     hScroll.setCurrentRange (scrollTicks, g.getWidth() / pxPerTick, juce::dontSendNotification);
+    notifyViewChanged();
+}
+
+void PlaylistGrid::notifyViewChanged()
+{
+    // Rolou ou mudou o zoom: a automação embaixo acompanha. Sai daqui, de onde a vista muda (toda mudança de
+    // scrollTicks e pxPerTick termina no updateScrollBars ou vem da barra de rolagem), e não mais do paint.
+    if (onViewChanged && (scrollTicks != notifiedScroll || pxPerTick != notifiedZoom))
+    {
+        notifiedScroll = scrollTicks;
+        notifiedZoom = pxPerTick;
+        onViewChanged();
+    }
 }
 
 void PlaylistGrid::scrollBarMoved (juce::ScrollBar* bar, double start)
@@ -937,6 +1000,7 @@ void PlaylistGrid::scrollBarMoved (juce::ScrollBar* bar, double start)
     if (bar == &vScroll) scrollY = start;
     else                 scrollTicks = start;
 
+    notifyViewChanged();
     repaint();
 }
 
@@ -945,14 +1009,6 @@ void PlaylistGrid::paint (juce::Graphics& g)
 {
     using namespace theme;
     g.fillAll (colour::background);
-
-    // toda rolagem e todo zoom repintam a grade: daqui a automação embaixo acompanha
-    if (scrollTicks != notifiedScroll || pxPerTick != notifiedZoom)
-    {
-        notifiedScroll = scrollTicks;
-        notifiedZoom = pxPerTick;
-        if (onViewChanged) onViewChanged();
-    }
 
     const bool showPunch = punchOn || punchDrag != PunchEdge::none;
     const int shownIn = punchDrag != PunchEdge::none ? dragIn : punchIn;
@@ -3445,35 +3501,14 @@ void PlaylistGrid::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseW
 
 bool PlaylistGrid::keyPressed (const juce::KeyPress& key)
 {
-    const int code = key.getKeyCode();
-    const auto mods = key.getModifiers();
-    const auto ctrl = juce::ModifierKeys::commandModifier;
-
-    // Voz na playlist (27/10): editar por trecho de tempo, como numa fita. Antes do Delete sozinho.
-    if (key == juce::KeyPress ('e', ctrl, 0))   { cutAtNeedle(); return true; }
-    if (key == juce::KeyPress (juce::KeyPress::deleteKey, ctrl, 0))   { removeTimeSelection(); return true; }
-    if (key == juce::KeyPress (juce::KeyPress::insertKey, ctrl, 0))   { insertTimeSelection(); return true; }
-
-    if ((code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey) && ! selection.empty())
-    {
-        deleteSelection();
+    // As ferramentas e a edição: a tecla de cada ação está no KeyMap (contexto da playlist), com as de sempre nos
+    // dois presets, e o usuário troca no editor de atalhos. Ação que não se aplica agora (Delete sem seleção)
+    // deixa a tecla seguir para a janela.
+    if (const auto id = app.getKeyMap().actionFor (key, KeyMap::playlistContext); id.isNotEmpty() && runShortcut (id, key))
         return true;
-    }
-
-    // playlist fatia 6: zoom na seleção (Shift+Z) e na música inteira (Alt+Z); pular de marcador (Alt+setas)
-    if (key == juce::KeyPress ('z', juce::ModifierKeys::shiftModifier, 0))   { zoomToSelection(); return true; }
-    if (key == juce::KeyPress ('z', juce::ModifierKeys::altModifier, 0))     { zoomToSong(); return true; }
-    if (key == juce::KeyPress (juce::KeyPress::rightKey, juce::ModifierKeys::altModifier, 0))   { gotoMarker (true); return true; }
-    if (key == juce::KeyPress (juce::KeyPress::leftKey, juce::ModifierKeys::altModifier, 0))    { gotoMarker (false); return true; }
-
-    if (key == juce::KeyPress ('a', ctrl, 0))   { selectAll(); return true; }
-    if (key == juce::KeyPress ('c', ctrl, 0))   { copySelection(); return true; }
-    if (key == juce::KeyPress ('x', ctrl, 0))   { copySelection(); deleteSelection(); return true; }
-    if (key == juce::KeyPress ('v', ctrl, 0))   { paste(); return true; }
-    if (key == juce::KeyPress ('b', ctrl, 0))   { duplicateSelection(); return true; }
 
     // Segurar A: a borda do áudio estica no tempo (como no FL 2026). Vale com o teclado-piano ligado,
-    // porque o A não é nota. Solta no keyStateChanged.
+    // porque o A não é nota. Solta no keyStateChanged. (Tecla de segurar: fica fora do KeyMap.)
     if (key == juce::KeyPress ('a'))
     {
         if (! stretchKey)
@@ -3485,39 +3520,92 @@ bool PlaylistGrid::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
-    if (code == juce::KeyPress::escapeKey && (! selection.empty() || ! timeSelection.isEmpty()))
+    if (key.getKeyCode() == juce::KeyPress::escapeKey && (! selection.empty() || ! timeSelection.isEmpty()))
     {
         selection.clear();
         setTimeSelection ({});
         return true;
     }
 
-    // Shift+setas: a seleção anda pela grade (para os lados) ou de raia (para cima e para baixo)
-    if (mods.isShiftDown() && ! mods.isCommandDown() && ! selection.empty())
-    {
-        const int step = juce::jmax (ticksPerStep, getSnapTicks());
+    return false;
+}
 
-        if (code == juce::KeyPress::leftKey)    { moveSelectionBy (-step, 0); return true; }
-        if (code == juce::KeyPress::rightKey)   { moveSelectionBy (step, 0); return true; }
-        if (code == juce::KeyPress::upKey)      { moveSelectionBy (0, -1); return true; }
-        if (code == juce::KeyPress::downKey)    { moveSelectionBy (0, 1); return true; }
+bool PlaylistGrid::runShortcut (const juce::String& id, const juce::KeyPress& key)
+{
+    // Voz na playlist (27/10): editar por trecho de tempo, como numa fita.
+    if (id == "playlist.cutAtNeedle")      { cutAtNeedle(); return true; }
+    if (id == "playlist.removeTime")       { removeTimeSelection(); return true; }
+    if (id == "playlist.insertTime")       { insertTimeSelection(); return true; }
+
+    if (id == "playlist.delete")
+    {
+        if (selection.empty())
+            return false;
+
+        deleteSelection();
+        return true;
     }
 
-    if (! singleKeyShortcuts)
-        return false;   // teclado-piano ligado: a letra vira nota (no MainComponent)
+    // playlist fatia 6: zoom na seleção e na música inteira; pular de marcador
+    if (id == "playlist.zoomSelection")    { zoomToSelection(); return true; }
+    if (id == "playlist.zoomSong")         { zoomToSong(); return true; }
+    if (id == "playlist.nextMarker")       { gotoMarker (true); return true; }
+    if (id == "playlist.previousMarker")   { gotoMarker (false); return true; }
 
-    const std::pair<juce::juce_wchar, Tool> keys[] = { { 'p', Tool::draw }, { 'b', Tool::paint }, { 'c', Tool::slice }, { 'd', Tool::erase },
-                                                       { 'e', Tool::select }, { 't', Tool::mute }, { 's', Tool::slip }, { 'y', Tool::play },
-                                                       { 'z', Tool::zoom } };
+    if (id == "playlist.selectAll")        { selectAll(); return true; }
+    if (id == "playlist.copy")             { copySelection(); return true; }
+    if (id == "playlist.cut")              { copySelection(); deleteSelection(); return true; }
+    if (id == "playlist.paste")            { paste(); return true; }
+    if (id == "playlist.duplicate")        { duplicateSelection(); return true; }
 
-    for (auto& [letter, t] : keys)
+    // a seleção anda pela grade (para os lados) ou de raia (para cima e para baixo)
+    if (id.startsWith ("playlist.move"))
     {
-        if (key == juce::KeyPress ((int) letter))
+        if (selection.empty())
+            return false;
+
+        const int step = juce::jmax (ticksPerStep, getSnapTicks());
+
+        if (id == "playlist.moveLeft")     { moveSelectionBy (-step, 0); return true; }
+        if (id == "playlist.moveRight")    { moveSelectionBy (step, 0); return true; }
+        if (id == "playlist.moveUp")       { moveSelectionBy (0, -1); return true; }
+        if (id == "playlist.moveDown")     { moveSelectionBy (0, 1); return true; }
+        return false;
+    }
+
+    // Daqui para baixo, as ações que nasceram numa letra só. Com o teclado-piano ligado a letra vira nota (no
+    // MainComponent); se o usuário pôs a ação numa tecla com Ctrl ou Alt, ou numa tecla que não é de texto, ela vale.
+    const auto mods = key.getModifiers();
+    const int code = key.getKeyCode();
+
+    if (! singleKeyShortcuts && ! mods.isCommandDown() && ! mods.isAltDown() && code > 32 && code < 127)
+        return false;
+
+    const std::pair<const char*, Tool> tools[] = { { "playlist.tool.draw", Tool::draw }, { "playlist.tool.paint", Tool::paint },
+                                                   { "playlist.tool.slice", Tool::slice }, { "playlist.tool.erase", Tool::erase },
+                                                   { "playlist.tool.select", Tool::select }, { "playlist.tool.mute", Tool::mute },
+                                                   { "playlist.tool.slip", Tool::slip }, { "playlist.tool.play", Tool::play },
+                                                   { "playlist.tool.zoom", Tool::zoom } };
+
+    for (auto& [name, t] : tools)
+    {
+        if (id == name)
         {
             setTool (t);
             if (onToolChanged) onToolChanged();
             return true;
         }
+    }
+
+    if (id == "playlist.follow")
+    {
+        setFollowing (! isFollowing());
+
+        if (onStatus)
+            onStatus (isFollowing() ? "Seguir a reprodução: ligado. A tela anda com a agulha, página por página."_t
+                                    : "Seguir a reprodução: desligado. A tela fica onde você deixar."_t, false);
+
+        return true;
     }
 
     return false;
@@ -3813,6 +3901,15 @@ Playlist::Playlist (AppController& a) : app (a), grid (a), lanes (a)
     };
     voiceButton.setWantsKeyboardFocus (false);
 
+    // Seguir a reprodução: aceso enquanto a tela acompanha a agulha; rolar ou dar zoom apaga até tocar de novo
+    followButton.setNeutralWhenOn (true);   // é da vista, não é som ligado: sem laranja
+    followButton.setTooltip ("Seguir a reprodução (F): tocando, a tela anda com a agulha, página por página. "
+                             "Rolar ou dar zoom desliga até você tocar de novo ou clicar aqui."_t);
+    followButton.setToggleState (grid.isFollowing(), juce::dontSendNotification);
+    followButton.onClick = [this] { grid.setFollowing (! grid.isFollowing()); };
+    followButton.setWantsKeyboardFocus (false);
+    grid.onFollowChanged = [this] { followButton.setToggleState (grid.isFollowing(), juce::dontSendNotification); };
+
     grid.onStatus = [this] (const juce::String& m, bool e) { if (onStatus) onStatus (m, e); };
     grid.onOpenPattern = [this] (const juce::String& id) { if (onOpenPattern) onOpenPattern (id); };
     grid.onBrushChanged = [this] { repaint (0, 0, getWidth(), toolbarHeight); };
@@ -3828,6 +3925,7 @@ Playlist::Playlist (AppController& a) : app (a), grid (a), lanes (a)
     addAndMakeVisible (toolSwitch);
     addChildComponent (songButton);
     addAndMakeVisible (voiceButton);
+    addAndMakeVisible (followButton);
     addAndMakeVisible (grid);
     addAndMakeVisible (lanes);
     updateSnapLabel();
@@ -3883,6 +3981,7 @@ void Playlist::paint (juce::Graphics& g)
 
     auto right = bar;
     right.removeFromRight (voiceButton.getWidth() + metric::gap);
+    right.removeFromRight (followButton.getWidth() + metric::gap);
 
     if (! songMode)
         right.removeFromRight (songButton.getWidth() + metric::gap);
@@ -3903,6 +4002,8 @@ void Playlist::resized()
     bar.removeFromLeft (theme::metric::gap);
     toolSwitch.setBounds (bar.removeFromLeft (toolSwitch.getIdealWidth()));
     voiceButton.setBounds (bar.removeFromRight (voiceButton.getIdealWidth (theme::metric::control)));
+    bar.removeFromRight (theme::metric::gap);
+    followButton.setBounds (bar.removeFromRight (followButton.getIdealWidth (theme::metric::control)));
     bar.removeFromRight (theme::metric::gap);
     songButton.setBounds (bar.removeFromRight (songButton.getIdealWidth (theme::metric::control)));
 }

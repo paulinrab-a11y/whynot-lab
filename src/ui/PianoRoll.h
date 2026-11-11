@@ -6,6 +6,7 @@
 #include "IdeasPanel.h"
 #include "MidiImportDialog.h"
 #include "TimeGrid.h"
+#include "TimelineFollow.h"
 #include "../engine/BeatKey.h"
 #include "../model/Project.h"
 
@@ -45,6 +46,12 @@ public:
     void setSlideMode (bool on)              { slideMode = on; }
     bool getSlideMode() const noexcept       { return slideMode; }
     void setPlayhead (double ticks);         // < 0 = parado
+
+    /** Seguir a reprodução: tocando, quando a agulha sai da vista a tela pula uma página (TimelineFollow.h).
+        Rolar ou dar zoom desliga sozinho até tocar de novo ou ligar aqui; a escolha do usuário fica gravada. */
+    bool isFollowing() const noexcept        { return follower.isOn(); }
+    void setFollowing (bool on);
+    std::function<void()> onFollowChanged;   // ligou ou desligou (pelo botão, pela tecla ou sozinho)
     /** O começo do play no PAT (29/10), em ticks: a marca na régua. -1 esconde (no SONG). */
     void setPatternStart (int ticks);
     /** O ponto da régua em cima de um tick (autoteste: o clique que marca o começo do play). */
@@ -99,6 +106,9 @@ public:
     void mouseExit (const juce::MouseEvent&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     bool keyPressed (const juce::KeyPress&) override;
+    /** Roda uma ação do KeyMap do contexto do piano roll ("pianoroll.tool.draw", "pianoroll.quantize"...). false se
+        ela não se aplica agora (a tecla segue para a janela). `key` é a tecla que a disparou. */
+    bool runShortcut (const juce::String& actionId, const juce::KeyPress& key);
     juce::String getTooltip() override;
 
 private:
@@ -109,6 +119,7 @@ private:
     void scrollBarMoved (juce::ScrollBar*, double) override;
     void updateScrollBars();
     void clampScroll();
+    void followPlayhead (bool started);
     void scrollToContent();
 
     juce::Rectangle<int> gridArea() const;
@@ -224,6 +235,7 @@ private:
 
     int centreKeyOnResize = -1;
     double playhead = -1.0;
+    follow::Follower follower;               // seguir a reprodução (ligado por padrão)
     int patternStart = -1;                   // o começo do play no PAT (29/10); -1 no SONG
     juce::ScrollBar hScroll { false }, vScroll { true };
     bool updatingScrollBars = false;
@@ -305,6 +317,7 @@ private:
     juce::ComboBox channelBox;
     SegmentedControl toolSwitch;   // desenhar | pintar | selecionar
     juce::ComboBox snapBox;
+    IconButton followButton { "Seguir", Icon::chevronRight };   // a tela anda com a agulha; só o ícone, a barra é apertada
     IconButton slideButton { "Slide", Icon::slide, "Slide" };
     IconButton monoButton { "Mono", Icon::none, "Mono" };
     IconButton glideButton { "Glide", Icon::timer, "80 ms" };

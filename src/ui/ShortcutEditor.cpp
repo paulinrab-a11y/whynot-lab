@@ -214,7 +214,7 @@ bool ShortcutEditor::keyPressed (const juce::KeyPress& key)
 
     const auto action = rows[(size_t) capturing].id;
     auto& keys = app.getKeyMap();
-    const auto previous = keys.actionFor (key);
+    const auto previous = keys.clashFor (action, key);   // quem perde a tecla: mesmo contexto, ou o app inteiro
     auto next = captureAdds ? keys.keysFor (action) : juce::Array<juce::KeyPress>();
     next.addIfNotAlreadyThere (key);
     setKeys (action, next);

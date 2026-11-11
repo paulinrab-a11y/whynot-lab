@@ -110,6 +110,8 @@ namespace
 //==============================================================================
 PianoRollGrid::PianoRollGrid (AppController& a) : app (a)
 {
+    follower.setOn (timegrid::loadViewFlag ("pianoRollFollow", true));
+
     // pinta o fundo inteiro: opaco, a agulha repinta só a grade (sem a tela de trás), fluidez 21/10
     setOpaque (true);
     setWantsKeyboardFocus (true);
@@ -233,9 +235,47 @@ void PianoRollGrid::setPlayhead (double ticks)
         return juce::Rectangle<int> ((int) tickToX (t) - 2, 0, 5, bottom);
     };
 
+    const bool started = playhead < 0.0 && ticks >= 0.0;
+
     if (playhead >= 0.0) repaint (column (playhead));
     playhead = ticks;
     if (playhead >= 0.0) repaint (column (playhead));
+
+    followPlayhead (started);
+}
+
+void PianoRollGrid::followPlayhead (bool started)
+{
+    // roda a cada quadro (animateFrame): só contas, nada de alocação. O mouse apertado na grade é um gesto de edição.
+    const auto r = follower.step (playhead, started, isMouseButtonDown(), scrollTicks, (double) pxPerTick,
+                                  gridArea().getWidth() / (double) pxPerTick);
+
+    if (r.stateChanged && onFollowChanged)
+        onFollowChanged();
+
+    if (r.scroll == scrollTicks)
+        return;
+
+    const double before = scrollTicks;
+    scrollTicks = r.scroll;
+    clampScroll();
+
+    if (scrollTicks != before)
+    {
+        updateScrollBars();
+        repaint();
+    }
+
+    follower.settled (scrollTicks, (double) pxPerTick);
+}
+
+void PianoRollGrid::setFollowing (bool on)
+{
+    follower.setOn (on);
+    timegrid::saveViewFlag ("pianoRollFollow", on);
+
+    if (onFollowChanged)
+        onFollowChanged();
 }
 
 //==============================================================================
@@ -2294,26 +2334,13 @@ bool PianoRollGrid::keyPressed (const juce::KeyPress& key)
     if (! channelOk)
         return false;
 
+    // As ferramentas e a edição: a tecla de cada ação está no KeyMap (contexto do piano roll), com as de sempre nos
+    // dois presets, e o usuário troca no editor de atalhos. Ação que não se aplica agora (setas sem seleção)
+    // deixa a tecla seguir para a janela.
+    if (const auto id = app.getKeyMap().actionFor (key, KeyMap::pianoRollContext); id.isNotEmpty() && runShortcut (id, key))
+        return true;
+
     const int code = key.getKeyCode();
-    const auto mods = key.getModifiers();
-
-    if ((code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey) && ! selected.empty())
-    {
-        removeNotes (std::vector<int> (selected.begin(), selected.end()));
-        return true;
-    }
-
-    if (key == juce::KeyPress ('a', juce::ModifierKeys::commandModifier, 0))
-    {
-        convertSteps();
-        selected.clear();
-
-        for (auto& n : notes)
-            selected.insert (n.id);
-
-        repaint();
-        return true;
-    }
 
     if (code == juce::KeyPress::escapeKey && ! selected.empty())
     {
@@ -2330,51 +2357,95 @@ bool PianoRollGrid::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
-    // as ferramentas do FL (bloco 1, 22/10): Ctrl+L legato, Ctrl+G juntar, Alt+M mudo, Alt+Shift+M tira o mudo
-    if (key == juce::KeyPress ('l', juce::ModifierKeys::commandModifier, 0))   { runTransform ("legato"); return true; }
-    if (key == juce::KeyPress ('g', juce::ModifierKeys::commandModifier, 0))   { runTransform ("glue"); return true; }
-    if (key == juce::KeyPress ('m', juce::ModifierKeys::altModifier, 0))       { runTransform ("mute"); return true; }
-    if (key == juce::KeyPress ('m', juce::ModifierKeys::altModifier | juce::ModifierKeys::shiftModifier, 0))
+    return false;
+}
+
+bool PianoRollGrid::runShortcut (const juce::String& id, const juce::KeyPress& key)
+{
+    if (! channelOk)
+        return false;
+
+    if (id == "pianoroll.delete")
     {
-        runTransform ("unmute");
+        if (selected.empty())
+            return false;
+
+        removeNotes (std::vector<int> (selected.begin(), selected.end()));
         return true;
     }
 
-    // como no FL: Ctrl+C/X/V, Ctrl+B duplica à direita, Alt+Q quantiza na grade
-    const auto ctrl = juce::ModifierKeys::commandModifier;
-
-    if (key == juce::KeyPress ('c', ctrl, 0))   { copySelection(); return true; }
-    if (key == juce::KeyPress ('x', ctrl, 0))   { copySelection(); removeNotes (std::vector<int> (selected.begin(), selected.end())); return true; }
-    if (key == juce::KeyPress ('v', ctrl, 0))   { pasteNotes(); return true; }
-    if (key == juce::KeyPress ('b', ctrl, 0))   { duplicateSelection(); return true; }
-    if (key == juce::KeyPress ('q', juce::ModifierKeys::altModifier, 0))   { quantizeSelection(); return true; }
-
-    // setas: um semitom (ou a próxima nota da escala) e um passo; Ctrl+cima/baixo é a oitava, como no FL
-    // (vídeo do produtor, 22/10), e o Shift+cima/baixo de antes continua
-    if (! selected.empty() && ! mods.isAltDown())
+    if (id == "pianoroll.selectAll")
     {
-        const int snap = getSnapTicks();
-        const int stepTicks = snap > 1 ? snap : ticksPerStep;
-        const bool octave = mods.isShiftDown() || mods.isCommandDown();
+        convertSteps();
+        selected.clear();
 
-        if (code == juce::KeyPress::upKey)     { nudgeSelection (0, octave ? 12 : 1); return true; }
-        if (code == juce::KeyPress::downKey)   { nudgeSelection (0, octave ? -12 : -1); return true; }
+        for (auto& n : notes)
+            selected.insert (n.id);
 
-        if (! mods.isCommandDown())
-        {
-            if (code == juce::KeyPress::leftKey)   { nudgeSelection (-stepTicks, 0); return true; }
-            if (code == juce::KeyPress::rightKey)  { nudgeSelection (stepTicks, 0); return true; }
-        }
+        repaint();
+        return true;
     }
 
-    if (! singleKeyShortcuts)
-        return false;   // teclado-piano ligado: a letra vira nota (no MainComponent)
+    // as ferramentas do FL (bloco 1, 22/10): legato, juntar, mudo e tirar o mudo
+    if (id == "pianoroll.legato")      { runTransform ("legato"); return true; }
+    if (id == "pianoroll.glue")        { runTransform ("glue"); return true; }
+    if (id == "pianoroll.mute")        { runTransform ("mute"); return true; }
+    if (id == "pianoroll.unmute")      { runTransform ("unmute"); return true; }
 
-    if (key == juce::KeyPress ('s'))   { toggleSlideOnSelection(); return true; }
-    if (key == juce::KeyPress ('p'))   { setTool (Tool::draw);   if (onToolChanged) onToolChanged(); return true; }
-    if (key == juce::KeyPress ('b'))   { setTool (Tool::paint);  if (onToolChanged) onToolChanged(); return true; }
-    if (key == juce::KeyPress ('e'))   { setTool (Tool::select); if (onToolChanged) onToolChanged(); return true; }
-    if (key == juce::KeyPress ('c'))   { setTool (Tool::slice);  if (onToolChanged) onToolChanged(); return true; }
+    // como no FL: copiar, recortar, colar, duplicar à direita e quantizar na grade
+    if (id == "pianoroll.copy")        { copySelection(); return true; }
+    if (id == "pianoroll.cut")         { copySelection(); removeNotes (std::vector<int> (selected.begin(), selected.end())); return true; }
+    if (id == "pianoroll.paste")       { pasteNotes(); return true; }
+    if (id == "pianoroll.duplicate")   { duplicateSelection(); return true; }
+    if (id == "pianoroll.quantize")    { quantizeSelection(); return true; }
+
+    // um semitom (ou a próxima nota da escala), uma oitava e um passo da grade; só com notas selecionadas
+    const bool transpose = id == "pianoroll.transposeUp" || id == "pianoroll.transposeDown"
+                        || id == "pianoroll.octaveUp" || id == "pianoroll.octaveDown";
+    const bool nudge = id == "pianoroll.nudgeLeft" || id == "pianoroll.nudgeRight";
+
+    if (transpose || nudge)
+    {
+        if (selected.empty())
+            return false;
+
+        const int snap = getSnapTicks();
+        const int stepTicks = snap > 1 ? snap : ticksPerStep;
+
+        if (id == "pianoroll.transposeUp")         nudgeSelection (0, 1);
+        else if (id == "pianoroll.transposeDown")  nudgeSelection (0, -1);
+        else if (id == "pianoroll.octaveUp")       nudgeSelection (0, 12);
+        else if (id == "pianoroll.octaveDown")     nudgeSelection (0, -12);
+        else if (id == "pianoroll.nudgeLeft")      nudgeSelection (-stepTicks, 0);
+        else                                       nudgeSelection (stepTicks, 0);
+
+        return true;
+    }
+
+    // Daqui para baixo, as ações que nasceram numa letra só. Com o teclado-piano ligado a letra vira nota (no
+    // MainComponent); se o usuário pôs a ação numa tecla com Ctrl ou Alt, ou numa tecla que não é de texto, ela vale.
+    const auto mods = key.getModifiers();
+    const int code = key.getKeyCode();
+
+    if (! singleKeyShortcuts && ! mods.isCommandDown() && ! mods.isAltDown() && code > 32 && code < 127)
+        return false;
+
+    if (id == "pianoroll.follow")
+    {
+        setFollowing (! isFollowing());
+
+        if (onStatus)
+            onStatus (isFollowing() ? "Seguir a reprodução: ligado. A tela anda com a agulha, página por página."_t
+                                    : "Seguir a reprodução: desligado. A tela fica onde você deixar."_t, false);
+
+        return true;
+    }
+
+    if (id == "pianoroll.slide")         { toggleSlideOnSelection(); return true; }
+    if (id == "pianoroll.tool.draw")     { setTool (Tool::draw);   if (onToolChanged) onToolChanged(); return true; }
+    if (id == "pianoroll.tool.paint")    { setTool (Tool::paint);  if (onToolChanged) onToolChanged(); return true; }
+    if (id == "pianoroll.tool.select")   { setTool (Tool::select); if (onToolChanged) onToolChanged(); return true; }
+    if (id == "pianoroll.tool.slice")    { setTool (Tool::slice);  if (onToolChanged) onToolChanged(); return true; }
 
     return false;
 }
@@ -2472,6 +2543,14 @@ PianoRoll::PianoRoll (AppController& a) : app (a), grid (a), ideas (a)
         updateSnapLabel();
     };
 
+    // Seguir a reprodução: aceso enquanto a tela acompanha a agulha; rolar ou dar zoom apaga até tocar de novo
+    followButton.setNeutralWhenOn (true);   // é da vista, não é som ligado: sem laranja
+    followButton.setTooltip ("Seguir a reprodução (F): tocando, a tela anda com a agulha, página por página. "
+                             "Rolar ou dar zoom desliga até você tocar de novo ou clicar aqui."_t);
+    followButton.setToggleState (grid.isFollowing(), juce::dontSendNotification);
+    followButton.onClick = [this] { grid.setFollowing (! grid.isFollowing()); };
+    grid.onFollowChanged = [this] { followButton.setToggleState (grid.isFollowing(), juce::dontSendNotification); };
+
     slideButton.setClickingTogglesState (true);
     slideButton.setTooltip ("Slide (S): notas novas deslizam da nota anterior, como no 808. Com notas selecionadas, S liga ou desliga o slide delas."_t);
     slideButton.onClick = [this] { setSlideMode (slideButton.getToggleState()); };
@@ -2561,7 +2640,7 @@ PianoRoll::PianoRoll (AppController& a) : app (a), grid (a), ideas (a)
     grid.onModesChanged = [this] { syncModeButtons(); };
 
     for (juce::Component* c : { (juce::Component*) &channelBox, (juce::Component*) &toolSwitch, (juce::Component*) &snapBox,
-                                (juce::Component*) &slideButton,
+                                (juce::Component*) &followButton, (juce::Component*) &slideButton,
                                 (juce::Component*) &monoButton, (juce::Component*) &glideButton,
                                 (juce::Component*) &grooveButton,
                                 (juce::Component*) &editButton, (juce::Component*) &keyBox,
@@ -2897,9 +2976,12 @@ bool PianoRoll::handleClipboardKey (const juce::KeyPress& key)
     if (importDialog != nullptr)
         return false;
 
-    for (auto c : { 'c', 'x', 'v', 'b' })
-        if (key == juce::KeyPress (c, juce::ModifierKeys::commandModifier, 0))
-            return grid.keyPressed (key);
+    // as teclas de copiar, recortar, colar e duplicar são as do KeyMap (Ctrl+C, X, V e B nos presets)
+    const auto id = app.getKeyMap().actionFor (key, KeyMap::pianoRollContext);
+
+    for (const char* action : { "pianoroll.copy", "pianoroll.cut", "pianoroll.paste", "pianoroll.duplicate" })
+        if (id == action)
+            return grid.runShortcut (id, key);
 
     return false;
 }
@@ -3078,6 +3160,8 @@ void PianoRoll::resized()
     toolSwitch.setBounds (bar.removeFromLeft (toolSwitch.getIdealWidth()));
     bar.removeFromLeft (theme::metric::gap);
     snapBox.setBounds (bar.removeFromLeft (narrow ? 140 : 156));
+    bar.removeFromLeft (2);
+    followButton.setBounds (bar.removeFromLeft (followButton.getIdealWidth (c)));   // só o ícone: a largura é a altura
     bar.removeFromLeft (gap / 2);
     dividers.add (bar.getX());
     bar.removeFromLeft (gap / 2);

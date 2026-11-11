@@ -650,7 +650,9 @@ void normalise (Project& p)
 
         i.start = juce::jlimit (0, maxTimelineTicks, i.start);
         i.length = juce::jlimit (ticksPerStep, maxTimelineTicks, i.length);
-        i.offsetSeconds = std::isfinite (i.offsetSeconds) ? roundToMicroseconds (juce::jmax (0.0, i.offsetSeconds)) : 0.0;
+        // o corte tem teto (um milhão de segundos, mais de 11 dias de arquivo): 1e308 vezes 1e6, no arredondamento,
+        // dava infinito, que o toJson escreve como um texto que não é JSON (achado do fuzz, 10/11)
+        i.offsetSeconds = std::isfinite (i.offsetSeconds) ? roundToMicroseconds (juce::jlimit (0.0, 1.0e6, i.offsetSeconds)) : 0.0;
         i.patternOffset = i.kind == "pattern" ? juce::jlimit (0, maxTimelineTicks, i.patternOffset) : 0;
         i.stretch = i.kind == "audio" ? clampStretch (i.stretch) : 1.0;
         i.tape = i.kind == "audio" && i.tape;

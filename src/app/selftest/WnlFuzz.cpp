@@ -529,6 +529,16 @@ void runWnlFuzzSelfTest (SelfTestContext& ctx)
         rep.check (bigMixer && p.mixer.size() == 304 && first != nullptr && first->sends.size() == 40 && mixerMs < 20000.0,
                    "mixer de 300 trilhas com 40 envios cada, sem laço, abre com os envios inteiros e sem travar ("_t + juce::String (mixerMs, 0) + " ms)");
 
+        // achado do fuzz: corte do bloco de áudio com 1e308 segundos virava infinito, e o projeto salvo não reabria
+        doc = seed.clone();
+        set (doc["playlist"]["items"][1], "offsetSeconds", 1.0e308);
+        Project reopened;
+        const bool hugeOffset = wnl::fromJson (juce::JSON::toString (doc, true), p).wasOk();
+        const auto* cut = p.findItem ("it_2");
+        rep.check (hugeOffset && cut != nullptr && std::isfinite (cut->offsetSeconds) && cut->offsetSeconds <= 1.0e6
+                       && wnl::fromJson (wnl::toJson (p), reopened).wasOk(),
+                   "bloco com corte de 1e308 segundos abre com o corte no teto e o projeto salvo reabre"_t);
+
         // e o laço continua sendo desfeito (no projeto pequeno: o conserto anda o grafo a cada envio): o Reverb
         // manda de volta para o Kick, que manda para ele
         doc = seed.clone();
@@ -569,9 +579,11 @@ void runWnlFuzzSelfTest (SelfTestContext& ctx)
         folder.createDirectory();
         const auto file = folder.getChildFile ("Futuro.wnl");
         file.replaceWithText (text, false, false, "\n");
+        const auto original = file.loadFileAsString();   // o que ficou no disco (o texto do juce::JSON tem \r\n; o arquivo, \n)
         const bool saved = wnl::save (p, file, false).wasOk();
         const auto kept = folder.getChildFile ("history").getChildFile ("Futuro (app mais novo).wnl");
-        rep.check (saved && kept.existsAsFile() && kept.loadFileAsString() == text && ! file.loadFileAsString().contains ("recurso-do-futuro"),
+        rep.check (saved && kept.existsAsFile() && original.contains ("recurso-do-futuro") && kept.loadFileAsString() == original
+                       && ! file.loadFileAsString().contains ("recurso-do-futuro"),
                    "salvar por cima guarda o original em history/Futuro (app mais novo).wnl"_t);
         rep.check (wnl::save (p, file, false).wasOk() && folder.getChildFile ("history").getNumberOfChildFiles (juce::File::findFiles) == 1,
                    "salvar de novo não faz outra cópia (o arquivo já é deste app)"_t);
@@ -586,7 +598,8 @@ void runWnlFuzzSelfTest (SelfTestContext& ctx)
 
         int opened = 0, refused = 0, sanitised = 0, drifted = 0;
         double slowestMs = 0.0;
-        juce::String failure, failingText;
+        int slowestIter = -1;
+        juce::String failure, failingText, slowestText;
         const auto started = juce::Time::getMillisecondCounterHiRes();
 
         for (int iter = 0; iter < iterations && failure.isEmpty(); ++iter)
@@ -607,7 +620,13 @@ void runWnlFuzzSelfTest (SelfTestContext& ctx)
             const auto t0 = juce::Time::getMillisecondCounterHiRes();
             const auto result = wnl::fromJson (text, p, &report);
             const double ms = juce::Time::getMillisecondCounterHiRes() - t0;
-            slowestMs = juce::jmax (slowestMs, ms);
+
+            if (ms > slowestMs)
+            {
+                slowestMs = ms;
+                slowestIter = iter;
+                slowestText = text;
+            }
 
             if (ms > 15000.0)
                 failure = "levou "_t + juce::String (ms, 0) + " ms para ler";
@@ -657,12 +676,16 @@ void runWnlFuzzSelfTest (SelfTestContext& ctx)
         if (failure.isNotEmpty())
             ctx.work.getChildFile ("wnl-fuzz-falha.json").replaceWithText (failingText);
 
+        if (slowestMs > 500.0)   // para saber que caminho é: o arquivo mais lento fica na pasta do autoteste
+            ctx.work.getChildFile ("wnl-fuzz-mais-lento.json").replaceWithText (slowestText);
+
         const double totalMs = juce::Time::getMillisecondCounterHiRes() - started;
         rep.check (failure.isEmpty(),
                    juce::String (iterations) + " arquivos mutados: nenhum derruba nem trava, e o que abre passa nas invariantes e reabre igual ("_t
                        + juce::String (opened) + " abriram, " + juce::String (refused) + " recusados, " + juce::String (sanitised)
                        + " com caminho recusado, " + juce::String (drifted) + " mudaram na primeira regravação, o mais lento "_t
-                       + juce::String (slowestMs, 0) + " ms, total " + juce::String (totalMs / 1000.0, 1) + " s)"
+                       + juce::String (slowestMs, 0) + " ms (arquivo " + juce::String (slowestIter) + ", "
+                       + juce::String (slowestText.getNumBytesAsUTF8() / 1024) + " KB), total " + juce::String (totalMs / 1000.0, 1) + " s)"
                        + (failure.isEmpty() ? juce::String() : " FALHA: "_t + failure + " (em wnl-fuzz-falha.json)"));
         rep.check (iterations < 500 || (opened > iterations / 10 && refused > iterations / 50),
                    "o fuzz passa pelos dois lados: arquivos que abrem e arquivos recusados"_t);

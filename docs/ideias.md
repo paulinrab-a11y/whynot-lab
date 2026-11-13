@@ -59,6 +59,14 @@ Cada geração é **um passo de desfazer** (Ctrl+Z). Por padrão ela substitui a
 | **R&B** | 60–100 | Sétimas e nonas, voicings abertos, sem pressa. |
 | **Phonk** | 130–160 | Cowbell curto em loop, modo frígio, 808 distorcido. |
 | **Lo-fi / boom bap** | 70–92 | Acordes jazzy, poucas notas, muito espaço. |
+| **Afrobeats** | 95–120 | Bumbo sincopado, aro em clave, shaker e acordes abertos. |
+| **Reggaeton** | 85–105 | Dembow: bumbo nos quatro tempos, caixa quebrada e baixo em tresillo. |
+| **House** | 118–128 | Bumbo nos quatro tempos, palmas no 2 e no 4, chimbal no contratempo, acordes em stab. |
+| **Plugg** | 140–160 | Trap leve e sonhador: tom maior com sétimas, sinos, bateria com espaço. |
+| **Jersey club** | 130–145 | Cinco bumbos por compasso, palmas no 2 e no 4, melodia picotada. |
+
+Desde 10/11 cada gênero antigo também ganhou batidas (o funk tem mandelão e automotivo; o phonk, drift e brazilian
+phonk). A "Nova ideia" sorteia entre elas; o resumo da geração diz qual saiu ("bateria 5/6").
 
 **Climas:** Sombrio, Triste, Calmo, Alegre, Épico. Eles escolhem a progressão e mudam o contorno da melodia e a força das notas.
 
@@ -78,7 +86,7 @@ Depois do grau: `7`, `maj7`, `9`, `add9`, `sus2`, `sus4`, `o` (diminuto), `h7` (
 | `i*2 VI*2` | Am (2 compassos) F (2 compassos) |
 | `iih7 V7 i7 i7` | Bm7b5 E7 Am7 Am7 |
 
-O banco tem 32 progressões marcadas por gênero e clima. Para usar outra, mande pelo comando (`progression`).
+O banco tem 60 progressões marcadas por gênero e clima. Para usar outra, mande pelo comando (`progression`).
 
 ## Para a IA (comandos)
 

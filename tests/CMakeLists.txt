@@ -444,3 +444,16 @@ else()
 endif()
 
 add_test(NAME templates COMMAND whynot_template_tests)
+# Tags dos sons (frente tags-sons, 16/11): o tipo (kick, 808, loop...), o BPM e o tom pelo nome do arquivo e pela
+# pasta, com a tabela de nomes típicos e os falsos positivos (src/library/SoundTagRules.h). Só cabeçalho, sem JUCE.
+add_executable(whynot_sound_tags_tests
+    library/test_sound_tags.cpp)
+target_compile_features(whynot_sound_tags_tests PRIVATE cxx_std_20)
+
+if(MSVC)
+    target_compile_options(whynot_sound_tags_tests PRIVATE /W4 /utf-8 /O2)
+else()
+    target_compile_options(whynot_sound_tags_tests PRIVATE -Wall -Wextra -O2)
+endif()
+
+add_test(NAME sound_tags COMMAND whynot_sound_tags_tests)

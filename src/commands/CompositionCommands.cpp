@@ -780,7 +780,9 @@ void registerCompositionCommands (CommandRegistry& r)
                  for (auto& i : p.playlistItems)
                  {
                      const auto* pat = i.kind == "audio" ? nullptr : p.findPattern (i.ref);
-                     const bool plays = p.itemSounds (i) && (i.kind == "audio" ? i.ref == id : pat != nullptr && patternPlays (*pat));
+                     // (16/11) o bloco de padrão que toca outro canal só não conta: este canal não soa nele
+                     const bool plays = p.itemSounds (i) && (i.kind == "audio" ? i.ref == id
+                                                                               : pat != nullptr && i.playsChannel (id) && patternPlays (*pat));
 
                      if (plays)
                      {

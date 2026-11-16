@@ -1024,12 +1024,14 @@ void PlaylistGrid::splitByChannel (const juce::String& id)
     if (targets.size() < before)
         lockedNotice();
 
+    const bool anyLocked = targets.size() < before;
     std::erase_if (targets, [] (const PlaylistItem& i) { return i.channel.isNotEmpty(); });   // já é de um canal só
 
     if (targets.empty())
     {
-        if (onStatus && before == 0)
-            onStatus ("Separar por canal: selecione um bloco de padrão."_t, false);
+        if (onStatus && ! anyLocked)
+            onStatus (before == 0 ? "Separar por canal: selecione um bloco de padrão."_t
+                                  : "Separar por canal: os blocos selecionados já tocam um canal só."_t, false);
 
         return;
     }

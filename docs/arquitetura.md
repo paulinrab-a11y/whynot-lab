@@ -553,6 +553,10 @@ Consequência prática: compilar com **no máximo 3 jobs** e, de preferência, c
 - `SpscQueue.h`: fila de um produtor e um consumidor, capacidade fixa, sem trava.
 - `RtObjectSlot.h`: entrega objetos grandes (samples) à thread de áudio sem que ela aloque ou libere memória.
 - `SampleVoice.h`: voz do sampler com glide de tempo constante (o slide do 808), rampas sem estalo e parâmetros saneados.
+- `RtRetainedSlot.h` (10/11): como o `RtObjectSlot`, mas o objeto velho só vai para o descarte quando nenhuma voz aponta
+  mais para ele; é o que deixa a troca de sample não perder as notas que chegam durante ela.
+- `BlockSlices.h` (10/11): processa um bloco maior que o rascunho em pedaços, com os eventos de cada pedaço.
+- `StopMark.h` (10/11): o `stop()` da prévia marca até qual pedido vale, para um `play()` logo depois não nascer parado.
 
 Esses arquivos passaram por `audio-dsp-review` (nenhuma violação crítica; corrigidos: verificação de atomics lock-free, denormais no carregamento, documentação de `publish` com áudio parado) e por `audio-numerics-review` (corrigidos: glide sem acumular erro de float, NaN nos parâmetros, limite de durações). `tests/audio/test_audio_core.cpp` cobre tudo isso: 16 verificações, todas passando, incluindo 5.000 trocas entre duas threads reais sem vazamento e um glide de uma quinta medido em 65,40 Hz → 98,00 Hz.
 

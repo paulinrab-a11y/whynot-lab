@@ -693,30 +693,38 @@ void registerCoreCommands (CommandRegistry& r)
 
     //==========================================================================
     // Edição e telas
+    // Desfazer ou refazer que falha: diz o motivo quando o passo existe mas a foto dele não abriu (o registro
+    // guarda em lastHistoryError); "Nada para ..." só quando não havia passo mesmo.
+    const auto historyFail = [] (const CommandRegistry& reg, const char* nothing)
+    {
+        const auto why = reg.lastHistoryError();
+        return CommandResult::fail (why.isNotEmpty() ? why : juce::String::fromUTF8 (nothing));
+    };
+
     r.add ({ "edit.undo", "Desfazer", schema ({}), false,
-             [&r] (CommandContext&, const juce::var&)
+             [&r, historyFail] (CommandContext&, const juce::var&)
              {
-                 return r.undo() ? CommandResult::success() : CommandResult::fail ("Nada para desfazer.");
+                 return r.undo() ? CommandResult::success() : historyFail (r, "Nada para desfazer.");
              } });
 
     r.add ({ "edit.redo", "Refazer", schema ({}), false,
-             [&r] (CommandContext&, const juce::var&)
+             [&r, historyFail] (CommandContext&, const juce::var&)
              {
-                 return r.redo() ? CommandResult::success() : CommandResult::fail ("Nada para refazer.");
+                 return r.redo() ? CommandResult::success() : historyFail (r, "Nada para refazer.");
              } });
 
     // Ctrl+Z do FL: desfaz a última edição; apertado de novo, refaz (alterna entre os dois estados).
     r.add ({ "edit.undoToggle", "Desfazer ou refazer a última edição"_t, schema ({}), false,
-             [&r, undid = std::make_shared<bool> (false)] (CommandContext&, const juce::var&)
+             [&r, historyFail, undid = std::make_shared<bool> (false)] (CommandContext&, const juce::var&)
              {
                  if (*undid && r.canRedo())
                  {
                      *undid = false;
-                     return r.redo() ? CommandResult::success() : CommandResult::fail ("Nada para refazer.");
+                     return r.redo() ? CommandResult::success() : historyFail (r, "Nada para refazer.");
                  }
 
                  *undid = r.undo();
-                 return *undid ? CommandResult::success() : CommandResult::fail ("Nada para desfazer.");
+                 return *undid ? CommandResult::success() : historyFail (r, "Nada para desfazer.");
              } });
 
     r.add ({ "view.toggle", "Mostrar ou esconder painel",

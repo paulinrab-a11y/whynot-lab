@@ -404,11 +404,15 @@ O autoteste é dividido por área, um arquivo por área em `src/app/selftest/`. 
 - PitchBend (26/10): as contas das curvas, os comandos e o desfazer, o `.wnl` igual nos dois escritores, o render medido (a nota com +2 st toca 123,47 Hz em vez de 110, igual à nota 2 st acima), o glide do 808 que sai como uma nota com pitch bend no MIDI, a curva que vai e volta pelo MIDI, e a raia desenhada com o mouse (capturas `pitch-raia.png` e `pitch-raia-mod.png`);
 - "Arquivos inválidos", sempre por último.
 
-O `ctest --test-dir build` roda dois testes, sem abrir o app:
-- `audio_core`: o núcleo de tempo real;
-- `dsp`: os efeitos nativos da mixagem.
+O `ctest --test-dir build` roda 21 testes, todos sem JUCE e sem abrir o app (a lista está em `tests/CMakeLists.txt`):
+- núcleo e som: `audio_core` (tempo real), `dsp` (efeitos da mixagem e o sobreamostrador), `pitch`, `notetune`,
+  `synth`, `perf` e `rt_bench --check` (nenhuma alocação no `process`);
+- composição: `ideas`, `key`, `automation`, `record` (inclusive o conserto do take que ficou sem fechar);
+- formato e IA: `control` (a ponte, as pastas permitidas e a cobertura da tabela de risco), `params` (a conferência
+  dos parâmetros dos comandos), `wnl_paths` (caminhos de um `.wnl` de terceiros);
+- app: `crash`, `autosave`, `sample_loads`, `ui_logic`, `palette`, `editors` (atalhos com contexto) e `lane_stack`.
 
-Para isso, compile antes os alvos `whynot_audio_tests` e `whynot_dsp_tests` (seção 3).
+Um `cmake --build build` compila todos junto com o app.
 
 O alvo `whynot_crash_tests` (teste `crash`) confere o registro de queda e o log da sessão: derruba processos filhos de propósito, sem abrir janela, e olha se o `.dmp` e o `.txt` nasceram.
 

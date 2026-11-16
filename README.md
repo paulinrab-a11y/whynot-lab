@@ -34,7 +34,7 @@ cmake --build build --target whynot_lab -j 3
 build\whynot_lab_artefacts\Release\"WHYNOT LAB.exe"
 ```
 
-O alvo `whynot_lab` basta para abrir o app. O autoteste (`--self-test`) também precisa do `whynot_test_plugins`, e o `ctest` precisa do `whynot_audio_tests` e do `whynot_dsp_tests` (seções 3 e 10 do `como-rodar.md`).
+O alvo `whynot_lab` basta para abrir o app. O autoteste (`--self-test`) também precisa do `whynot_test_plugins`, e o `ctest` roda os 21 testes sem JUCE que o build já compila (seções 3 e 10 do `como-rodar.md`).
 
 ## Acabamento (3.4)
 

@@ -114,7 +114,7 @@ void runScreenNoticesSelfTest (SelfTestContext& ctx)
         const auto outside = folder.getChildFile ("Fora.wnl");
         const bool outsideOpened = outside.replaceWithText (juce::JSON::toString (doc)) && app.openProject (outside).wasOk();
         const auto onOutside = app.takeProjectNotices();
-        rep.check (outsideOpened && onOutside.size() == 1 && anyContains (onOutside, "1 caminho", "saem da pasta", true),
+        rep.check (outsideOpened && onOutside.size() == 1 && anyContains (onOutside, "1 caminho", "sai da pasta", true),
                    "caminho com \"..\" para fora da pasta: avisa ao abrir: "_t + texts (onOutside));
 
         // o que não é áudio não entra em samples/ ao salvar, e a tela lista

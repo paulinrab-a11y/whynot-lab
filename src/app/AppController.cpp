@@ -1107,10 +1107,13 @@ namespace
         }
 
         const int listed = report.refusedPaths.size();
-        const auto why = network == listed && listed > 0 ? "porque são de rede (o app não abre caminho de rede de um projeto)"_t
-                       : network == 0                    ? "porque saem da pasta do projeto ou são inválidos"_t
-                                                         : "porque são de rede, saem da pasta do projeto ou são inválidos"_t;
         const int n = report.refusedPathCount;
+        const bool one = n == 1;
+        const auto why = network == listed && listed > 0 ? (one ? "porque é de rede"_t : "porque são de rede"_t)
+                                                               + " (o app não abre caminho de rede de um projeto)"_t
+                       : network == 0                    ? (one ? "porque sai da pasta do projeto ou é inválido"_t
+                                                                : "porque saem da pasta do projeto ou são inválidos"_t)
+                                                         : "porque são de rede, saem da pasta do projeto ou são inválidos"_t;
         juce::String text = n == 1 ? "1 caminho de arquivo deste projeto foi recusado "_t
                                    : juce::String (n) + " caminhos de arquivo deste projeto foram recusados "_t;
         text += why + ". Ficou só o nome do arquivo: o que não estiver na pasta do projeto aparece como ausente."_t;
@@ -1130,7 +1133,9 @@ namespace
 
         return (files.size() == 1 ? "1 arquivo não foi copiado para samples/ porque não é áudio: "_t
                                   : juce::String (files.size()) + " arquivos não foram copiados para samples/ porque não são áudio: "_t)
-               + firstOnes (names, 3) + ". Continuam onde estavam; a pasta do projeto não leva esses arquivos."_t;
+               + firstOnes (names, 3)
+               + (files.size() == 1 ? ". Continua onde estava; a pasta do projeto não leva esse arquivo."_t
+                                    : ". Continuam onde estavam; a pasta do projeto não leva esses arquivos."_t);
     }
 }
 

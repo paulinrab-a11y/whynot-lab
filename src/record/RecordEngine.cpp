@@ -812,7 +812,10 @@ juce::Result RecordEngine::begin (const Project& p, const juce::String& liveChan
 
         if (p.songMode)
             for (auto& item : p.playlistItems)
-                if (item.kind == "pattern" && item.ref == pattern->id)
+                // bloco por canal (16/11): o bloco que toca só um canal vale se for um dos que gravam (senão a nota
+                // cairia num trecho onde o canal dela não toca)
+                if (item.kind == "pattern" && item.ref == pattern->id
+                    && (item.channel.isEmpty() || s.notes.count (item.channel) != 0))
                     s.target.blocks.push_back ({ item.start, item.length });
     }
 

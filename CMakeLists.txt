@@ -189,6 +189,7 @@ set(WHYNOT_SOURCES
     src/app/selftest/Sampler.cpp
     src/app/selftest/SamplerBend.cpp
     src/app/selftest/ScreenNotices.cpp
+    src/app/selftest/Templates.cpp
     src/app/selftest/SelfTestKit.cpp
     src/app/selftest/Slicing.cpp
     src/app/selftest/Stretch.cpp
@@ -224,6 +225,7 @@ set(WHYNOT_SOURCES
     src/commands/PlaylistEditCommands.cpp
     src/commands/RecordCommands.cpp
     src/commands/SliceCommands.cpp
+    src/commands/TemplateCommands.cpp
     src/common/Log.cpp
     src/control/AudioPreview.cpp
     src/control/CommandGate.cpp
@@ -269,6 +271,7 @@ set(WHYNOT_SOURCES
     src/library/ProjectLibrary.cpp
     src/library/ProjectsView.cpp
     src/library/SystemMemory.cpp
+    src/library/Templates.cpp
     src/engine/AudioToMidi.cpp
     src/engine/BeatKey.cpp
     src/engine/Exporter.cpp

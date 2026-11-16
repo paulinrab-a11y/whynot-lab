@@ -73,6 +73,7 @@ int runSelfTest (const juce::File& reportFile, const juce::File& workFolder)
     runPaletteSelfTest (ctx);
     runItemChannelSelfTest (ctx);
     runScreenNoticesSelfTest (ctx);
+    runTemplatesSelfTest (ctx);
     runInvalidFilesSelfTest (ctx);
 
     rep.lines.add ({});

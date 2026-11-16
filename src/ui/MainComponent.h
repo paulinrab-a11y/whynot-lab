@@ -142,6 +142,9 @@ private:
     void showAbout();
     void askHeadphones();          // "Está de fone?": a escuta "Quando armada" só vale de fone
     void newProject();
+    juce::PopupMenu templateMenu();                    // templates (16/11): "Novo a partir de template"
+    void newFromTemplate (const juce::String& name);
+    void saveTemplateDialog();
     void openProject();
     void openAutosave();
     void importMidi();             // Arquivo > Importar MIDI: no piano roll do canal escolhido
@@ -210,6 +213,7 @@ private:
     int typingOctave = 0;                                     // -3 a +3 oitavas sobre o mapa (Z = C3, Q = C4)
     int typingVelocity = 100;                                 // força das notas do teclado-piano
     std::unique_ptr<juce::FileChooser> chooser;
+    std::unique_ptr<juce::AlertWindow> templateDialog;   // "Salvar como template", aberto até fechar
     std::unique_ptr<juce::PropertiesFile> settings;
     BeatKeyNotice beatNotice;
     juce::String beatNoticeId, dismissedBeatKey;   // arquivo, versão e tom do aviso; o "Agora não" vale para ele

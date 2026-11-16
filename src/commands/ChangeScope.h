@@ -167,7 +167,11 @@ namespace whynot::changescope
         "record.inputDevices", "record.note", "record.setCountIn", "record.setHeadphones", "record.setInput",
         "record.setInputDevice", "record.setLatency", "record.setLowLatency", "record.setMic", "record.state",
         "shortcuts.list", "shortcuts.set", "shortcuts.setPreset", "synth.listPresets", "synth.params",
-        "synth.setFavorite", "takes.list", "transport.play", "transport.playFrom", "transport.record",
+        "synth.setFavorite", "takes.list",
+        // templates (16/11): fora do desfazer; o template.new passa pelo novo projeto, que avisa as telas sozinho
+        "template.choose", "template.delete", "template.list", "template.new", "template.save", "template.saveDialog",
+        "template.setDefault",
+        "transport.play", "transport.playFrom", "transport.record",
         "transport.setPatternStart", "transport.setPosition", "transport.stop", "transport.togglePause",
         "transport.togglePlay", "view.toggle",
     };

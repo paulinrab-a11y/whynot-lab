@@ -16,6 +16,7 @@
 #include "../engine/UserMix.h"
 #include "../engine/WhynotSynth.h"
 #include "../library/ProjectLibrary.h"
+#include "../library/Templates.h"
 #include "../model/WnlFormat.h"
 #include "../record/RecordEngine.h"
 
@@ -372,6 +373,7 @@ AppController::AppController (bool isHeadless, const juce::File& requestedDataFo
     Favorites::get().setFolder (dataFolder);   // favoritos.json; migra o synth-favoritos.txt antigo
     piano::setDataFolder (dataFolder);
     usermix::setDataFolder (dataFolder);   // cadeias e presets do artista (Mixagem, 21/10)
+    templates::setDataFolder (dataFolder);   // <dados>/Templates (16/11)
 
     if (! headless)
         pianoPrefetch = std::make_unique<piano::Prefetch>();
@@ -448,6 +450,7 @@ AppController::AppController (bool isHeadless, const juce::File& requestedDataFo
     registerPlaylistEditCommands (registry);
     registerNoteTuneCommands (registry);   // afinação nota a nota (27/10)
     registerGrooveCommands (registry);     // swing e começo do play no PAT (29/10)
+    registerTemplateCommands (registry);   // templates de projeto (16/11)
 
     // Prévia do navegador de sons: depende do player daqui, então o comando mora aqui.
     registry.add ({ "browser.preview", "Ouvir prévia"_t,
@@ -955,7 +958,10 @@ juce::Result AppController::newProject()
     if (kit.isEmpty())
         return juce::Result::fail (error);
 
+    // templates (16/11): o template pedido (template.new) ou o padrão do usuário pode trazer o projeto inteiro;
+    // senão vale o de sempre, o kit, e o de fábrica com kit ajusta BPM, tom e mixagem depois (finishNewProject)
     Project fresh;
+    const bool fromTemplate = templates::beginNewProject (fresh);
     wnl::normalise (fresh);
     projectNotices.clear();   // (avisos-tela) eram do projeto de antes
     newerAppFeatures.clear();
@@ -965,7 +971,7 @@ juce::Result AppController::newProject()
     model.replace (fresh);
     dirtyPlugins.clear();
 
-    for (auto& sound : kit)
+    for (auto& sound : fromTemplate ? decltype (kit) {} : kit)
     {
         auto params = new juce::DynamicObject();
         params->setProperty ("path", sound.file.getFullPathName());
@@ -978,6 +984,7 @@ juce::Result AppController::newProject()
         registry.run ("channel.addSampler", juce::var (params));
     }
 
+    templates::finishNewProject (registry, model);
     registry.clearHistory();
     model.dirty = false;
     pluginsTouched = false;

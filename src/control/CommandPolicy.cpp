@@ -89,6 +89,7 @@ namespace
     constexpr std::string_view preference  = "grava uma preferência sua (favoritos, a tag do produtor), fora do projeto";
     constexpr std::string_view libraryData = "muda a biblioteca da tela Projetos (pastas, combos, tags), fora do projeto";
     constexpr std::string_view userPresets = "grava ou apaga um preset ou uma cadeia sua no disco, fora do projeto";
+    constexpr std::string_view userTemplates = "grava ou apaga um template de projeto seu no disco, fora do projeto";
 
     // Em ordem alfabética (o static_assert abaixo confere). Os motivos vão para a IA e para a tela.
     constexpr std::array table {
@@ -343,6 +344,13 @@ namespace
         Entry { "takes.choose",               ok() },
         Entry { "takes.cut",                  ok() },
         Entry { "takes.list",                 ok() },
+        Entry { "template.choose",            ok() },                       // só abre a escolha na tela
+        Entry { "template.delete",            confirm (userTemplates) },    // vai para Templates/apagados
+        Entry { "template.list",              ok() },
+        Entry { "template.new",               unsaved (ok()) },             // larga o projeto aberto, como o project.new
+        Entry { "template.save",              confirm (userTemplates) },    // grava em <dados>/Templates
+        Entry { "template.saveDialog",        ok() },                       // só abre o pedido do nome na tela
+        Entry { "template.setDefault",        confirm (preference) },       // muda o "novo projeto" do app
         Entry { "transport.play",             ok() },
         Entry { "transport.playFrom",         ok() },
         Entry { "transport.record",           blocked (recording) },

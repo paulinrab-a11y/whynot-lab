@@ -458,6 +458,7 @@ void registerPitchBendCommands (CommandRegistry&);
 void registerPlaylistEditCommands (CommandRegistry&);
 /** Afinação nota a nota (27/10): audio.analyzeNotes, setNoteTune, editNotes, splitNote, mergeNotes, tuneToScale e clearNoteTune. */
 void registerNoteTuneCommands (CommandRegistry&);
+void registerTemplateCommands (CommandRegistry&);
 /** Swing e começo do play no PAT (29/10): project.setSwing, channel.setGroove e transport.setPatternStart. */
 void registerGrooveCommands (CommandRegistry&);
 

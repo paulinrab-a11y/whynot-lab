@@ -9,6 +9,7 @@
 #include "fx/FxEditor.h"
 #include "synth/SynthEditor.h"
 #include "../app/AppController.h"
+#include "../library/Templates.h"
 
 namespace whynot
 {
@@ -1441,6 +1442,19 @@ void MainComponent::setSoundsVisible (bool visible)
 
 void MainComponent::togglePanel (const juce::String& panel)
 {
+    // templates (16/11): as duas ações da paleta (template.choose e template.saveDialog) abrem a escolha e o nome
+    if (panel == "template.choose")
+    {
+        templateMenu().showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&transport));
+        return;
+    }
+
+    if (panel == "template.saveDialog")
+    {
+        saveTemplateDialog();
+        return;
+    }
+
     // A tecla da tela que já está à vista esconde ela (se o mixer estiver aberto);
     // a de outra tela troca para ela. Nunca fica tudo escondido.
     if (panel == "plugins")
@@ -1497,6 +1511,7 @@ void MainComponent::showFileMenu()
     const bool saved = app.getModel().file != juce::File();
 
     add ("file.new", "Novo projeto", [this] { newProject(); });
+    menu.addSubMenu ("Novo a partir de template"_t, templateMenu());
     add ("file.open", "Abrir...", [this] { openProject(); });
     add ("file.openAutosave", "Abrir um autosave...", [this] { openAutosave(); });
     add ("file.importMidi", "Importar MIDI...", [this] { importMidi(); });
@@ -1504,6 +1519,25 @@ void MainComponent::showFileMenu()
     add ("file.save", "Salvar", [this] { saveProject (false); });
     add ("file.saveAs", "Salvar como...", [this] { saveProject (true); });
     add ("file.saveNewVersion", "Salvar nova versão"_t, [this] { saveNewVersion(); }, saved);
+    add ("template.saveDialog", "Salvar como template..."_t, [this] { saveTemplateDialog(); });
+    {
+        // templates (16/11): qual o "novo projeto" usa, e apagar os seus (vão para Templates/apagados)
+        juce::PopupMenu choose, remove;
+        const auto chosen = templates::defaultName();
+        choose.addItem ("De fábrica (o kit em 140 BPM)"_t, true, chosen.isEmpty(),
+                        [this] { runCommand ("template.setDefault", args ({ { "name", "" } })); });
+
+        for (auto& t : templates::list())
+        {
+            choose.addItem (t.name, true, t.isDefault, [this, name = t.name] { runCommand ("template.setDefault", args ({ { "name", name } })); });
+
+            if (! t.factory)
+                remove.addItem (t.name, [this, name = t.name] { runCommand ("template.delete", args ({ { "name", name } })); });
+        }
+
+        menu.addSubMenu ("Template do novo projeto"_t, choose);
+        menu.addSubMenu ("Apagar template"_t, remove, remove.getNumItems() > 0);
+    }
     menu.addSeparator();
     add ("export.wav", "Exportar WAV...", [this] { showExport (ExportDialog::Format::wav); });
     add ("export.mp3", "Exportar MP3...", [this] { showExport (ExportDialog::Format::mp3); });
@@ -1647,7 +1681,71 @@ void MainComponent::newProject()
         return;
 
     runCommand ("project.new");
-    showStatus ("Projeto novo com o kit WHYNOT", false);
+    const auto chosen = templates::defaultName();
+    showStatus (chosen.isEmpty() ? "Projeto novo com o kit WHYNOT"_t : "Projeto novo a partir do template \""_t + chosen + "\"", false);
+}
+
+juce::PopupMenu MainComponent::templateMenu()
+{
+    // os de fábrica primeiro, depois os seus (templates::list); o do "novo projeto" vem marcado
+    juce::PopupMenu menu;
+    bool userSection = false;
+
+    for (auto& t : templates::list())
+    {
+        if (! t.factory && ! userSection)
+        {
+            menu.addSectionHeader ("Seus templates"_t);
+            userSection = true;
+        }
+
+        juce::PopupMenu::Item item (t.name + (t.isDefault ? " (padrão)"_t : juce::String()));
+        item.setAction ([this, name = t.name] { newFromTemplate (name); });
+        menu.addItem (item);
+    }
+
+    return menu;
+}
+
+void MainComponent::newFromTemplate (const juce::String& name)
+{
+    if (auto* w = findParentComponentOfClass<MainWindow>(); w != nullptr && ! w->confirmDiscardChanges())
+        return;
+
+    const auto r = app.run ("template.new", args ({ { "name", name } }));
+    showStatus (r.ok ? "Projeto novo a partir do template \""_t + name + "\"" : r.error, ! r.ok);
+}
+
+void MainComponent::saveTemplateDialog()
+{
+    // O nome e o que vai junto: tudo (as notas, os blocos e a automação também, um esqueleto de arranjo) ou só a
+    // estrutura (canais, mixer, BPM, tom e raias). O diálogo fica no membro até fechar.
+    templateDialog = std::make_unique<juce::AlertWindow> ("Salvar como template"_t,
+        "O template guarda o projeto aberto como ponto de partida: canais, samples, plugins, mixer, BPM e tom. "
+        "\"Novo a partir de template\" abre uma cópia dele, sem mexer no template."_t,
+        juce::MessageBoxIconType::NoIcon, this);
+    templateDialog->addTextEditor ("name", app.getModel().get().name, "Nome do template"_t);
+    templateDialog->addButton ("Salvar tudo"_t, 1, juce::KeyPress (juce::KeyPress::returnKey));
+    templateDialog->addButton ("Só a estrutura"_t, 2);
+    templateDialog->addButton ("Cancelar", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    juce::Component::SafePointer<MainComponent> safe (this);
+    templateDialog->enterModalState (true, juce::ModalCallbackFunction::create ([safe] (int choice)
+    {
+        if (safe == nullptr)
+            return;
+
+        const auto name = safe->templateDialog != nullptr ? safe->templateDialog->getTextEditorContents ("name").trim() : juce::String();
+        juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->templateDialog.reset(); });   // fora do aviso dele
+        safe->grabKeyboardFocus();
+
+        if (choice == 0)
+            return;
+
+        const auto r = safe->app.run ("template.save", args ({ { "name", name }, { "clearNotes", choice == 2 } }));
+        safe->showStatus (r.ok ? "Template \""_t + r.value["name"].toString() + "\" salvo. Arquivo > Novo a partir de template abre uma cópia."_t
+                               : r.error, ! r.ok);
+    }), false);
 }
 
 void MainComponent::openProject()

@@ -410,3 +410,37 @@ else()
 endif()
 
 add_test(NAME change_scope COMMAND whynot_change_scope_tests)
+# Templates de projeto (frente templates, 16/11): o nome que vira pasta, as recusas, a lista, o padrão de "novo projeto"
+# e a tabela dos templates de fábrica contra os gêneros e os estilos de mixagem (src/library/TemplateCore.h). Sem JUCE.
+add_executable(whynot_template_tests
+    library/test_template_core.cpp
+    ../src/ideas/Genres.cpp
+    ../src/dsp/Color.cpp
+    ../src/dsp/Console.cpp
+    ../src/dsp/Denoise.cpp
+    ../src/dsp/Dynamics.cpp
+    ../src/dsp/DynamicEq.cpp
+    ../src/dsp/Enhance.cpp
+    ../src/dsp/EqProcessor.cpp
+    ../src/dsp/FxCatalog.cpp
+    ../src/dsp/FxHost.cpp
+    ../src/dsp/Gate.cpp
+    ../src/dsp/Grit.cpp
+    ../src/dsp/LoudnessMeter.cpp
+    ../src/dsp/Master.cpp
+    ../src/dsp/Modulation.cpp
+    ../src/dsp/Multiband.cpp
+    ../src/dsp/Space.cpp
+    ../src/dsp/Tune.cpp
+    ../src/dsp/Vintage.cpp
+    ../src/dsp/Vocal.cpp
+    ../src/dsp/VoicePitch.cpp)
+target_compile_features(whynot_template_tests PRIVATE cxx_std_20)
+
+if(MSVC)
+    target_compile_options(whynot_template_tests PRIVATE /W4 /utf-8 /O2)
+else()
+    target_compile_options(whynot_template_tests PRIVATE -Wall -Wextra -O2)
+endif()
+
+add_test(NAME templates COMMAND whynot_template_tests)

@@ -57,7 +57,8 @@ void CommandRegistry::add (CommandInfo info)
     jassert (info.id.isNotEmpty() && info.run != nullptr);
     auto fields = compileSchema (info.params);
     const auto id = info.id;
-    commands[id] = Entry { std::move (info), std::move (fields) };
+    const auto scope = changescope::maskFor (std::string_view (id.toRawUTF8(), id.getNumBytesAsUTF8()));
+    commands[id] = Entry { std::move (info), std::move (fields), scope };
 }
 
 const CommandRegistry::Entry* CommandRegistry::findEntry (const juce::String& id) const
@@ -70,6 +71,12 @@ const CommandInfo* CommandRegistry::find (const juce::String& id) const
 {
     const auto* entry = findEntry (id);
     return entry == nullptr ? nullptr : &entry->info;
+}
+
+change::Mask CommandRegistry::changeMaskOf (const juce::String& id) const
+{
+    const auto* entry = findEntry (id);
+    return entry == nullptr ? change::all : entry->scope;
 }
 
 //==============================================================================
@@ -388,7 +395,7 @@ CommandResult CommandRegistry::run (const juce::String& id, const juce::var& p)
         }
 
         if (! (model.get() == previous))
-            model.changed();
+            model.changed (entry->scope);   // só o que este comando muda; no gesto, quem escuta soma os passos
 
         return result;
     }
@@ -439,7 +446,7 @@ CommandResult CommandRegistry::run (const juce::String& id, const juce::var& p)
             undoManager.perform (new SnapshotAction (*this, before, after, true));
         }
 
-        model.changed();
+        model.changed (entry->scope);   // o domínio do comando (ChangeScope.h): as outras telas não se refazem
     }
 
     return result;

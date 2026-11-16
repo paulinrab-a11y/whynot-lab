@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../model/ProjectModel.h"
+#include "ChangeScope.h"
 #include "Params.h"
 
 #include <functional>
@@ -266,6 +267,11 @@ struct CommandInfo
 
     Os parâmetros são conferidos aqui contra o schema do próprio comando, antes de ele rodar (10/11): vale
     para a interface, os atalhos, o autoteste e qualquer cliente da ponte, não só para o MCP.
+
+    Depois de um comando que mudou o modelo, o aviso (ProjectModel::changed) leva o que ele muda (16/11): a
+    máscara vem do id, pela tabela de ChangeScope.h, e quem escuta só refaz o que depende dela. Num gesto e num
+    lote cada comando avisa com a máscara dele (quem escuta soma). Desfazer, refazer e o comando que falha e
+    volta trocam o projeto inteiro (ProjectModel::replace): valem change::all.
 */
 class CommandRegistry
 {
@@ -274,6 +280,10 @@ public:
 
     void add (CommandInfo);
     const CommandInfo* find (const juce::String& id) const;
+
+    /** O que o comando muda no projeto (ChangeScope.h): a máscara que vai no aviso depois dele. Id desconhecido,
+        ou comando que ninguém conferiu, vale change::all. */
+    change::Mask changeMaskOf (const juce::String& id) const;
 
     /** Para a IA: [{ id, title, params }] em ordem alfabética. */
     juce::var describe() const;
@@ -371,6 +381,7 @@ private:
     {
         CommandInfo info;
         std::vector<Field> fields;
+        change::Mask scope = change::all;   // o que o comando muda (ChangeScope.h), lido uma vez no add()
     };
 
     static std::vector<Field> compileSchema (const juce::var& schema);

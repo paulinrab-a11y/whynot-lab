@@ -6,6 +6,7 @@
 #include "Theme.h"
 #include "../app/AppController.h"
 #include "../audio/PianoPresets.h"
+#include "../model/LaneStack.h"
 #include "../record/RecordEngine.h"
 #include "../synth/SynthPresets.h"
 
@@ -961,6 +962,49 @@ void ChannelRack::showStepMenu (int row, int step)
                         });
 }
 
+bool ChannelRack::placeInPlaylist (const juce::String& channel)
+{
+    const auto& p = app.getModel().get();
+    const auto* pat = p.currentPatternPtr();
+    const auto* ch = p.findChannel (channel);
+
+    if (pat == nullptr || ch == nullptr || ch->isAudio() || ! pat->hasContent (channel))
+    {
+        if (onStatus)
+            onStatus ("O canal não tem notas nem passos neste padrão: não há o que pôr na playlist."_t, true);
+
+        return false;
+    }
+
+    // na agulha (o começo do play no SONG), ou no começo do trecho selecionado; na primeira raia livre ali
+    const auto selected = app.getTimeSelection();
+    const int start = juce::jlimit (0, maxTimelineTicks - pat->lengthTicks(), selected.isEmpty() ? app.playStart() : selected.getStart());
+    std::vector<lanestack::Busy> busy;
+
+    for (int t = 0; t < (int) p.playlistTracks.size(); ++t)
+        for (auto& i : p.playlistItems)
+            if (i.track == p.playlistTracks[(size_t) t].id)
+                busy.push_back ({ t, i.start, i.end() });
+
+    // o normalise deixa sempre uma raia vazia no fim; no teto de raias, vale a última
+    const int lanes = (int) p.playlistTracks.size();
+    const int freeLane = lanestack::firstFree (busy, 0, start, start + pat->lengthTicks(), lanes);
+    const int lane = freeLane >= 0 ? freeLane : juce::jmax (0, lanes - 1);
+    const auto patternName = pat->name, channelName = ch->name;
+    const auto laneName = juce::isPositiveAndBelow (lane, lanes) ? p.playlistTracks[(size_t) lane].name : juce::String();
+
+    const auto result = app.run ("playlist.addItem", args ({ { "kind", "pattern" }, { "ref", pat->id }, { "track", lane + 1 },
+                                                             { "start", start }, { "channel", channel } }));
+
+    if (onStatus)
+        onStatus (result.ok ? "\""_t + patternName + " · "_t + channelName + "\" na playlist, na raia \""_t + laneName
+                                  + "\": só este canal toca nesse bloco (F5 abre a playlist; Ctrl+Z desfaz)."_t
+                            : result.error,
+                  ! result.ok);
+
+    return result.ok;
+}
+
 void ChannelRack::showTapeMenu (int row)
 {
     juce::PopupMenu menu;
@@ -1003,6 +1047,15 @@ void ChannelRack::showTapeMenu (int row)
     if (! r.isAudio)
     {
         menu.addItem (5, "Abrir no piano roll (F7)");
+
+        // bloco por canal (16/11): o canal sozinho na playlist, para montar o arranjo (a melodia entra antes do kick...)
+        {
+            const auto* pat = app.getModel().get().currentPatternPtr();
+            const bool has = pat != nullptr && pat->hasContent (r.id);
+            menu.addItem (13, has ? "Pôr na playlist (só este canal)"_t
+                                  : "Pôr na playlist (só este canal): sem notas nem passos neste padrão"_t, has);
+        }
+
         menu.addSeparator();
         if (! instrument)
             menu.addItem (4, "Cortar a si mesmo (nota nova corta a anterior)", true, r.cutItself);
@@ -1109,6 +1162,7 @@ void ChannelRack::showTapeMenu (int row)
                             if (choice == 7) app.run ("channel.setOneShot", args ({ { "channel", id } }));
                             if (choice == 8) app.run ("plugin.openEditor", args ({ { "channel", id } }));
                             if (choice == 9) showSamplerPanel (row);
+                            if (choice == 13) placeInPlaylist (id);
 
                             if (choice >= 50 && choice <= 58)
                                 app.run ("channel.setChoke", args ({ { "channel", id }, { "group", choice - 50 } }));

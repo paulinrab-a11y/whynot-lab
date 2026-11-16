@@ -165,6 +165,7 @@ void PlaylistGrid::refresh (const Project& p)
         brushKind = "pattern";
         brushRef = currentPattern;
         brushFile = {};
+        brushChannel = {};
     }
 
     const bool brushOk = brushKind == "audio" ? (p.findChannel (brushRef) != nullptr && p.findChannel (brushRef)->isAudio())
@@ -174,12 +175,22 @@ void PlaylistGrid::refresh (const Project& p)
         brushKind = "pattern";
         brushRef = p.currentPattern;
         brushFile = {};
+        brushChannel = {};
+    }
+
+    // bloco por canal (16/11): o pincel de um bloco de um canal só carimba o mesmo canal, enquanto o canal existir
+    const auto* brushOnly = brushKind == "pattern" && brushChannel.isNotEmpty() ? p.findChannel (brushChannel) : nullptr;
+
+    if (brushOnly == nullptr || brushOnly->isAudio())
+    {
+        brushChannel = {};
+        brushOnly = nullptr;
     }
 
     if (brushKind == "audio")
         brushName = p.findChannel (brushRef)->name;
     else if (auto* pat = p.findPattern (brushRef))
-        brushName = pat->name;
+        brushName = brushOnly != nullptr ? pat->name + " · "_t + brushOnly->name : pat->name;
 
     previews.clear();
 
@@ -257,6 +268,17 @@ void PlaylistGrid::refresh (const Project& p)
         else if (auto* pat = p.findPattern (item.ref))
         {
             b.name = pat->name;
+
+            // bloco por canal (16/11): "Padrão · Canal", a cor do canal e a miniatura só dele
+            if (const auto* only = item.channel.isNotEmpty() ? p.findChannel (item.channel) : nullptr)
+            {
+                b.name = pat->name + " · "_t + only->name;
+                b.single = true;
+                b.stripe = theme::fromHex (only->colour);
+
+                if (const auto key = previewKeyOf (item); previews.count (key) == 0)
+                    previews[key] = buildPreview (p, *pat, item.channel);
+            }
         }
 
         // takes (gravar voz): no comp fica só o que toca; com o grupo aberto, cada take vai para a sub-raia dele
@@ -307,25 +329,17 @@ void PlaylistGrid::refresh (const Project& p)
     repaint();
 }
 
-PlaylistGrid::Preview PlaylistGrid::buildPreview (const Project& p, const Pattern& pat) const
+PlaylistGrid::Preview PlaylistGrid::buildPreview (const Project& p, const Pattern& pat, const juce::String& onlyChannel) const
 {
     Preview pv;
     pv.lengthTicks = pat.lengthTicks();
 
-    // uma faixa por canal com conteúdo no padrão
+    // uma faixa por canal com conteúdo no padrão; no bloco de um canal só (16/11), só a dele, na altura inteira
     std::vector<const Channel*> lanes;
 
     for (auto& c : p.channels)
-    {
-        bool has = pat.notesFor (c.id) != nullptr;
-
-        if (auto it = pat.steps.find (c.id); ! has && it != pat.steps.end())
-            for (auto& s : it->second)
-                has = has || s.on;
-
-        if (has)
+        if (pat.hasContent (c.id) && (onlyChannel.isEmpty() || c.id == onlyChannel))
             lanes.push_back (&c);
-    }
 
     if (lanes.empty())
         return pv;
@@ -756,7 +770,8 @@ juce::Rectangle<float> PlaylistGrid::menuButtonBounds (const Block& b) const
     const auto r = blockBounds (b);
     const float headH = juce::jmin (17.0f, r.getHeight() * 0.4f);
 
-    if (! b.audio || b.takeRow || r.getWidth() < 44.0f || onlyPill (r, pillBounds (b)))
+    // (16/11) o bloco de padrão também tem menu: tocar só um canal e separar por canal
+    if (b.takeRow || r.getWidth() < 44.0f || onlyPill (r, pillBounds (b)))
         return {};
 
     return { r.getX() + 9.0f, r.getY(), 14.0f, headH };
@@ -765,6 +780,9 @@ juce::Rectangle<float> PlaylistGrid::menuButtonBounds (const Block& b) const
 void PlaylistGrid::showBlockMenu (const juce::String& id)
 {
     const auto* item = modelItem (id);
+
+    if (item != nullptr && item->kind == "pattern")
+        return showPatternMenu (id);
 
     if (item == nullptr || item->kind != "audio")
         return;
@@ -949,6 +967,164 @@ void PlaylistGrid::showBlockMenu (const juce::String& id)
         if (! result.ok && safe->onStatus)
             safe->onStatus (result.error, true);
     });
+}
+
+//==============================================================================
+// Bloco por canal (16/11, pedido do usuário: "colocar cada channel rack separadamente na playlist"). O bloco de
+// padrão ganha a setinha de menu do bloco de áudio; nela, tocar só um canal do padrão e separar o bloco por canal.
+std::vector<PlaylistItem> PlaylistGrid::patternTargets (const juce::String& id) const
+{
+    std::vector<PlaylistItem> out;
+    const bool many = selection.count (id) != 0;
+
+    for (auto& i : app.getModel().get().playlistItems)
+        if (i.kind == "pattern" && (i.id == id || (many && selection.count (i.id) != 0)))
+            out.push_back (i);
+
+    return out;
+}
+
+juce::String PlaylistGrid::blockName (const juce::String& item) const
+{
+    const auto* b = findBlock (item);
+    return b != nullptr ? b->name : juce::String();
+}
+
+void PlaylistGrid::setBlockChannel (const juce::String& id, const juce::String& channel)
+{
+    auto targets = patternTargets (id);
+    const auto before = targets.size();
+    std::erase_if (targets, [] (const PlaylistItem& i) { return i.locked; });   // o travado fica (fatia 6)
+
+    if (targets.size() < before)
+        lockedNotice();
+
+    std::erase_if (targets, [&channel] (const PlaylistItem& i) { return i.channel == channel; });
+
+    if (targets.empty())
+        return;
+
+    app.getCommands().beginGesture (channel.isEmpty() ? "Tocar todos os canais" : "Tocar só um canal"_t);
+
+    for (auto& i : targets)
+        if (const auto result = app.run ("playlist.updateItem", args ({ { "item", i.id }, { "channel", channel } })); ! result.ok && onStatus)
+            onStatus (result.error, true);
+
+    app.getCommands().endGesture();
+    repaint();
+}
+
+void PlaylistGrid::splitByChannel (const juce::String& id)
+{
+    auto targets = id.isNotEmpty() ? patternTargets (id) : selectedItems();
+    std::erase_if (targets, [] (const PlaylistItem& i) { return i.kind != "pattern"; });
+    const auto before = targets.size();
+    std::erase_if (targets, [] (const PlaylistItem& i) { return i.locked; });   // o travado fica (fatia 6)
+
+    if (targets.size() < before)
+        lockedNotice();
+
+    const bool anyLocked = targets.size() < before;
+    std::erase_if (targets, [] (const PlaylistItem& i) { return i.channel.isNotEmpty(); });   // já é de um canal só
+
+    if (targets.empty())
+    {
+        if (onStatus && ! anyLocked)
+            onStatus (before == 0 ? "Separar por canal: selecione um bloco de padrão."_t
+                                  : "Separar por canal: os blocos selecionados já tocam um canal só."_t, false);
+
+        return;
+    }
+
+    // de cima para baixo: o bloco de cima escolhe as raias primeiro, e o de baixo desvia dos blocos dele
+    std::stable_sort (targets.begin(), targets.end(), [this] (const PlaylistItem& a, const PlaylistItem& b)
+                      { return trackIndexOf (a.track) < trackIndexOf (b.track); });
+
+    std::set<juce::String> made;
+    juce::String problem;
+    app.getCommands().beginGesture ("Separar por canal");
+
+    for (auto& i : targets)
+    {
+        const auto result = app.run ("playlist.splitByChannel", args ({ { "item", i.id } }));
+
+        if (! result.ok)
+            problem = result.error;
+        else if (auto* ids = result.value["items"].getArray())
+            for (auto& v : *ids)
+                made.insert (v.toString());
+    }
+
+    app.getCommands().endGesture();
+
+    if (! made.empty())
+    {
+        selection = made;
+        selectedItem = *made.begin();
+    }
+
+    if (onStatus)
+        onStatus (problem.isNotEmpty() ? problem
+                                       : juce::String ((int) made.size()) + (made.size() == 1 ? " bloco, de um canal só"_t : " blocos, um por canal"_t)
+                                             + ": apague, mova ou apare o de cada canal para montar o arranjo (Ctrl+Z desfaz)."_t,
+                  problem.isNotEmpty());
+
+    repaint();
+}
+
+void PlaylistGrid::showPatternMenu (const juce::String& id)
+{
+    const auto& p = app.getModel().get();
+    const auto* item = modelItem (id);
+    const auto* pat = item != nullptr && item->kind == "pattern" ? p.findPattern (item->ref) : nullptr;
+
+    if (pat == nullptr)
+        return;
+
+    // o botão direito na grade apaga (como no FL), então o menu abre pela setinha do cabeçalho, como no áudio
+    const auto targets = patternTargets (id);
+    const juce::Component::SafePointer<PlaylistGrid> safe (this);
+    juce::PopupMenu menu, only;
+    int nextId = 1;
+
+    auto addChannel = [&] (const juce::String& text, const juce::String& channel)
+    {
+        juce::PopupMenu::Item entry (text);
+        entry.itemID = nextId++;
+        entry.isTicked = item->channel == channel;
+        entry.action = [safe, id, channel]
+        {
+            if (safe != nullptr)
+                safe->setBlockChannel (id, channel);
+        };
+        only.addItem (std::move (entry));
+    };
+
+    addChannel ("Todos os canais", {});
+    only.addSeparator();
+
+    // os canais com notas ou passos no padrão (e o canal de agora, mesmo que o padrão já não tenha nada dele)
+    for (auto& ch : p.channels)
+        if (! ch.isAudio() && (pat->hasContent (ch.id) || ch.id == item->channel))
+            addChannel (ch.name, ch.id);
+
+    menu.addSectionHeader (targets.size() > 1 ? juce::String ((int) targets.size()) + " blocos de padrão selecionados"_t
+                                              : "Bloco de padrão: "_t + pat->name);
+    menu.addSubMenu ("Tocar só o canal"_t, only);
+
+    juce::PopupMenu::Item split (targets.size() > 1 ? "Separar por canal (os selecionados)" : "Separar por canal (um bloco para cada canal)");
+    split.itemID = nextId++;
+    split.isEnabled = std::any_of (targets.begin(), targets.end(), [] (const PlaylistItem& i) { return i.channel.isEmpty() && ! i.locked; });
+    split.action = [safe, id]
+    {
+        if (safe != nullptr)
+            safe->splitByChannel (id);
+    };
+    menu.addItem (std::move (split));
+
+    const auto* b = findBlock (id);
+    const auto area = b != nullptr ? localAreaToGlobal (menuButtonBounds (*b).toNearestInt()) : juce::Rectangle<int>();
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea (area).withMinimumWidth (240));
 }
 
 //==============================================================================
@@ -1428,6 +1604,15 @@ void PlaylistGrid::paintBlock (juce::Graphics& g, const Block& b, juce::Rectangl
         nameArea.setLeft (menuButton.getRight() + 2.0f);
     }
 
+    // bloco por canal (16/11): a pílula fina com a cor do canal antes do nome, como na placa do nome do rack
+    if (b.single && nameArea.getWidth() > 24.0f)
+    {
+        const juce::Rectangle<float> pillOfChannel (nameArea.getX(), head.getY() + 3.0f, 3.0f, juce::jmax (2.0f, headH - 6.0f));
+        g.setColour (b.stripe);
+        g.fillRoundedRectangle (pillOfChannel, 1.5f);
+        nameArea.setLeft (pillOfChannel.getRight() + 4.0f);
+    }
+
     // o esticar no fim do cabeçalho ("×1,50", e "fita" se o tom vai junto), e o ganho do bloco ("+3,0 dB")
     // voz na playlist (27/10): o tom do bloco ("+2 st") e o "inv" do invertido também
     const bool gained = b.audio && b.item.gainDb != 0.0f;
@@ -1497,7 +1682,7 @@ void PlaylistGrid::paintBlock (juce::Graphics& g, const Block& b, juce::Rectangl
 
         if (! b.audio)
         {
-            if (auto it = previews.find (b.item.ref); it != previews.end() && it->second.lengthTicks > 0)
+            if (auto it = previews.find (previewKeyOf (b.item)); it != previews.end() && it->second.lengthTicks > 0)
             {
                 const auto& pv = it->second;
                 g.setColour (colour::textDim.withAlpha (0.85f));
@@ -1754,7 +1939,8 @@ bool PlaylistGrid::placeBrush (juce::Point<float> pos)
     const int start = snapDown (xToTick (pos.x));
     const auto params = brushKind == "audio"
         ? args ({ { "kind", "audio" }, { "ref", brushRef }, { "track", track + 1 }, { "start", start }, { "file", brushFile } })
-        : args ({ { "kind", "pattern" }, { "ref", brushRef.isNotEmpty() ? brushRef : currentPattern }, { "track", track + 1 }, { "start", start } });
+        : args ({ { "kind", "pattern" }, { "ref", brushRef.isNotEmpty() ? brushRef : currentPattern }, { "track", track + 1 }, { "start", start },
+                  { "channel", brushChannel } });   // o carimbo de um bloco de um canal só leva o canal (16/11)
 
     const auto result = app.run ("playlist.addItem", params);
 
@@ -2033,7 +2219,8 @@ juce::String PlaylistGrid::addCopy (const PlaylistItem& i, int start, int trackI
                                                              { "start", juce::jmax (0, start) }, { "length", i.length },
                                                              { "offsetSeconds", i.offsetSeconds }, { "patternOffset", i.patternOffset },
                                                              { "muted", i.muted }, { "stretch", i.stretch }, { "tape", i.tape },
-                                                             { "file", i.file }, { "pan", i.pan } }));
+                                                             { "file", i.file }, { "pan", i.pan },
+                                                             { "channel", i.channel } }));   // bloco por canal (16/11)
     if (! result.ok && onStatus)
         onStatus (result.error, true);
 
@@ -2479,7 +2666,11 @@ void PlaylistGrid::mouseDown (const juce::MouseEvent& e)
         && part != Drag::fadeIn && part != Drag::fadeOut && menuButtonBounds (*hitPtr).contains (pos))
     {
         selectedItem = hitPtr->item.id;
-        selection = { selectedItem };
+
+        // (16/11) no bloco de padrão que já está na seleção, a seleção fica: o menu dele vale para todos os selecionados
+        if (hitPtr->audio || selection.count (selectedItem) == 0)
+            selection = { selectedItem };
+
         repaint();
         showBlockMenu (selectedItem);
         return;
@@ -2553,6 +2744,7 @@ void PlaylistGrid::mouseDown (const juce::MouseEvent& e)
         brushKind = hit.item.kind;
         brushRef = hit.item.ref;
         brushFile = hit.item.file;   // o pincel de um consolidado pinta o WAV dele (fatia 6)
+        brushChannel = hit.item.channel;   // e o de um bloco de um canal só carimba o mesmo canal (16/11)
         brushName = hit.name;
         if (onBrushChanged) onBrushChanged();
 
@@ -2641,7 +2833,8 @@ void PlaylistGrid::mouseDown (const juce::MouseEvent& e)
                                                                       { "track", hit.trackIndex + 1 }, { "start", hit.item.start },
                                                                       { "length", hit.item.length },
                                                                       { "stretch", hit.item.stretch }, { "tape", hit.item.tape },
-                                                                      { "file", hit.item.file }, { "pan", hit.item.pan } }));
+                                                                      { "file", hit.item.file }, { "pan", hit.item.pan },
+                                                                      { "channel", hit.item.channel } }));   // bloco por canal (16/11)
             if (result.ok)
             {
                 selectedItem = result.value["item"].toString();
@@ -2785,7 +2978,8 @@ void PlaylistGrid::mouseDrag (const juce::MouseEvent& e)
             while (paintNext <= at)
             {
                 const auto result = app.run ("playlist.addItem", args ({ { "kind", brushKind }, { "ref", brushRef.isNotEmpty() ? brushRef : currentPattern },
-                                                                          { "track", paintTrack + 1 }, { "start", paintNext } }));
+                                                                          { "track", paintTrack + 1 }, { "start", paintNext },
+                                                                          { "channel", brushKind == "pattern" ? brushChannel : juce::String() } }));
                 const auto* item = result.ok ? modelItem (result.value["item"].toString()) : nullptr;
 
                 if (item == nullptr)
@@ -3536,6 +3730,7 @@ bool PlaylistGrid::runShortcut (const juce::String& id, const juce::KeyPress& ke
     if (id == "playlist.cutAtNeedle")      { cutAtNeedle(); return true; }
     if (id == "playlist.removeTime")       { removeTimeSelection(); return true; }
     if (id == "playlist.insertTime")       { insertTimeSelection(); return true; }
+    if (id == "playlist.splitByChannel")   { splitByChannel ({}); return true; }   // bloco por canal (16/11)
 
     if (id == "playlist.delete")
     {
@@ -3682,7 +3877,8 @@ juce::String PlaylistGrid::getTooltip()
                    + ": arraste as bordas para aparar; segure A para esticar no tempo. Shift+arraste copia, "
                      "botão direito apaga, a setinha abre o menu do bloco."_t;
 
-        return b->name + ": duplo clique abre o padrão. Borda direita muda a duração, Shift+arraste copia."_t;
+        return b->name + ": duplo clique abre o padrão. Borda direita muda a duração, Shift+arraste copia. "
+                         "A setinha: tocar só um canal do padrão, ou separar o bloco por canal."_t;
     }
 
     return "Clique coloca \""_t + brushName + "\". Ctrl+arrastar seleciona, botão direito apaga, Ctrl+roda faz zoom. "
@@ -3781,6 +3977,7 @@ void PlaylistGrid::filesDropped (const juce::StringArray& files, int x, int y)
         brushKind = "audio";
         brushRef = result.value["ref"].toString();
         brushFile = {};
+        brushChannel = {};
         track = juce::jmin (track + 1, juce::jmax (0, (int) tracks.size() - 1));
     }
 

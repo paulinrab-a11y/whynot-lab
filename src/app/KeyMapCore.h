@@ -155,6 +155,7 @@ inline const std::vector<Action>& actions()
         both ("playlist.cutAtNeedle", "Cortar na agulha (ou nas bordas do trecho)", "Playlist", playlist, { k ('E', ctrl) }),
         both ("playlist.removeTime",  "Tirar o trecho de tempo (o resto encosta)",  "Playlist", playlist, { k (del, ctrl) }),
         both ("playlist.insertTime",  "Abrir espaço no trecho de tempo",            "Playlist", playlist, { k (insert, ctrl) }),
+        both ("playlist.splitByChannel", "Separar os blocos selecionados por canal (um bloco para cada)", "Playlist", playlist, {}),
         both ("playlist.zoomSelection",  "Zoom na seleção",          "Playlist", playlist, { k ('Z', shift) }),
         both ("playlist.zoomSong",       "Zoom na música inteira",   "Playlist", playlist, { k ('Z', alt) }),
         both ("playlist.nextMarker",     "Pular para o próximo marcador",  "Playlist", playlist, { k (right, alt) }),

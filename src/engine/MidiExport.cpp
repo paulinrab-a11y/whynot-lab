@@ -152,7 +152,7 @@ juce::Result writeMidiFile (const Project& p, bool song, int loops, const juce::
         if (song)
         {
             for (auto& item : p.playlistItems)
-                if (item.kind == "pattern" && p.itemSounds (item))
+                if (item.kind == "pattern" && p.itemSounds (item) && item.playsChannel (c.id))   // bloco por canal (16/11)
                     if (auto* pat = p.findPattern (item.ref))
                         blocks.push_back ({ item.start, Projector::notesFor (p, *pat, c, item.length, item.patternOffset, Projector::usesChance (*pat, c.id) ? item.start - item.patternOffset : 0) });
         }

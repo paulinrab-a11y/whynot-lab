@@ -171,6 +171,7 @@ set(WHYNOT_SOURCES
     src/app/selftest/Groove.cpp
     src/app/selftest/HeavyProject.cpp
     src/app/selftest/Ideas.cpp
+    src/app/selftest/ItemChannel.cpp
     src/app/selftest/Library.cpp
     src/app/selftest/Mixing.cpp
     src/app/selftest/NoteTune.cpp

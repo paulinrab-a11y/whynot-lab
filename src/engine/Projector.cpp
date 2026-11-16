@@ -1016,6 +1016,9 @@ std::vector<Projector::MidiSpec> Projector::midiFor (const Project& p, const Cha
             if (item.kind != "pattern" || ! p.itemSounds (item))   // o mudo do bloco e o da raia, com o solo (bloco 4)
                 continue;
 
+            if (! item.playsChannel (c.id))   // bloco por canal (16/11): o bloco de "só o kick" não gera clipe nos outros
+                continue;
+
             if (auto* pat = p.findPattern (item.ref))
             {
                 // o começo do padrão na linha do tempo: as duas metades de um bloco cortado sorteiam como o bloco inteiro

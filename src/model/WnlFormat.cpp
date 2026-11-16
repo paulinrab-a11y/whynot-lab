@@ -165,6 +165,14 @@ namespace
         static const std::vector<Feature> table
         {
             // { "exemplo", [] (const Project& p) { return p.exemplo != 0; } },
+
+            // bloco por canal (16/11): PlaylistItem::channel, o bloco de padrão que toca um canal só. Um app que não
+            // conhece o campo tocaria o padrão inteiro em cada bloco (o arranjo soaria errado) e apagaria o campo ao salvar
+            { "playlist.itemChannel", [] (const Project& p)
+              {
+                  return std::any_of (p.playlistItems.begin(), p.playlistItems.end(),
+                                      [] (const PlaylistItem& i) { return i.channel.isNotEmpty(); });
+              } },
         };
 
         return table;
@@ -640,7 +648,12 @@ void normalise (Project& p)
     {
         const bool refOk = i.kind == "audio" ? (p.findChannel (i.ref) != nullptr && p.findChannel (i.ref)->isAudio())
                                              : p.findPattern (i.ref) != nullptr;
-        return ! refOk || p.findPlaylistTrack (i.track) == nullptr;
+        // bloco por canal (16/11): o canal do bloco de padrão existe e não é de áudio. Sem o canal (apagado, ou um
+        // arquivo editado à mão) o bloco sai, como o bloco de áudio sem o canal dele: tocar o padrão inteiro no lugar
+        // de "só o kick" poria som onde a pessoa não pôs. O desfazer de channel.remove traz o canal e os blocos
+        const auto* only = i.kind != "audio" && i.channel.isNotEmpty() ? p.findChannel (i.channel) : nullptr;
+        const bool channelOk = i.kind == "audio" || i.channel.isEmpty() || (only != nullptr && ! only->isAudio());
+        return ! refOk || ! channelOk || p.findPlaylistTrack (i.track) == nullptr;
     });
 
     for (auto& i : p.playlistItems)
@@ -670,6 +683,9 @@ void normalise (Project& p)
         // playlist fatia 6 (27/10, noite): o pan e o arquivo do bloco só no áudio; travar vale em qualquer bloco
         i.pan = i.kind == "audio" && std::isfinite (i.pan) ? std::round (juce::jlimit (-1.0f, 1.0f, i.pan) * 100.0f) / 100.0f : 0.0f;
         i.file = i.kind == "audio" ? i.file.trim() : juce::String();
+
+        if (i.kind == "audio")
+            i.channel = {};   // bloco por canal (16/11): só no bloco de padrão
 
         if (i.kind != "audio" || i.takeGroup.isEmpty())
         {
@@ -1188,6 +1204,9 @@ juce::String toJsonReference (const Project& p)
 
         if (i.file.isNotEmpty())
             set (io, "file", i.file);
+
+        if (i.channel.isNotEmpty())   // bloco por canal (16/11); o recurso "playlist.itemChannel" de app.features
+            set (io, "channel", i.channel);
 
         plItems.add (io);
     }
@@ -1997,6 +2016,9 @@ juce::String toJson (const Project& p)
         if (i.file.isNotEmpty())
             w.member ("file", i.file);
 
+        if (i.channel.isNotEmpty())   // bloco por canal (16/11), igual no toJsonReference
+            w.member ("channel", i.channel);
+
         w.endObject();
     }
 
@@ -2692,6 +2714,7 @@ static juce::Result readProject (const juce::String& json, Project& out, LoadRep
             i.pan = (float) getDouble (io, "pan", 0.0);   // playlist fatia 6 (27/10, noite); o normalise limita
             i.locked = getBool (io, "locked", false);
             i.file = readPath (io, "file");
+            i.channel = getString (io, "channel");   // bloco por canal (16/11); o normalise confere o canal
 
             if (i.id.isNotEmpty() && itemIds.insert (i.id).second)
                 p.playlistItems.push_back (i);

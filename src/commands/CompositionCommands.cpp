@@ -1,4 +1,5 @@
 #include "CommandRegistry.h"
+#include "../model/LaneStack.h"
 #include "../model/PlaylistEdit.h"
 #include "../model/NoteCurves.h"
 #include "../model/NoteTools.h"
@@ -107,6 +108,18 @@ namespace
 
         const auto id = v.toString();
         return p.findPlaylistTrack (id) != nullptr ? id : juce::String();
+    }
+
+    /** Bloco por canal (16/11): o canal que um bloco de padrão toca sozinho precisa existir e tocar notas. */
+    juce::String itemChannelProblem (const Project& p, const juce::String& channel)
+    {
+        const auto* ch = p.findChannel (channel);
+
+        if (ch == nullptr)
+            return "Canal não encontrado: "_t + channel;
+
+        return ch->isAudio() ? "O canal \""_t + ch->name + "\" é de áudio: ele não toca notas do padrão (o áudio já é um bloco só dele)."_t
+                             : juce::String();
     }
 
     void insertBeforeMaster (Project& p, MixerTrack t)
@@ -767,7 +780,9 @@ void registerCompositionCommands (CommandRegistry& r)
                  for (auto& i : p.playlistItems)
                  {
                      const auto* pat = i.kind == "audio" ? nullptr : p.findPattern (i.ref);
-                     const bool plays = p.itemSounds (i) && (i.kind == "audio" ? i.ref == id : pat != nullptr && patternPlays (*pat));
+                     // (16/11) o bloco de padrão que toca outro canal só não conta: este canal não soa nele
+                     const bool plays = p.itemSounds (i) && (i.kind == "audio" ? i.ref == id
+                                                                               : pat != nullptr && i.playsChannel (id) && patternPlays (*pat));
 
                      if (plays)
                      {
@@ -1015,6 +1030,9 @@ void registerCompositionCommands (CommandRegistry& r)
                        { "tape", "boolean", false, "Áudio: o esticar muda o tom junto, como uma fita"_t },
                        { "file", "string", false, "Áudio: o arquivo próprio do bloco no lugar do sample do canal (o consolidado; copiar um bloco leva ele)"_t },
                        { "pan", "number", false, "Áudio: o pan do bloco, de -1 a 1"_t },
+                       { "channel", "string", false, "Padrão: o bloco toca só este canal do padrão (id do canal); ausente ou \"\" = todos. "
+                                                     "Serve para montar o arranjo sem clonar o padrão: a melodia entra sozinha, depois o kick, "
+                                                     "depois tudo. O bloco continua ligado ao padrão (editar o padrão muda o bloco)"_t },
                        { "unit", "string", false, "Unidade de start/length: ticks (padrão), steps, beats ou bars"_t } }), true,
              [] (CommandContext& c, const juce::var& a)
              {
@@ -1065,6 +1083,9 @@ void registerCompositionCommands (CommandRegistry& r)
                      item.length = params::has (a, "length") ? toTicks (a, params::number (a, "length", 0))
                                                              : juce::jmax (ticksPerStep, fileTicks);
                      item.offsetSeconds = roundToMicroseconds (juce::jmax (0.0, params::number (a, "offsetSeconds", 0.0)));
+
+                     if (params::string (a, "channel").isNotEmpty())
+                         return CommandResult::fail ("Só bloco de padrão toca um canal só (channel); o bloco de áudio já é de um canal."_t);
                  }
                  else
                  {
@@ -1077,6 +1098,11 @@ void registerCompositionCommands (CommandRegistry& r)
 
                      item.length = params::has (a, "length") ? toTicks (a, params::number (a, "length", 0)) : pat->lengthTicks();
                      item.patternOffset = juce::jlimit (0, maxTimelineTicks, (int) params::number (a, "patternOffset", 0));
+                     item.channel = params::string (a, "channel");   // bloco por canal (16/11)
+
+                     if (item.channel.isNotEmpty())
+                         if (const auto problem = itemChannelProblem (p, item.channel); problem.isNotEmpty())
+                             return CommandResult::fail (problem);
                  }
 
                  item.muted = params::boolean (a, "muted", false);
@@ -1101,6 +1127,8 @@ void registerCompositionCommands (CommandRegistry& r)
                        { "muted", "boolean", false, "Bloco mudo (ferramenta Mudo)"_t },
                        { "stretch", "number", false, "Áudio: o esticar, sem mudar a duração (playlist.stretchItem muda os dois)"_t },
                        { "tape", "boolean", false, "Áudio: o esticar muda o tom junto, como uma fita"_t },
+                       { "channel", "string", false, "Padrão: o bloco passa a tocar só este canal do padrão (id do canal); \"\" volta a tocar "
+                                                     "todos. Para o arranjo: o mesmo padrão com só a melodia na intro e só o kick depois"_t },
                        { "unit", "string", false, "Unidade: ticks (padrão), steps, beats ou bars"_t } }), true,
              [] (CommandContext& c, const juce::var& a)
              {
@@ -1109,6 +1137,16 @@ void registerCompositionCommands (CommandRegistry& r)
 
                  if (item == nullptr)
                      return CommandResult::fail ("Bloco da playlist não encontrado."_t);
+
+                 // bloco por canal (16/11): confere antes de mexer em qualquer campo (o comando não fica pela metade)
+                 if (const auto channel = params::string (a, "channel"); channel.isNotEmpty())
+                 {
+                     if (item->kind != "pattern")
+                         return CommandResult::fail ("Só bloco de padrão toca um canal só (channel); o bloco de áudio já é de um canal."_t);
+
+                     if (const auto problem = itemChannelProblem (p, channel); problem.isNotEmpty())
+                         return CommandResult::fail (problem);
+                 }
 
                  if (params::has (a, "track"))
                  {
@@ -1139,7 +1177,109 @@ void registerCompositionCommands (CommandRegistry& r)
                  if (params::has (a, "tape") && item->kind == "audio")
                      item->tape = params::boolean (a, "tape", false);
 
+                 if (params::has (a, "channel") && item->kind == "pattern")
+                     item->channel = params::string (a, "channel");
+
                  return CommandResult::success();
+             } });
+
+    // Bloco por canal (16/11, pedido do usuário: "colocar cada channel rack separadamente na playlist"): o bloco de
+    // um padrão vira um bloco por canal que tem notas ou passos nele, um embaixo do outro. Cada um é o mesmo padrão
+    // (PlaylistItem::channel), então editar o padrão muda todos; para o arranjo, é só apagar, mover ou aparar o do kick.
+    // O primeiro canal fica no próprio bloco (mesmo id, mesma raia); os outros descem para a primeira raia livre no
+    // trecho (model/LaneStack.h), criando raias se faltar.
+    r.add ({ "playlist.splitByChannel", "Separar bloco por canal",
+             schema ({ { "item", "string", true, "Id do bloco de padrão. Ele vira um bloco para cada canal com notas ou passos no padrão "
+                                                 "(kick, hat, 808, melodia...), empilhados nas raias de baixo, no mesmo trecho. Serve para "
+                                                 "montar o arranjo: depois apague ou apare o bloco de cada canal (a melodia entra sozinha, "
+                                                 "depois o kick...). playlist.updateItem com channel \"\" volta um bloco a tocar tudo"_t } }), true,
+             [] (CommandContext& c, const juce::var& a)
+             {
+                 auto& p = c.model.data();
+                 const auto* found = p.findItem (params::string (a, "item"));
+
+                 if (found == nullptr)
+                     return CommandResult::fail ("Bloco da playlist não encontrado."_t);
+
+                 const PlaylistItem source = *found;   // a cópia: os blocos novos mudam o endereço dos que já existem
+                 const auto* pat = p.findPattern (source.ref);
+
+                 if (source.kind != "pattern" || pat == nullptr)
+                     return CommandResult::fail ("Só bloco de padrão separa por canal."_t);
+
+                 if (source.locked)
+                     return CommandResult::fail ("O bloco está travado: destrave para separar por canal."_t);
+
+                 if (source.channel.isNotEmpty())
+                     return CommandResult::fail ("Este bloco já toca um canal só."_t);
+
+                 juce::StringArray channels;
+
+                 for (auto& ch : p.channels)
+                     if (! ch.isAudio() && pat->hasContent (ch.id))
+                         channels.add (ch.id);
+
+                 if (channels.isEmpty())
+                     return CommandResult::fail ("O padrão \""_t + pat->name + "\" está vazio: nenhum canal tem notas ou passos nele."_t);
+
+                 // as raias: o primeiro canal no lugar do bloco; os outros, de cima para baixo, sem pisar em bloco nenhum
+                 int lane = 0;
+                 std::vector<lanestack::Busy> busy;
+
+                 for (int t = 0; t < (int) p.playlistTracks.size(); ++t)
+                 {
+                     const auto& id = p.playlistTracks[(size_t) t].id;
+
+                     if (id == source.track)
+                         lane = t;
+
+                     for (auto& i : p.playlistItems)
+                         if (i.track == id && i.id != source.id)
+                             busy.push_back ({ t, i.start, i.end() });
+                 }
+
+                 const auto below = lanestack::stack (busy, lane + 1, source.start, source.end(), channels.size() - 1, maxPlaylistTracks);
+
+                 if (below.empty() && channels.size() > 1)
+                     return CommandResult::fail ("Faltam raias livres na playlist para um bloco por canal (o máximo é "_t
+                                                 + juce::String (maxPlaylistTracks) + " raias)."_t);
+
+                 while (! below.empty() && (int) p.playlistTracks.size() <= below.back())
+                 {
+                     PlaylistTrack t;
+
+                     do
+                         t.id = makeId ("pl");
+                     while (p.findPlaylistTrack (t.id) != nullptr);
+
+                     t.name = "Raia " + juce::String ((int) p.playlistTracks.size() + 1);
+                     p.playlistTracks.push_back (t);
+                 }
+
+                 juce::Array<juce::var> ids, lanes, channelIds;
+
+                 for (int k = 0; k < channels.size(); ++k)
+                 {
+                     channelIds.add (channels[k]);
+
+                     if (k == 0)
+                     {
+                         p.findItem (source.id)->channel = channels[0];
+                         ids.add (source.id);
+                         lanes.add (lane + 1);
+                         continue;
+                     }
+
+                     auto copy = source;   // o mesmo trecho, patternOffset e mudo
+                     copy.id = makeId ("it");
+                     copy.channel = channels[k];
+                     copy.track = p.playlistTracks[(size_t) below[(size_t) (k - 1)]].id;
+                     p.playlistItems.push_back (copy);
+                     ids.add (copy.id);
+                     lanes.add (below[(size_t) (k - 1)] + 1);
+                 }
+
+                 return CommandResult::success (object ({ { "items", ids }, { "channels", channelIds }, { "lanes", lanes } }));
              } });
 
     // Esticar o áudio no tempo (21/10): segurar A e arrastar a borda do bloco. A duração e o esticar mudam

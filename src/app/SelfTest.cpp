@@ -71,6 +71,7 @@ int runSelfTest (const juce::File& reportFile, const juce::File& workFolder)
     runWnlFuzzSelfTest (ctx);
     runAutosaveGuardSelfTest (ctx);
     runPaletteSelfTest (ctx);
+    runItemChannelSelfTest (ctx);
     runInvalidFilesSelfTest (ctx);
 
     rep.lines.add ({});

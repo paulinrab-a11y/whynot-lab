@@ -83,6 +83,17 @@ public:
     const std::set<juce::String>& getSelection() const noexcept   { return selection; }
     void selectAll();
 
+    /** Bloco por canal (16/11): o bloco de padrão que toca um canal só (PlaylistItem::channel). O menu do bloco de
+        padrão (a setinha do cabeçalho; o botão direito na grade apaga) tem "Tocar só o canal" e "Separar por canal".
+        Os dois valem para `item` e, se ele está na seleção, para os outros blocos de padrão selecionados, num passo
+        de desfazer; o travado fica de fora. `channel` vazio = o bloco volta a tocar todos os canais. */
+    void setBlockChannel (const juce::String& item, const juce::String& channel);
+    /** Troca cada bloco por um para cada canal com conteúdo no padrão (playlist.splitByChannel). `item` vazio = os
+        blocos selecionados (a ação "playlist.splitByChannel" do KeyMap). Os blocos novos ficam selecionados. */
+    void splitByChannel (const juce::String& item);
+    /** O nome que o bloco mostra no cabeçalho ("Padrão 1", "Padrão 1 · Kick", o nome do canal de áudio). */
+    juce::String blockName (const juce::String& item) const;
+
     /** Playlist fatia 6 (27/10 noite): o painel de propriedades do bloco de áudio (duplo clique, ou o menu dele). */
     void showProperties (const juce::String& item);
 
@@ -165,6 +176,8 @@ private:
         bool audio = false;
         int trackIndex = 0;
         bool takeRow = false;   // o pedaço de um take na sub-raia dele (o grupo está aberto); senão, no comp ou sozinho
+        bool single = false;    // bloco por canal (16/11): toca um canal só; a pílula do cabeçalho leva a cor dele
+        juce::Colour stripe;
     };
 
     struct Thumb
@@ -202,8 +215,10 @@ private:
     const Block* findBlock (const juce::String& id) const;
     bool stretchHeld() const;          // A segurado: a borda do áudio estica em vez de aparar
     void updateCursor();
-    juce::Rectangle<float> menuButtonBounds (const Block&) const;   // a setinha do menu no cabeçalho do áudio
+    juce::Rectangle<float> menuButtonBounds (const Block&) const;   // a setinha do menu no cabeçalho do bloco
     void showBlockMenu (const juce::String& id);
+    void showPatternMenu (const juce::String& id);                  // o menu do bloco de padrão (bloco por canal, 16/11)
+    std::vector<PlaylistItem> patternTargets (const juce::String& id) const;   // o bloco e os de padrão selecionados com ele
     bool placeBrush (juce::Point<float>);
     void eraseAt (juce::Point<float>);
     void startDrag (const PlaylistItem&, Drag);
@@ -228,7 +243,7 @@ private:
     void moveSelectionBy (int deltaTicks, int deltaTracks);
     void sliceAt (juce::Point<float>);
     const PlaylistItem* modelItem (const juce::String& id) const;
-    Preview buildPreview (const Project&, const Pattern&) const;
+    Preview buildPreview (const Project&, const Pattern&, const juce::String& onlyChannel = {}) const;
 
     void paintBlock (juce::Graphics&, const Block&, juce::Rectangle<float> clip);
     void paintTakePiece (juce::Graphics&, const Block&, juce::Rectangle<float> clip);
@@ -274,13 +289,15 @@ private:
     AppController& app;
     std::vector<PlaylistTrack> tracks;
     std::vector<Block> blocks;
-    std::map<juce::String, Preview> previews;
+    std::map<juce::String, Preview> previews;   // por padrão; o bloco de um canal só tem a dele (previewKeyOf)
+    static juce::String previewKeyOf (const PlaylistItem& i)   { return i.channel.isEmpty() ? i.ref : i.ref + "\n" + i.channel; }
     juce::AudioThumbnailCache thumbCache { 32 };
     std::map<juce::String, Thumb> thumbs;   // por canal de áudio, e "f:" + o arquivo próprio de um bloco (fatia 6)
     static juce::String thumbKeyOf (const PlaylistItem& i)   { return i.file.isNotEmpty() ? "f:" + i.file : i.ref; }
 
     juce::String brushKind { "pattern" }, brushRef, brushName, currentPattern;
     juce::String brushFile;                  // o arquivo próprio do bloco que virou pincel (o consolidado, fatia 6)
+    juce::String brushChannel;               // o canal do bloco de padrão que virou pincel (bloco por canal, 16/11)
     juce::String selectedItem;               // o último bloco clicado (o pincel sai dele)
     std::set<juce::String> selection, selectionBefore;
     std::vector<PlaylistItem> originals;     // os blocos no começo de um arrasto de vários

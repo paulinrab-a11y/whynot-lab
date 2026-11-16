@@ -91,7 +91,7 @@ public:
     /** Troca cada bloco por um para cada canal com conteúdo no padrão (playlist.splitByChannel). `item` vazio = os
         blocos selecionados (a ação "playlist.splitByChannel" do KeyMap). Os blocos novos ficam selecionados. */
     void splitByChannel (const juce::String& item);
-    /** O nome que o bloco mostra no cabeçalho ("Padrão 1", "Padrão 1 · Kick", o nome do canal de áudio). */
+    /** O nome que o bloco mostra no cabeçalho ("Padrão 1", "Kick · Padrão 1", o nome do canal de áudio). */
     juce::String blockName (const juce::String& item) const;
 
     /** Playlist fatia 6 (27/10 noite): o painel de propriedades do bloco de áudio (duplo clique, ou o menu dele). */

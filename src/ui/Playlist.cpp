@@ -190,7 +190,7 @@ void PlaylistGrid::refresh (const Project& p)
     if (brushKind == "audio")
         brushName = p.findChannel (brushRef)->name;
     else if (auto* pat = p.findPattern (brushRef))
-        brushName = brushOnly != nullptr ? pat->name + " · "_t + brushOnly->name : pat->name;
+        brushName = brushOnly != nullptr ? brushOnly->name + " · "_t + pat->name : pat->name;
 
     previews.clear();
 
@@ -269,10 +269,11 @@ void PlaylistGrid::refresh (const Project& p)
         {
             b.name = pat->name;
 
-            // bloco por canal (16/11): "Padrão · Canal", a cor do canal e a miniatura só dele
+            // bloco por canal (16/11): "Canal · Padrão", a cor do canal e a miniatura só dele. O canal vem
+            // primeiro porque o nome corta no fim: num bloco curto, o que sobra é o canal, que é o que distingue
             if (const auto* only = item.channel.isNotEmpty() ? p.findChannel (item.channel) : nullptr)
             {
-                b.name = pat->name + " · "_t + only->name;
+                b.name = only->name + " · "_t + pat->name;
                 b.single = true;
                 b.stripe = theme::fromHex (only->colour);
 

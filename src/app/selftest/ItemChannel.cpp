@@ -482,7 +482,7 @@ void runItemChannelSelfTest (SelfTestContext& ctx)
 
         const auto* pat = model.get().findPattern (p1);
         const auto* kickChannel = model.get().findChannel (kick);
-        const auto expected = (pat != nullptr ? pat->name : juce::String()) + " · "_t + (kickChannel != nullptr ? kickChannel->name : juce::String());
+        const auto expected = (kickChannel != nullptr ? kickChannel->name : juce::String()) + " · "_t + (pat != nullptr ? pat->name : juce::String());
         rep.check (grid.blockName (whole) == expected && grid.blockName (second) == (pat != nullptr ? pat->name : juce::String()),
                    "o bloco de um canal mostra \""_t + grid.blockName (whole) + "\"; o inteiro, só o nome do padrão");
         rep.check (savePng (screen.host, work.getChildFile ("bloco-canal-playlist.png")), "captura: bloco-canal-playlist.png"_t);

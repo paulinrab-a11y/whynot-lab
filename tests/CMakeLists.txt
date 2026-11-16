@@ -396,3 +396,17 @@ else()
 endif()
 
 add_test(NAME lane_stack COMMAND whynot_lane_stack_tests)
+# Máscara de mudança por comando (frente log-mascara, 16/11): o que cada comando muda no projeto
+# (src/commands/ChangeScope.h, só cabeçalho, sem JUCE), e a leitura dos ids de src/commands/*.cpp que acusa o
+# comando novo sem decisão na tabela.
+add_executable(whynot_change_scope_tests
+    commands/test_change_scope.cpp)
+target_compile_features(whynot_change_scope_tests PRIVATE cxx_std_20)
+
+if(MSVC)
+    target_compile_options(whynot_change_scope_tests PRIVATE /W4 /utf-8 /O2)
+else()
+    target_compile_options(whynot_change_scope_tests PRIVATE -Wall -Wextra -O2)
+endif()
+
+add_test(NAME change_scope COMMAND whynot_change_scope_tests)

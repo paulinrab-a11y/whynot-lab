@@ -376,6 +376,8 @@ MainComponent::MainComponent (AppController& a)
                                                     if (safe != nullptr && choice == 1)
                                                         safe->showStatus (safe->app.blockSuspect (crash), false);
                                                 }));
+
+        safe->startupOffersDone = true;   // (avisos-tela) daqui em diante o timer oferece os takes recuperados
     });
 }
 
@@ -918,6 +920,13 @@ void MainComponent::timerCallback()
     // "Aberto: ..." e do "Salvo" do mesmo gesto, que saem da frente.
     for (auto& n : app.takeProjectNotices())
         pendingNotices.emplace_back (n.text, n.warning);
+
+    // (avisos-tela) take que uma queda deixou sem guardar (achado na partida ou ao abrir o projeto): oferece pôr na
+    // playlist, um por vez, depois das caixas da partida e sem abrir caixa por cima de outra nem no meio de um take.
+    if (startupOffersDone && ! app.isHeadless() && ! app.recoveredTakes.empty()
+        && juce::ModalComponentManager::getInstance()->getNumModalComponents() == 0
+        && ! (app.recorder() != nullptr && app.recorder()->isRecording()))
+        offerRecoveredTake();
 
     if (! pendingNotices.empty() && ! statusBar.hasPill())
     {
@@ -1742,6 +1751,43 @@ bool MainComponent::saveProject (bool asNew)
                               showStatus (result.ok ? "Salvo em " + file.getParentDirectory().getFullPathName() : result.error, ! result.ok);
                           });
     return false;
+}
+
+void MainComponent::offerRecoveredTake()
+{
+    // Um take por caixa; o próximo vem pelo timer quando esta fechar. O texto e a ação são da AppController
+    // (o autoteste lê e chama os mesmos). O primeiro botão devolve 1; o segundo e o Esc, 0 (fica na pasta).
+    const auto take = app.recoveredTakes.front();
+    app.recoveredTakes.erase (app.recoveredTakes.begin());
+    juce::Component::SafePointer<MainComponent> safe (this);
+
+    juce::AlertWindow::showOkCancelBox (juce::MessageBoxIconType::NoIcon, "Gravação recuperada"_t, app.recoveredTakeQuestion (take),
+                                        "Pôr na playlist"_t, "Deixar na pasta", this,
+                                        juce::ModalCallbackFunction::create ([safe, take] (int choice)
+                                        {
+                                            if (safe == nullptr)
+                                                return;
+
+                                            safe->grabKeyboardFocus();   // o aviso fechou: os atalhos voltam para cá
+
+                                            if (choice != 1)
+                                            {
+                                                safe->statusBar.showNote (safe->app.recoveredTakeLeftText (take), "Abrir a pasta"_t,
+                                                                          [take] { take.file.revealToUser(); });
+                                                return;
+                                            }
+
+                                            const auto result = safe->app.placeRecoveredTake (take);
+
+                                            if (! result.ok)
+                                            {
+                                                safe->showStatus (result.error, true);
+                                                return;
+                                            }
+
+                                            safe->showView (View::playlist);
+                                            safe->showStatus (safe->app.recoveredTakePlacedText (take), false);
+                                        }));
 }
 
 void MainComponent::askNewerAppSave (const juce::String& question, const juce::File& target)

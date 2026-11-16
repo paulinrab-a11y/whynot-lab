@@ -472,6 +472,10 @@ AppController::AppController (bool isHeadless, const juce::File& requestedDataFo
     model.addListener (this);
     newProject();
 
+    // (avisos-tela) o projeto que nunca foi salvo grava em <dados>/Gravacoes: o take que uma queda deixou lá sem
+    // fechar só é achado aqui, na partida (o openProject varre a gravacoes/ do projeto aberto).
+    collectOrphanTakes (dataFolder.getChildFile ("Gravacoes"));
+
     if (! headless)
     {
         session = std::make_unique<Session> (dataFolder);
@@ -1198,8 +1202,7 @@ juce::Result AppController::openProject (const juce::File& file)
         addProjectNotice (refusedPathsText (report), true);
 
     // Takes que ficaram sem fechar (o app caiu gravando) voltam a ser WAVs legíveis, e a pessoa é avisada.
-    recoveredTakes = record::InputRecorder::recoverOrphanTakes (takeFolder());
-    offerRecoveredTakes ((int) recoveredTakes.size());
+    collectOrphanTakes (takeFolder());
 
     if (projectLibrary != nullptr)
         projectLibrary->noteOpened (file);
@@ -2613,6 +2616,130 @@ void AppController::offerRecoveredTakes (int howMany)
 
     notice (howMany == 1 ? "Uma gravação interrompida por uma queda foi recuperada. Ela está na pasta de gravações do projeto."_t
                          : juce::String (howMany) + " gravações interrompidas por uma queda foram recuperadas. Elas estão na pasta de gravações do projeto."_t);
+}
+
+void AppController::collectOrphanTakes (const juce::File& folder)
+{
+    // (avisos-tela) soma em vez de trocar: os takes da partida (projeto nunca salvo) não se perdem se a pessoa abrir
+    // um projeto antes de responder. A tela oferece cada um ("Pôr na playlist") e esvazia a lista.
+    auto found = record::InputRecorder::recoverOrphanTakes (folder);
+    offerRecoveredTakes ((int) found.size());
+
+    for (auto& take : found)
+        recoveredTakes.push_back (std::move (take));
+}
+
+//==============================================================================
+// O take recuperado vai para a playlist (avisos-tela, 16/11)
+namespace
+{
+    struct RecoveredPlace
+    {
+        int start = 0, length = ticksPerStep;   // ticks
+        double offsetSeconds = 0.0;             // o corte do começo do arquivo (a contagem)
+    };
+
+    /** Onde o take cai, só pelo marcador: o arquivo começa mais ou menos onde o transporte começou (playFrom) e
+        vale a partir de recordFrom; o que veio antes (a contagem) fica cortado. Sem a compensação de latência,
+        que só existe com a placa andando: por isso "aproximada". Marcador ilegível (tudo zero): do começo. */
+    RecoveredPlace recoveredPlace (const AppController::RecoveredTake& take, double bpm)
+    {
+        RecoveredPlace place;
+        const double seconds = take.seconds();
+        place.offsetSeconds = juce::jlimit (0.0, juce::jmax (0.0, seconds - 0.05), take.info.recordFromSeconds - take.info.playFromSeconds);
+        place.start = juce::jlimit (0, maxTimelineTicks - ticksPerStep,
+                                    juce::roundToInt (secondsToTicks (juce::jmax (0.0, take.info.recordFromSeconds), bpm)));
+        place.length = juce::jmax (ticksPerStep, juce::roundToInt (secondsToTicks (seconds - place.offsetSeconds, bpm)));
+        return place;
+    }
+
+    const MixerTrack* trackNamed (const Project& p, const juce::String& name)
+    {
+        if (name.isNotEmpty())
+            for (auto& m : p.mixer)
+                if (! m.isMaster() && m.name == name)
+                    return &m;
+
+        return nullptr;
+    }
+
+    juce::String takeLabel (const AppController::RecoveredTake& take)
+    {
+        return take.info.takeName.isNotEmpty() ? take.info.takeName : take.file.getFileNameWithoutExtension();
+    }
+
+    int barOf (const Project& p, int tick)
+    {
+        const int barTicks = juce::jmax (1, 16 / juce::jmax (1, p.timeSigDen)) * juce::jmax (1, p.timeSigNum) * ticksPerStep;
+        return juce::jmax (0, tick) / barTicks + 1;
+    }
+}
+
+juce::String AppController::recoveredTakeQuestion (const RecoveredTake& take) const
+{
+    const auto& p = model.get();
+    const auto place = recoveredPlace (take, p.bpm);
+    const auto* track = trackNamed (p, take.info.trackName);
+    const auto started = juce::Time::fromISO8601 (take.startedAt);
+
+    juce::String text = "Achei uma gravação que não foi guardada: \""_t + takeLabel (take) + "\" ("
+                        + juce::String (take.seconds(), 1).replaceCharacter ('.', ',') + " s)";
+
+    if (started.toMilliseconds() > 0)
+        text += ", começada em "_t + started.formatted ("%d/%m") + " às "_t + started.formatted ("%H:%M");
+
+    text += ". O app fechou antes de ela entrar no projeto.\n\nPôr na playlist? Ela entra no compasso "_t + juce::String (barOf (p, place.start));
+
+    if (track != nullptr)
+        text += ", saindo pela trilha \""_t + track->name + "\" do mixer"_t;
+    else if (take.info.trackName.isNotEmpty())
+        text += ", saindo pelo master (a trilha \""_t + take.info.trackName + "\" não existe neste projeto)"_t;
+    else
+        text += ", saindo pelo master"_t;
+
+    text += ". A posição é aproximada: fica sem a compensação de latência da placa e pode pedir um ajuste fino."_t;
+    text += "\n\nSe preferir deixar na pasta, o arquivo continua em:\n"_t + take.file.getFullPathName();
+    return text;
+}
+
+CommandResult AppController::placeRecoveredTake (const RecoveredTake& take)
+{
+    if (! take.file.existsAsFile())
+        return CommandResult::fail ("O arquivo da gravação não está mais na pasta: "_t + take.file.getFullPathName());
+
+    const auto& p = model.get();
+    const auto place = recoveredPlace (take, p.bpm);
+    const auto* track = trackNamed (p, take.info.trackName);
+
+    // o mesmo comando que guarda o take no stop (finishRecording): canal de áudio + bloco, um passo de desfazer
+    auto o = new juce::DynamicObject();
+    o->setProperty ("track", track != nullptr ? track->id : juce::String());
+    o->setProperty ("path", take.file.getFullPathName().replaceCharacter ('\\', '/'));
+    o->setProperty ("name", takeLabel (take));
+    o->setProperty ("start", place.start);
+    o->setProperty ("length", place.length);
+    o->setProperty ("offsetSeconds", place.offsetSeconds);
+
+    juce::Array<juce::var> audio;
+    audio.add (juce::var (o));
+
+    auto params = new juce::DynamicObject();
+    params->setProperty ("audio", audio);
+    return registry.run ("record.commitTake", juce::var (params));
+}
+
+juce::String AppController::recoveredTakePlacedText (const RecoveredTake& take) const
+{
+    const auto& p = model.get();
+    return "\""_t + takeLabel (take) + "\" está na playlist, no compasso "_t + juce::String (barOf (p, recoveredPlace (take, p.bpm).start))
+           + " (posição aproximada, sem a compensação de latência). Ctrl+Z desfaz; o arquivo continua na pasta de gravações."_t
+           + (p.songMode ? juce::String() : juce::String (" O bloco toca no modo SONG."));
+}
+
+juce::String AppController::recoveredTakeLeftText (const RecoveredTake& take) const
+{
+    return "A gravação ficou na pasta, fora do projeto: "_t + take.file.getFullPathName()
+           + ". Para usar depois, arraste o arquivo para a playlist."_t;
 }
 
 juce::File AppController::writeAutosave (bool pluginsChanged)

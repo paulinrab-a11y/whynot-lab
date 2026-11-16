@@ -32,6 +32,10 @@ public:
     /** O ponto da faixa de cima dos passos que marca o começo do play no passo `step` (autoteste). */
     juce::Point<int> stepRulerPoint (int step) const;
     void setSelectedChannel (const juce::String&);
+    /** Bloco por canal (16/11): "Pôr na playlist (só este canal)", no menu do nome do canal. Cria um bloco do padrão
+        atual que toca só este canal (PlaylistItem::channel), na agulha (ou no começo do trecho selecionado), na
+        primeira raia livre naquele trecho. false (com o motivo no status) se o canal não tem nada no padrão. */
+    bool placeInPlaylist (const juce::String& channel);
     int getIdealHeight() const;
 
     std::function<void (const juce::String& message, bool isError)> onStatus;

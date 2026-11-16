@@ -188,6 +188,7 @@ set(WHYNOT_SOURCES
     src/app/selftest/Robustness.cpp
     src/app/selftest/Sampler.cpp
     src/app/selftest/SamplerBend.cpp
+    src/app/selftest/ScreenNotices.cpp
     src/app/selftest/SelfTestKit.cpp
     src/app/selftest/Slicing.cpp
     src/app/selftest/Stretch.cpp

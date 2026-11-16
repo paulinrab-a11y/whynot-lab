@@ -913,6 +913,23 @@ void MainComponent::timerCallback()
     if (welcome.isVisible() && app.getModel().file != juce::File())
         welcome.setVisible (false);
 
+    // (avisos-tela) o que o abrir e o salvar tiveram para contar (projeto de versão mais nova, caminhos recusados,
+    // arquivos que não foram para samples/): um por vez no pé, e cada um fica até ser fechado. Vem depois do
+    // "Aberto: ..." e do "Salvo" do mesmo gesto, que saem da frente.
+    for (auto& n : app.takeProjectNotices())
+        pendingNotices.emplace_back (n.text, n.warning);
+
+    if (! pendingNotices.empty() && ! statusBar.hasPill())
+    {
+        const auto next = pendingNotices.front();
+        pendingNotices.erase (pendingNotices.begin());
+
+        if (next.second)
+            statusBar.showError (next.first);
+        else
+            statusBar.showNote (next.first);
+    }
+
     updateTitle();
 }
 
@@ -1683,6 +1700,14 @@ bool MainComponent::saveProject (bool asNew)
 
     if (! asNew && app.getModel().file != juce::File())
     {
+        // (avisos-tela) projeto de uma versão mais nova: pergunta antes do primeiro salvar por cima. Quem chamou
+        // (o "salvar antes de fechar?") recebe false e não segue: a resposta desta caixa é que salva.
+        if (const auto question = app.newerAppSaveQuestion(); question.isNotEmpty())
+        {
+            askNewerAppSave (question, {});
+            return false;
+        }
+
         const auto result = app.run ("project.save");
         showStatus (result.ok ? "Salvo" : result.error, ! result.ok);
         return result.ok;
@@ -1706,10 +1731,45 @@ bool MainComponent::saveProject (bool asNew)
                               if (file.getParentDirectory().getFileName() != file.getFileNameWithoutExtension())
                                   file = file.getParentDirectory().getChildFile (file.getFileNameWithoutExtension()).getChildFile (file.getFileName());
 
+                              // (avisos-tela) "Salvar como" em cima do próprio arquivo da versão mais nova também pergunta
+                              if (const auto question = app.newerAppSaveQuestion (file); question.isNotEmpty())
+                              {
+                                  askNewerAppSave (question, file);
+                                  return;
+                              }
+
                               const auto result = app.run ("project.save", args ({ { "path", file.withFileExtension ("wnl").getFullPathName() } }));
                               showStatus (result.ok ? "Salvo em " + file.getParentDirectory().getFullPathName() : result.error, ! result.ok);
                           });
     return false;
+}
+
+void MainComponent::askNewerAppSave (const juce::String& question, const juce::File& target)
+{
+    // A mesma caixa da recuperação: o primeiro botão devolve 1; o segundo e o Esc, 0 (não salva).
+    juce::Component::SafePointer<MainComponent> safe (this);
+
+    juce::AlertWindow::showOkCancelBox (juce::MessageBoxIconType::NoIcon, "Projeto de uma versão mais nova"_t, question,
+                                        "Salvar por cima", "Cancelar", this,
+                                        juce::ModalCallbackFunction::create ([safe, target] (int choice)
+                                        {
+                                            if (safe == nullptr)
+                                                return;
+
+                                            safe->grabKeyboardFocus();   // o aviso fechou: os atalhos voltam para cá
+
+                                            if (choice != 1)
+                                            {
+                                                safe->showStatus ("Não salvou. Para guardar sem mexer no original: Arquivo > Salvar nova versão."_t, false);
+                                                return;
+                                            }
+
+                                            // o app guarda o original em history/ e conta onde (takeProjectNotices, no pé)
+                                            const auto result = target == juce::File()
+                                                                    ? safe->app.run ("project.save")
+                                                                    : safe->app.run ("project.save", args ({ { "path", target.withFileExtension ("wnl").getFullPathName() } }));
+                                            safe->showStatus (result.ok ? "Salvo" : result.error, ! result.ok);
+                                        }));
 }
 
 void MainComponent::showAudioSettings()

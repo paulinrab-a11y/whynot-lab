@@ -128,9 +128,42 @@ public:
     void cancelRecording() override;
     void refreshMonitoring() override   { syncMonitoring(); }
 
-    /** Takes que uma queda do app deixou sem fechar em gravacoes/, já consertados ao abrir o projeto.
-        Quem oferece ao usuário (a tela) lê e esvazia. */
+    /** Takes que uma queda do app deixou sem fechar em gravacoes/, já consertados ao abrir o projeto (e, na
+        partida, os da pasta Gravacoes dos dados do app, onde grava o projeto que nunca foi salvo).
+        Quem oferece ao usuário (a tela) lê e esvazia. Abrir outro projeto soma, não apaga os que faltam oferecer. */
     std::vector<record::InputRecorder::RecoveredTake> recoveredTakes;
+
+    using RecoveredTake = record::InputRecorder::RecoveredTake;
+
+    /** O texto da caixa que oferece o take recuperado ("Pôr na playlist" ou "Deixar na pasta"). */
+    juce::String recoveredTakeQuestion (const RecoveredTake&) const;
+
+    /** "Pôr na playlist": o take vira um canal de áudio e um bloco, pelo mesmo comando da gravação normal
+        (record.commitTake; um passo de desfazer, "Gravação"). Cai onde o marcador diz que o take começava a valer
+        (recordFromSeconds, sem a compensação de latência: a posição é aproximada) e sai pela trilha do mixer que
+        tem o nome do marcador, se ela ainda existe (senão, pelo master). */
+    CommandResult placeRecoveredTake (const RecoveredTake&);
+
+    /** O que a barra de status diz depois: o take foi para a playlist, ou ficou na pasta (e onde). */
+    juce::String recoveredTakePlacedText (const RecoveredTake&) const;
+    juce::String recoveredTakeLeftText (const RecoveredTake&) const;
+
+    //--------------------------------------------------------------------------
+    // Avisos do .wnl (avisos-tela, 16/11): o que o wnl::LoadReport e o wnl::SaveReport têm para contar.
+    struct ProjectNotice
+    {
+        juce::String text;
+        bool warning = false;   // true: pílula de aviso (fica até fechar); false: orientação neutra (também fica)
+    };
+
+    /** Os avisos do último abrir e do último salvar: projeto de uma versão mais nova, caminhos de sample
+        recusados, arquivos que não foram para samples/. A tela lê e esvazia (um por vez, no pé). */
+    std::vector<ProjectNotice> takeProjectNotices()   { return std::exchange (projectNotices, {}); }
+
+    /** O projeto aberto veio de uma versão mais nova e salvar em `target` (File() = o arquivo atual) grava por
+        cima dele: o texto da pergunta que a tela faz antes. Vazio = pode salvar sem perguntar. Depois do
+        primeiro salvar por cima o arquivo já é desta versão, e a pergunta não volta. */
+    juce::String newerAppSaveQuestion (const juce::File& target = {}) const;
 
     // AppServices: desempenho (3.5)
     juce::var performance() override;
@@ -242,9 +275,23 @@ public:
     {
         juce::String question;      // o texto da caixa que oferece bloquear
         juce::String file, name;    // o suspeito (file vazio = ninguém a oferecer)
+
+        // (avisos-tela, 16/11) o registro da queda (Session::lastCrash), que vem mesmo sem autosave e sem suspeito
+        juce::String crash;         // "Da última vez, a WHYNOT LAB caiu em Plugin.vst3 (acesso inválido à memória)."
+        juce::File report, dump;    // o .txt e o .dmp do registro (File() = não há)
+
+        bool isEmpty() const noexcept       { return file.isEmpty() && crash.isEmpty(); }
+        bool hasSuspect() const noexcept    { return file.isNotEmpty(); }
+
+        /** O texto da caixa única: a frase da queda, a oferta de bloquear o suspeito e onde fica o registro. */
+        juce::String message() const;
     };
 
-    /** O suspeito da queda da sessão anterior, para a tela oferecer o bloqueio. Lê e limpa. */
+    /** Junta ao aviso do suspeito (pode vir vazio) o registro de queda lido pela sessão. Sem registro novo,
+        devolve o aviso como veio. Estático: o autoteste fabrica um registro e confere a frase. */
+    static CrashNotice withCrashRecord (CrashNotice suspect, const CrashReport::LastCrash&);
+
+    /** A queda da sessão anterior: a frase do registro e, se houver, o suspeito a bloquear. Lê e limpa. */
     CrashNotice takeCrashNotice()               { return std::exchange (crashNotice, {}); }
 
     /** O usuário aceitou bloquear o suspeito: vai para Bloqueados. Devolve o texto para a barra de status. */
@@ -298,6 +345,8 @@ private:
     bool capturePluginStates (bool onlyDirty);
     juce::File writeAutosave (bool pluginsChanged);
     void offerRecoveredTakes (int howMany);
+    void collectOrphanTakes (const juce::File& folder);
+    void addProjectNotice (const juce::String& text, bool warning);
     void finishScan (const PluginCatalog::ScanReport&);
     juce::var describeReport (const PluginCatalog::ScanReport&) const;
     juce::File loadingMarker() const   { return dataFolder.getChildFile ("carregando-plugin.txt"); }
@@ -349,6 +398,9 @@ private:
     bool pluginBaselinePending = true;              // projeto trocado: a próxima mudança só refaz a lista acima
     bool trackSuspects = false, wroteSuspects = false;
     CrashNotice crashNotice;
+    std::vector<ProjectNotice> projectNotices;      // (avisos-tela) do abrir e do salvar, até a tela ler
+    juce::StringArray newerAppFeatures;             // o projeto aberto declara recursos que este app não conhece...
+    juce::File newerAppFile;                        // ...e este é o arquivo dele, ainda não salvo por cima
     juce::String liveChannelId;
     te::EditItemID liveTrack;
     int liveInputCount = -1;

@@ -953,6 +953,9 @@ juce::Result AppController::newProject()
 
     Project fresh;
     wnl::normalise (fresh);
+    projectNotices.clear();   // (avisos-tela) eram do projeto de antes
+    newerAppFeatures.clear();
+    newerAppFile = juce::File();
     model.file = juce::File();
     pluginBaselinePending = true;
     model.replace (fresh);
@@ -1071,13 +1074,94 @@ namespace
     }
 }
 
+//==============================================================================
+// Avisos do .wnl (avisos-tela, 16/11): os textos do que o LoadReport e o SaveReport contam.
+namespace
+{
+    /** "a, b, c e mais 4": os primeiros `most` da lista. */
+    juce::String firstOnes (const juce::StringArray& list, int most)
+    {
+        juce::StringArray shown;
+
+        for (int i = 0; i < juce::jmin (most, list.size()); ++i)
+            shown.add (list[i]);
+
+        return shown.joinIntoString (", ") + (list.size() > most ? " e mais "_t + juce::String (list.size() - most) : juce::String());
+    }
+
+    juce::String newerAppOpenText (const juce::StringArray& features)
+    {
+        return "Este projeto foi salvo por uma versão mais nova da WHYNOT LAB, com recursos que esta versão não conhece ("_t
+               + firstOnes (features, 3) + "). Dá para abrir e tocar, mas salvar por cima apaga o que esta versão não entende."_t;
+    }
+
+    juce::String refusedPathsText (const wnl::LoadReport& report)
+    {
+        // o relatório não diz o motivo de cada um: de rede é o que começa com duas barras (WnlPaths.h)
+        int network = 0;
+
+        for (auto& path : report.refusedPaths)
+        {
+            const auto start = path.trimStart();
+            network += (start.startsWith ("\\\\") || start.startsWith ("//")) ? 1 : 0;
+        }
+
+        const int listed = report.refusedPaths.size();
+        const auto why = network == listed && listed > 0 ? "porque são de rede (o app não abre caminho de rede de um projeto)"_t
+                       : network == 0                    ? "porque saem da pasta do projeto ou são inválidos"_t
+                                                         : "porque são de rede, saem da pasta do projeto ou são inválidos"_t;
+        const int n = report.refusedPathCount;
+        juce::String text = n == 1 ? "1 caminho de arquivo deste projeto foi recusado "_t
+                                   : juce::String (n) + " caminhos de arquivo deste projeto foram recusados "_t;
+        text += why + ". Ficou só o nome do arquivo: o que não estiver na pasta do projeto aparece como ausente."_t;
+
+        if (listed > 0)
+            text += " Exemplo: "_t + report.refusedPaths[0].substring (0, 80);
+
+        return text;
+    }
+
+    juce::String notCollectedText (const juce::StringArray& files)
+    {
+        juce::StringArray names;
+
+        for (auto& f : files)
+            names.add (juce::File::isAbsolutePath (f) ? juce::File (f).getFileName() : f);
+
+        return (files.size() == 1 ? "1 arquivo não foi copiado para samples/ porque não é áudio: "_t
+                                  : juce::String (files.size()) + " arquivos não foram copiados para samples/ porque não são áudio: "_t)
+               + firstOnes (names, 3) + ". Continuam onde estavam; a pasta do projeto não leva esses arquivos."_t;
+    }
+}
+
+void AppController::addProjectNotice (const juce::String& text, bool warning)
+{
+    if (projectNotices.size() < 20)   // sem tela (IA, autoteste) ninguém esvazia: não cresce sem fim
+        projectNotices.push_back ({ text, warning });
+}
+
+juce::String AppController::newerAppSaveQuestion (const juce::File& target) const
+{
+    if (newerAppFeatures.isEmpty() || newerAppFile == juce::File())
+        return {};
+
+    if ((target == juce::File() ? model.file : target.withFileExtension ("wnl")) != newerAppFile)
+        return {};   // "Salvar como" em outro lugar não toca o original
+
+    return "\""_t + newerAppFile.getFileNameWithoutExtension()
+           + "\" foi salvo por uma versão mais nova da WHYNOT LAB. Salvar por cima apaga o que esta versão não conhece ("_t
+           + firstOnes (newerAppFeatures, 3) + ").\n\nO arquivo original fica guardado na pasta history, ao lado do projeto. "_t
+           + "Para não mexer nele, cancele e use Arquivo > Salvar nova versão."_t;
+}
+
 juce::Result AppController::openProject (const juce::File& file)
 {
     stopAudition();
     cancelMidiLearn();   // o alvo era do projeto de antes
 
     Project loaded;
-    const auto result = wnl::load (file, loaded);
+    wnl::LoadReport report;
+    const auto result = wnl::load (file, loaded, &report);
 
     if (result.failed())
         return result;
@@ -1096,6 +1180,17 @@ juce::Result AppController::openProject (const juce::File& file)
     pluginsTouched = false;
     dirtyPlugins.clear();   // os plugins nasceram agora, com o estado do arquivo
     cache.prune();   // os samples do projeto anterior que ninguém mais usa saem da memória
+
+    // (avisos-tela) o que a leitura teve para contar: a tela mostra no pé (takeProjectNotices)
+    projectNotices.clear();
+    newerAppFeatures = report.unknownFeatures;
+    newerAppFile = report.savedByNewerApp() ? file : juce::File();
+
+    if (report.savedByNewerApp())
+        addProjectNotice (newerAppOpenText (report.unknownFeatures), true);
+
+    if (report.refusedPathCount > 0)
+        addProjectNotice (refusedPathsText (report), true);
 
     // Takes que ficaram sem fechar (o app caiu gravando) voltam a ser WAVs legíveis, e a pessoa é avisada.
     recoveredTakes = record::InputRecorder::recoverOrphanTakes (takeFolder());
@@ -1127,10 +1222,22 @@ juce::Result AppController::saveProject (const juce::File& requested)
     if (copy.name == "Sem título"_t)
         copy.name = target.getFileNameWithoutExtension();
 
-    const auto result = wnl::save (copy, target, true, previousFolder);
+    wnl::SaveReport report;
+    const auto result = wnl::save (copy, target, true, previousFolder, &report);
 
     if (result.failed())
         return result;
+
+    // (avisos-tela) salvou por cima do arquivo de uma versão mais nova: o formato guardou o original (keepOlderSchema)
+    if (newerAppSaveQuestion (target).isNotEmpty())
+        addProjectNotice ("Salvo nesta versão. O arquivo original, da versão mais nova, ficou guardado em "_t
+                              + target.getParentDirectory().getChildFile ("history").getFullPathName() + ".", false);
+
+    newerAppFeatures.clear();   // o arquivo agora é desta versão (ou é outro arquivo): a pergunta não volta
+    newerAppFile = juce::File();
+
+    if (! report.notCollected.isEmpty())
+        addProjectNotice (notCollectedText (report.notCollected), false);
 
     // Os caminhos dos samples coletados mudaram para relativos: não é um passo de desfazer.
     model.file = target;
@@ -2571,6 +2678,9 @@ juce::Result AppController::recoverProject (const Session::Recovery& r)
         return result;
 
     stop();
+    projectNotices.clear();    // (avisos-tela) eram do projeto de antes; o autosave é sempre desta versão
+    newerAppFeatures.clear();
+    newerAppFile = juce::File();
     model.file = r.original;   // "Salvar" grava no projeto de onde o autosave veio
     pluginBaselinePending = true;
     model.replace (std::move (loaded));

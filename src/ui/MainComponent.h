@@ -153,6 +153,7 @@ private:
     void setUiScale (float);
     void buildActions();
     void offerRecovery();
+    void askNewerAppSave (const juce::String& question, const juce::File& target);   // (avisos-tela) File() = o arquivo atual
     void releaseTypedNotes();
     juce::String typingRangeText() const;
 
@@ -197,6 +198,7 @@ private:
     bool deviceLost = false;
     int recordMessageSerial = 0;   // a última mensagem da gravação que já foi para o pé
     int headphoneQuestionSeen = 0; // a última vez que a escuta perguntou "Está de fone?" (fatia 8)
+    std::vector<std::pair<juce::String, bool>> pendingNotices;   // (avisos-tela) avisos do .wnl à espera do pé (texto, é aviso)
     float uiScale = 1.0f;
 
     std::map<juce::String, std::function<void()>> actions;   // id do KeyMap → o que a tecla faz

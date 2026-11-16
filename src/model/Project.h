@@ -228,6 +228,17 @@ struct Pattern
         return it == notes.end() || it->second.empty() ? nullptr : &it->second;
     }
 
+    /** O canal tem algo neste padrão: uma nota no piano roll ou um passo ligado. É o que a miniatura da playlist
+        desenha e o que "separar por canal" conta (bloco por canal, 16/11). */
+    bool hasContent (const juce::String& channel) const
+    {
+        if (notesFor (channel) != nullptr)
+            return true;
+
+        const auto it = steps.find (channel);
+        return it != steps.end() && std::any_of (it->second.begin(), it->second.end(), [] (const Step& s) { return s.on; });
+    }
+
     bool operator== (const Pattern&) const = default;
 };
 
@@ -432,8 +443,15 @@ struct PlaylistItem
     bool locked = false;               // travado: o mouse não move, não apara, não corta nem apaga o bloco
     juce::String file;                 // áudio: o arquivo que o bloco toca no lugar do sample do canal (o consolidado ao
                                        // lado do original, sem canal novo); relativo à pasta do projeto, ou absoluto
+    // bloco por canal (16/11), opcional e só no padrão:
+    juce::String channel;              // o bloco toca só este canal do padrão (id do canal); "" = todos, como sempre.
+                                       // Continua uma referência ao padrão: editar o padrão muda o bloco. No .wnl é o
+                                       // recurso "playlist.itemChannel" de app.features (WnlFormat.cpp)
 
     int end() const noexcept   { return start + length; }
+
+    /** O bloco de padrão toca este canal? Sem filtro (channel vazio), toca todos. */
+    bool playsChannel (const juce::String& channelId) const   { return channel.isEmpty() || channel == channelId; }
 
     /** Áudio: segundos do arquivo que cabem em `seconds` da playlist (o inverso do esticar). */
     double fileSeconds (double seconds) const noexcept    { return seconds / stretch; }

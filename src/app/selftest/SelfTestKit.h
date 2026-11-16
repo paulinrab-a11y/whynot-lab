@@ -114,6 +114,7 @@ void runWnlFuzzSelfTest (SelfTestContext&);        // .wnl de terceiros (10/11):
 void runAutosaveGuardSelfTest (SelfTestContext&);   // app-autosave (10/11): autosave que espera o gesto, plugins sujos e suspeitos de queda (Autosave e queda)
 void runPaletteSelfTest (SelfTestContext&);        // paleta de comandos (10/11): o que entra, a busca, as teclas, executar e a captura (Paleta)
 void runItemChannelSelfTest (SelfTestContext&);    // bloco por canal (16/11): o padrão na playlist tocando um canal só, separar por canal, o .wnl (bloco-canal)
+void runSoundTagsSelfTest (SelfTestContext&);      // tags dos sons (16/11)
 void runTemplatesSelfTest (SelfTestContext&);      // templates de projeto (16/11)
 void runScreenNoticesSelfTest (SelfTestContext&);  // avisos na tela (16/11): o .wnl, o take recuperado, a queda sem autosave e o sample carregando (avisos-tela)
 void runInvalidFilesSelfTest (SelfTestContext&);  // fecha o relatório (núcleo)

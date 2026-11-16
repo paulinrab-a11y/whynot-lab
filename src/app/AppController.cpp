@@ -17,6 +17,7 @@
 #include "../engine/WhynotSynth.h"
 #include "../library/ProjectLibrary.h"
 #include "../library/Templates.h"
+#include "../library/SoundTags.h"
 #include "../model/WnlFormat.h"
 #include "../record/RecordEngine.h"
 
@@ -374,6 +375,7 @@ AppController::AppController (bool isHeadless, const juce::File& requestedDataFo
     piano::setDataFolder (dataFolder);
     usermix::setDataFolder (dataFolder);   // cadeias e presets do artista (Mixagem, 21/10)
     templates::setDataFolder (dataFolder);   // <dados>/Templates (16/11)
+    soundtags::Store::get().setFolder (dataFolder);   // <dados>/tags-sons.json (16/11)
 
     if (! headless)
         pianoPrefetch = std::make_unique<piano::Prefetch>();

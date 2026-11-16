@@ -147,7 +147,7 @@ namespace whynot::changescope
     inline constexpr std::string_view notModel[] = {
         "audio.analyzeNotes", "audio.detectBpm", "audio.detectKey", "audio.devices", "audio.findSilence",
         "audio.performance", "audio.resetXruns", "audio.setDevice", "automation.list", "automation.setRecording",
-        "automation.targets", "browser.find", "browser.info", "channel.layers", "edit.redo", "edit.undo",
+        "automation.targets", "browser.find", "browser.info", "browser.setTags", "browser.tags", "channel.layers", "edit.redo", "edit.undo",
         "edit.undoToggle", "export.cancel", "export.producerTag", "export.setProducerTag", "export.status",
         "favorites.list", "favorites.set", "favorites.toggle", "fx.list", "ideas.detectChords", "ideas.options",
         "ideas.parse", "ideas.progressions", "library.addFolder", "library.comboAdd", "library.comboCreate",

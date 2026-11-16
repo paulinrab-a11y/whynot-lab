@@ -130,7 +130,9 @@ namespace
         Entry { "browser.find",               reading ("folder") },
         Entry { "browser.info",               reading ("path") },
         Entry { "browser.preview",            reading ("path") },
+        Entry { "browser.setTags",            also (confirm (preference), readsList ("paths")) },   // grava tags-sons.json
         Entry { "browser.stopPreview",        ok() },
+        Entry { "browser.tags",               reading ("path") },
         Entry { "channel.addAudio",           reading ("path") },
         Entry { "channel.addKit",             reading ("folder") },
         Entry { "channel.addLayer",           reading ("path") },

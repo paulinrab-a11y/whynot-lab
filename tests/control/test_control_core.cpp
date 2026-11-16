@@ -806,9 +806,9 @@ static void testCommandPolicy()
 {
     std::printf ("Tabela de risco dos comandos\n");
 
-    CHECK (ruleCount() == 272, "265 comandos classificados: os 220 do main d27a974 (23/10), os 18 do bloco 4, as 2 das raias sem teto, as 2 do pitch bend, os 3 da "
+    CHECK (ruleCount() == 274, "265 comandos classificados: os 220 do main d27a974 (23/10), os 18 do bloco 4, as 2 das raias sem teto, as 2 do pitch bend, os 3 da "
                                "automação completa (26/10), os 6 da voz na playlist, os 7 da afinação nota a nota e os 3 da playlist fatia 6 (27/10) "
-                               "e os 3 do swing e do começo do play no PAT (29/10), o separar bloco por canal e os 7 dos templates (16/11) (%zu)",
+                               "e os 3 do swing e do começo do play no PAT (29/10), o separar bloco por canal, os 7 dos templates e os 2 das tags dos sons (16/11) (%zu)",
            ruleCount());
     CHECK (ruleFor ("playlist.splitByChannel").risk == Risk::free,
            "bloco por canal: separar o bloco por canal é livre (só o projeto, com desfazer)");

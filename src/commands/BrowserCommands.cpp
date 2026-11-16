@@ -1,6 +1,7 @@
 #include "CommandRegistry.h"
 #include "../common/Text.h"
 #include "../engine/SoundInfo.h"
+#include "../library/SoundTags.h"
 
 // O navegador de sons com BPM e tom (bloco 4b, 23/10), para a IA: o que se sabe de um som e a busca nas pastas do
 // navegador pelo tom e pelo BPM do projeto. A leitura do áudio roda na thread do SoundInfoCache; o browser.find não
@@ -43,6 +44,84 @@ namespace
 
 void registerBrowserCommands (CommandRegistry& r)
 {
+    // Tags dos sons (16/11): o tipo lido no nome e na pasta, o BPM e o tom do nome, e as tags do usuário.
+    r.add ({ "browser.tags", "Tags de um som"_t,
+             schema ({ { "path", "string", true, "Arquivo de áudio"_t } }), false,
+             [] (CommandContext&, const juce::var& a)
+             {
+                 const juce::File file (params::string (a, "path"));
+                 auto& store = soundtags::Store::get();
+                 const auto tags = store.tagsFor (file);
+                 const auto user = store.of (file);
+                 juce::Array<juce::var> types, labels;
+
+                 for (int t = 0; t < soundtags::numTypes; ++t)
+                     if (tags.has ((soundtags::Type) t))
+                         types.add (juce::String (soundtags::typeId ((soundtags::Type) t)));
+
+                 for (auto& l : user.labels)
+                     labels.add (l);
+
+                 return CommandResult::success (object ({
+                     { "types", types }, { "typesFromUser", user.hasTypes }, { "tags", labels },
+                     { "bpm", tags.bpm }, { "key", tags.hasKey() ? juce::String (soundtags::keyName (tags.keyRoot, tags.mode)) : juce::String() } }));
+             } });
+
+    r.add ({ "browser.setTags", "Marcar tags nos sons"_t,
+             schema ({ { "paths", "array", true, "Arquivos de áudio (lista de caminhos)"_t },
+                       { "add", "array", false, "Tags suas para acrescentar (\"escuro\", \"já usei\")"_t },
+                       { "remove", "array", false, "Tags suas para tirar"_t },
+                       { "types", "array", false, "Corrige o tipo: ids como kick, hat, openhat, 808, loop, melody; [] volta ao automático"_t } }), false,
+             [] (CommandContext&, const juce::var& a)
+             {
+                 auto strings = [&a] (const char* key)
+                 {
+                     juce::StringArray out;
+
+                     if (auto* list = a[key].getArray())
+                         for (auto& v : *list)
+                             out.add (v.toString());
+
+                     return out;
+                 };
+
+                 juce::Array<juce::File> files;
+
+                 for (auto& p : strings ("paths"))
+                     files.add (juce::File (p));
+
+                 if (files.isEmpty())
+                     return CommandResult::fail ("Diga os arquivos em paths."_t);
+
+                 auto& store = soundtags::Store::get();
+                 bool ok = true;
+
+                 if (! strings ("add").isEmpty() || ! strings ("remove").isEmpty())
+                     ok = store.change (files, strings ("add"), strings ("remove")) && ok;
+
+                 if (a.hasProperty ("types"))
+                 {
+                     soundtags::Mask types = 0;
+
+                     for (auto& id : strings ("types"))
+                     {
+                         const int t = soundtags::typeFromId (id.toStdString());
+
+                         if (t < 0)
+                             return CommandResult::fail ("Tipo desconhecido: "_t + id + ". Use os ids do browser.tags.");
+
+                         types |= soundtags::bit ((soundtags::Type) t);
+                     }
+
+                     ok = store.setTypes (files, types, types == 0) && ok;
+                 }
+
+                 if (! ok)
+                     return CommandResult::fail ("Não deu para gravar as tags em "_t + store.file().getFullPathName());
+
+                 return CommandResult::success (object ({ { "files", files.size() } }));
+             } });
+
     r.add ({ "browser.info", "BPM e tom de um som"_t,
              schema ({ { "path", "string", true, "Arquivo de áudio (WAV, AIFF, FLAC, OGG, MP3)"_t },
                        { "wait", "boolean", false, "true (padrão) = espera a leitura do áudio (até 20 s); false = só o que já se sabe"_t } }), false,

@@ -50,10 +50,16 @@ public:
         if (threadShouldExit())
             return;
 
-        juce::MessageManager::callAsync ([target = owner, files = std::move (found)]() mutable
+        // o tipo de cada som pelo nome e pela pasta (tags, 16/11): aqui, uma vez, e não a cada tecla da busca
+        auto tags = autoTagsFor (found);
+
+        if (threadShouldExit())
+            return;
+
+        juce::MessageManager::callAsync ([target = owner, files = std::move (found), tags = std::move (tags)]() mutable
         {
             if (auto* browser = target.getComponent())
-                browser->indexReady (std::move (files));
+                browser->indexReady (std::move (files), std::move (tags));
         });
     }
 
@@ -199,7 +205,7 @@ void SampleBrowser::rebuildRoots()
 
 bool SampleBrowser::isSearching() const
 {
-    return search.getText().trim().isNotEmpty();
+    return search.getText().trim().isNotEmpty() || typeFilter != 0;
 }
 
 void SampleBrowser::rebuildRows()
@@ -215,7 +221,8 @@ void SampleBrowser::rebuildRows()
     {
         // o filtro do tom e do BPM: todas as pastas (e as palavras da busca, se houver); o que ainda não foi lido entra
         // na fila, na ordem do índice, e aparece quando a leitura disser que combina
-        const auto words = juce::StringArray::fromTokens (search.getText().trim(), true);
+        juce::StringArray words, labels;   // as palavras do nome e as #tags do usuário
+        splitSearch (search.getText(), words, labels);
         auto* cache = app.soundInfo();
         const auto status = cache != nullptr ? cache->statusOf (index) : std::vector<SoundInfoCache::Status>();   // uma trava só
         std::vector<juce::File> wanted;
@@ -234,7 +241,7 @@ void SampleBrowser::rebuildRows()
                     if (! name.containsIgnoreCase (w)) { matches = false; break; }
             }
 
-            if (! matches)
+            if (! matches || ! tagPasses (i, labels))
                 continue;
 
             const bool read = st.info.has_value() && st.info->analysed;
@@ -269,7 +276,8 @@ void SampleBrowser::rebuildRows()
     }
     else if (isSearching())
     {
-        const auto words = juce::StringArray::fromTokens (search.getText().trim(), true);
+        juce::StringArray words, labels;   // as palavras do nome e as #tags do usuário
+        splitSearch (search.getText(), words, labels);
         int found = 0;
 
         // só os favoritos: um conjunto (o índice pode ter 50 mil sons), em minúsculas como o Windows compara
@@ -279,8 +287,10 @@ void SampleBrowser::rebuildRows()
         for (auto& path : Favorites::get().list (Favorites::Kind::sample))
             favourites.insert (path.toLowerCase());
 
-        for (auto& f : index)
+        for (int i = 0; i < index.size(); ++i)
         {
+            const auto& f = index.getReference (i);
+
             if (onlyFavourites && favourites.count (f.getFullPathName().toLowerCase()) == 0)
                 continue;
 
@@ -290,7 +300,7 @@ void SampleBrowser::rebuildRows()
             for (auto& w : words)
                 if (! name.containsIgnoreCase (w)) { matches = false; break; }
 
-            if (! matches)
+            if (! matches || ! tagPasses (i, labels))
                 continue;
 
             if (++found <= maxResults)
@@ -298,9 +308,12 @@ void SampleBrowser::rebuildRows()
         }
 
         juce::String caption;
-        if (found == 0)               caption = indexing ? "Lendo as pastas..."_t : "Nada com esse nome"_t;
+        if (found == 0)               caption = indexing ? "Lendo as pastas..."_t : (typeFilter != 0 || ! labels.isEmpty() ? "Nada com esse tipo ou tag"_t : "Nada com esse nome"_t);
         else if (found > maxResults)  caption = juce::String (found) + " sons (mostrando " + juce::String (maxResults) + ")";
         else                          caption = juce::String (found) + (found == 1 ? " som" : " sons");
+
+        if (typeFilter != 0)
+            caption << " · tipo: " << typeCaption();
 
         rows.insert (rows.begin(), Node { Kind::caption, {}, caption });
     }
@@ -501,9 +514,116 @@ void SampleBrowser::startIndexing()
     repaint();
 }
 
-void SampleBrowser::indexReady (juce::Array<juce::File> files)
+std::vector<soundtags::Tags> SampleBrowser::autoTagsFor (const juce::Array<juce::File>& files)
+{
+    std::vector<soundtags::Tags> tags;
+    tags.reserve ((size_t) files.size());
+
+    for (auto& f : files)
+    {
+        const auto path = f.getFullPathName();
+        tags.push_back (soundtags::tagsForPath (std::string_view (path.toRawUTF8(), path.getNumBytesAsUTF8())));
+    }
+
+    return tags;
+}
+
+void SampleBrowser::splitSearch (const juce::String& text, juce::StringArray& words, juce::StringArray& labels)
+{
+    // "kick #escuro": "kick" procura no nome; "#escuro" é uma tag sua
+    for (auto& token : juce::StringArray::fromTokens (text.trim(), true))
+    {
+        if (token.startsWithChar ('#'))
+        {
+            if (const auto label = token.substring (1).trim(); label.isNotEmpty())
+                labels.add (label);
+        }
+        else
+        {
+            words.add (token);
+        }
+    }
+}
+
+bool SampleBrowser::tagPasses (int i, const juce::StringArray& labels) const
+{
+    if (typeFilter == 0 && labels.isEmpty())
+        return true;
+
+    const auto user = soundtags::Store::get().of (index.getReference (i));
+
+    if (typeFilter != 0)
+    {
+        auto tags = juce::isPositiveAndBelow (i, (int) indexTags.size()) ? indexTags[(size_t) i] : soundtags::Tags();
+        tags = soundtags::withOverride (tags, user.hasTypes, user.types);
+
+        if ((tags.types & typeFilter) == 0)
+            return false;
+    }
+
+    for (auto& label : labels)
+        if (! user.labels.contains (label, true))
+            return false;
+
+    return true;
+}
+
+juce::String SampleBrowser::typeCaption() const
+{
+    juce::StringArray names;
+
+    for (int t = 0; t < soundtags::numTypes; ++t)
+        if ((typeFilter & soundtags::bit ((soundtags::Type) t)) != 0)
+            names.add (juce::String::fromUTF8 (soundtags::typeLabel ((soundtags::Type) t)));
+
+    return names.joinIntoString (", ");
+}
+
+void SampleBrowser::setTypeFilter (soundtags::Mask types)
+{
+    typeFilter = types;
+    updateFilterButton();
+
+    if (typeFilter != 0 && index.isEmpty() && ! indexing)
+        startIndexing();   // o tipo procura em todas as pastas
+
+    rebuildRows();
+    repaint();
+}
+
+void SampleBrowser::askNewTag (const juce::File& file)
+{
+    tagDialog = std::make_unique<juce::AlertWindow> ("Nova tag"_t,
+        "Uma palavra sua para achar o som depois (\"meu kick\", \"escuro\", \"já usei\"). Na busca, escreva #tag."_t,
+        juce::MessageBoxIconType::NoIcon, this);
+    tagDialog->addTextEditor ("tag", {}, "Tag"_t);
+    tagDialog->addButton ("Marcar", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    tagDialog->addButton ("Cancelar", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    juce::Component::SafePointer<SampleBrowser> safe (this);
+    tagDialog->enterModalState (true, juce::ModalCallbackFunction::create ([safe, file] (int choice)
+    {
+        if (safe == nullptr)
+            return;
+
+        const auto tag = safe->tagDialog != nullptr ? safe->tagDialog->getTextEditorContents ("tag").trim().removeCharacters ("#") : juce::String();
+        juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->tagDialog.reset(); });   // fora do aviso dele
+
+        if (choice == 1 && tag.isNotEmpty())
+        {
+            soundtags::Store::get().change ({ file }, juce::StringArray (tag), {});
+            safe->rebuildRows();
+
+            if (safe->onStatus)
+                safe->onStatus ("Tag \""_t + tag + "\" em " + file.getFileName() + ". Na busca: #"_t + tag, false);
+        }
+    }), false);
+}
+
+void SampleBrowser::indexReady (juce::Array<juce::File> files, std::vector<soundtags::Tags> tags)
 {
     index = std::move (files);
+    indexTags = std::move (tags);
     indexing = false;
 
     if (isSearching() || isFiltering())   // com o filtro salvo ligado, a lista vem do índice
@@ -556,8 +676,10 @@ juce::String SampleBrowser::filterCaption() const
 
 void SampleBrowser::updateFilterButton()
 {
-    filterButton.setToggleState (isFiltering(), juce::dontSendNotification);
-    filterButton.setTooltip (isFiltering() ? "Filtro: "_t + filterCaption() + ". Clique para mudar ou tirar."_t
+    filterButton.setToggleState (isFiltering() || typeFilter != 0, juce::dontSendNotification);
+    filterButton.setTooltip (isFiltering() || typeFilter != 0
+                                 ? "Filtro: "_t + filterCaption() + (typeFilter != 0 ? (isFiltering() ? "; tipo: "_t : "tipo: "_t) + typeCaption() : juce::String())
+                                       + ". Clique para mudar ou tirar."_t
                                            : juce::String ("Filtrar pelo tom e pelo BPM do projeto, ou só loops ou só one-shots"_t));
 }
 
@@ -566,7 +688,8 @@ void SampleBrowser::setIndexForTest (juce::Array<juce::File> files)
     if (indexer != nullptr)
         indexer->stopThread (3000);   // o índice das pastas de verdade não chega por cima
 
-    indexReady (std::move (files));
+    auto tags = autoTagsFor (files);
+    indexReady (std::move (files), std::move (tags));
     rebuildRows();
 }
 
@@ -648,8 +771,16 @@ void SampleBrowser::showFilterMenu()
     menu.addItem (20, "Loops e one-shots"_t, true, kindFilter == soundinfo::KindFilter::any);
     menu.addItem (21, "Só loops"_t, true, kindFilter == soundinfo::KindFilter::loops);
     menu.addItem (22, "Só one-shots"_t, true, kindFilter == soundinfo::KindFilter::oneShots);
+    menu.addSectionHeader ("Tipo de som (pelo nome e pela pasta; marque vários)"_t);
+    menu.addItem (39, "Qualquer tipo"_t, true, typeFilter == 0);
+
+    for (auto t : { soundtags::Type::kick, soundtags::Type::snare, soundtags::Type::clap, soundtags::Type::hat,
+                    soundtags::Type::openHat, soundtags::Type::perc, soundtags::Type::s808, soundtags::Type::bass,
+                    soundtags::Type::loop, soundtags::Type::melody, soundtags::Type::fx, soundtags::Type::vocal })
+        menu.addItem (40 + (int) t, juce::String::fromUTF8 (soundtags::typeLabel (t)), true, (typeFilter & soundtags::bit (t)) != 0);
+
     menu.addSeparator();
-    menu.addItem (30, "Tirar os filtros"_t, isFiltering());
+    menu.addItem (30, "Tirar os filtros"_t, isFiltering() || typeFilter != 0);
 
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&filterButton),
                         [safe = juce::Component::SafePointer<SampleBrowser> (this)] (int choice)
@@ -665,6 +796,11 @@ void SampleBrowser::showFilterMenu()
         if (choice == 10 || choice == 11)  bpm = (soundinfo::BpmFilter) (choice - 10);
         if (choice >= 20 && choice <= 22)  kind = (soundinfo::KindFilter) (choice - 20);
 
+        if (choice == 39 || choice == 30)
+            safe->typeFilter = 0;
+        else if (choice >= 40 && choice < 40 + soundtags::numTypes)
+            safe->typeFilter ^= soundtags::bit ((soundtags::Type) (choice - 40));
+
         if (choice == 30)
         {
             key = soundinfo::KeyFilter::any;
@@ -673,6 +809,9 @@ void SampleBrowser::showFilterMenu()
         }
 
         safe->setFilters (key, bpm, kind);
+
+        if (safe->typeFilter != 0 && safe->index.isEmpty() && ! safe->indexing)
+            safe->startIndexing();
     });
 }
 
@@ -792,6 +931,29 @@ void SampleBrowser::showRowMenu (int row)
         menu.addItem (6, "Fatiar no channel rack (uma fatia por tecla)"_t);
         menu.addSeparator();
         menu.addItem (8, isFavourite (node) ? "Tirar dos favoritos" : "Marcar como favorito");   // o 6 é o fatiar
+
+        // tags dos sons (16/11): as suas, uma nova e a correção do tipo
+        const auto user = soundtags::Store::get().of (node.file);
+        const auto labels = soundtags::Store::get().allLabels();
+        const auto current = soundtags::Store::get().tagsFor (node.file);
+        juce::PopupMenu tagsMenu, typeMenu;
+
+        for (int i = 0; i < juce::jmin (99, labels.size()); ++i)
+            tagsMenu.addItem (100 + i, labels[i], true, user.labels.contains (labels[i], true));
+
+        if (! labels.isEmpty())
+            tagsMenu.addSeparator();
+
+        tagsMenu.addItem (200, "Nova tag..."_t);
+        typeMenu.addItem (399, "Automático (pelo nome e pela pasta)"_t, true, ! user.hasTypes);
+        typeMenu.addSeparator();
+
+        for (int t = 0; t < soundtags::numTypes; ++t)
+            typeMenu.addItem (300 + t, juce::String::fromUTF8 (soundtags::typeLabel ((soundtags::Type) t)), true,
+                              current.has ((soundtags::Type) t));
+
+        tagsMenu.addSubMenu ("Tipo"_t, typeMenu);
+        menu.addSubMenu ("Tags"_t, tagsMenu);
         menu.addItem (3, "Mostrar no Explorer");
     }
     else if (node.kind == Kind::root || node.kind == Kind::folder)
@@ -834,7 +996,37 @@ void SampleBrowser::showRowMenu (int row)
                 safe->startIndexing();
                 break;
             case 8: safe->toggleFavourite (node); break;
-            default: break;
+            default:
+            {
+                // tags dos sons (16/11)
+                auto& store = soundtags::Store::get();
+
+                if (choice >= 100 && choice < 200)
+                {
+                    const auto labels = store.allLabels();
+                    const auto label = labels[choice - 100];
+                    const bool has = store.of (node.file).labels.contains (label, true);
+                    store.change ({ node.file }, has ? juce::StringArray() : juce::StringArray (label),
+                                  has ? juce::StringArray (label) : juce::StringArray());
+                }
+                else if (choice == 200)
+                {
+                    safe->askNewTag (node.file);
+                    return;
+                }
+                else if (choice == 399)
+                {
+                    store.setTypes ({ node.file }, 0, true);
+                }
+                else if (choice >= 300 && choice < 300 + soundtags::numTypes)
+                {
+                    const auto types = store.tagsFor (node.file).types ^ soundtags::bit ((soundtags::Type) (choice - 300));
+                    store.setTypes ({ node.file }, types, false);
+                }
+
+                safe->rebuildRows();
+                break;
+            }
         }
     });
 }

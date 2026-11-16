@@ -189,6 +189,7 @@ set(WHYNOT_SOURCES
     src/app/selftest/Sampler.cpp
     src/app/selftest/SamplerBend.cpp
     src/app/selftest/ScreenNotices.cpp
+    src/app/selftest/SoundTags.cpp
     src/app/selftest/Templates.cpp
     src/app/selftest/SelfTestKit.cpp
     src/app/selftest/Slicing.cpp
@@ -270,6 +271,7 @@ set(WHYNOT_SOURCES
     src/library/ProjectIndex.cpp
     src/library/ProjectLibrary.cpp
     src/library/ProjectsView.cpp
+    src/library/SoundTags.cpp
     src/library/SystemMemory.cpp
     src/library/Templates.cpp
     src/engine/AudioToMidi.cpp

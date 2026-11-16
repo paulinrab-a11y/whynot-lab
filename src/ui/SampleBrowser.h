@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "../library/SoundTags.h"
 
 #include "Controls.h"
 #include "FavoriteStar.h"
@@ -54,6 +55,14 @@ public:
     /** O filtro (bloco 4b): o tom do projeto (ou também os vizinhos), o BPM perto do projeto, só loops ou só one-shots. */
     void setFilters (soundinfo::KeyFilter, soundinfo::BpmFilter, soundinfo::KindFilter);
     bool isFiltering() const noexcept;
+
+    /** O filtro por tipo de som (tags dos sons, 16/11): kick, hat, 808... pelo nome e pela pasta, com a correção do
+        usuário por cima. 0 = qualquer tipo. Soma com a busca, as #tags e o filtro de tom e BPM. */
+    void setTypeFilter (soundtags::Mask);
+    soundtags::Mask getTypeFilter() const noexcept   { return typeFilter; }
+
+    /** Para o autoteste: o texto da busca (palavras do nome e #tags), como se fosse digitado. */
+    void setSearchForTest (const juce::String& text)   { search.setText (text, juce::dontSendNotification); rebuildRows(); }
 
     /** Para o autoteste: o índice da busca e do filtro, sem ler as pastas (as de verdade são as suas). */
     void setIndexForTest (juce::Array<juce::File>);
@@ -109,7 +118,12 @@ private:
     void showRowMenu (int row);
     void chooseFolderToAdd();
     void startIndexing();
-    void indexReady (juce::Array<juce::File>);
+    void indexReady (juce::Array<juce::File>, std::vector<soundtags::Tags>);
+    static std::vector<soundtags::Tags> autoTagsFor (const juce::Array<juce::File>&);   // pelas regras, sem o usuário
+    bool tagPasses (int indexPos, const juce::StringArray& labels) const;
+    static void splitSearch (const juce::String& text, juce::StringArray& words, juce::StringArray& labels);
+    juce::String typeCaption() const;
+    void askNewTag (const juce::File&);
     bool isSearching() const;
     juce::Rectangle<int> searchArea() const;
     void appendFavourites();
@@ -133,6 +147,9 @@ private:
     std::vector<Node> rows;
 
     juce::Array<juce::File> index;
+    std::vector<soundtags::Tags> indexTags;     // o tipo, o BPM e o tom de cada som do índice, pelo nome e pela pasta
+    soundtags::Mask typeFilter = 0;             // 0 = qualquer tipo
+    std::unique_ptr<juce::AlertWindow> tagDialog;
     std::unique_ptr<Indexer> indexer;
     bool indexing = false;
 

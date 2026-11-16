@@ -383,3 +383,16 @@ if(MSVC)
 else()
     target_compile_options(whynot_oversampler_bench PRIVATE -Wall -Wextra -O2)
 endif()
+# Bloco por canal (frente bloco-canal, 16/11): a escolha da raia livre da playlist ao separar um bloco por canal
+# (src/model/LaneStack.h). Só cabeçalho, sem JUCE.
+add_executable(whynot_lane_stack_tests
+    model/test_lane_stack.cpp)
+target_compile_features(whynot_lane_stack_tests PRIVATE cxx_std_20)
+
+if(MSVC)
+    target_compile_options(whynot_lane_stack_tests PRIVATE /W4 /utf-8 /O2)
+else()
+    target_compile_options(whynot_lane_stack_tests PRIVATE -Wall -Wextra -O2)
+endif()
+
+add_test(NAME lane_stack COMMAND whynot_lane_stack_tests)

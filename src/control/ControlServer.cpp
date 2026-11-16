@@ -71,7 +71,13 @@ namespace
 
         if (! rule.path.name.empty())
         {
-            if (rule.path.access == Access::write)
+            bool writes = false;   // vários parâmetros de caminho por comando (10/11): basta um que grave
+
+            for (std::size_t i = 0; i < maxPathParams; ++i)
+                if (const auto* param = rule.pathParam (i))
+                    writes = writes || param->access == Access::write;
+
+            if (writes)
                 when.add (rule.writesIntoFolder ? juce::String ("numa pasta que já tem arquivos"_t) : juce::String ("por cima de um arquivo que já existe"_t));
 
             when.add ("com um caminho fora das pastas permitidas"_t);
@@ -1176,8 +1182,14 @@ juce::var ControlServer::commandList (const juce::var& p) const
             if (! rule.why.empty())
                 o->setProperty ("why", fromUtf8 (rule.why));
 
-            if (! rule.path.name.empty())
-                o->setProperty ("paths", juce::Array<juce::var> { fromUtf8 (rule.path.name) });
+            juce::Array<juce::var> paths;   // todos os parâmetros de caminho, não só o primeiro (10/11)
+
+            for (std::size_t i = 0; i < maxPathParams; ++i)
+                if (const auto* param = rule.pathParam (i))
+                    paths.add (fromUtf8 (param->name));
+
+            if (! paths.isEmpty())
+                o->setProperty ("paths", paths);
 
             if (const auto when = confirmsWhen (rule); when.isNotEmpty())
                 o->setProperty ("confirmsWhen", when);

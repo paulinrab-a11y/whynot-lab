@@ -282,6 +282,7 @@ namespace
         Entry { "playlist.selectMarkers",     ok() },   // playlist fatia 6: o trecho e o laço
         Entry { "playlist.setLaneInput",      blocked (recording) },
         Entry { "playlist.setTrack",          ok() },
+        Entry { "playlist.splitByChannel",    ok() },   // bloco por canal (16/11): só o modelo
         Entry { "playlist.splitItem",         ok() },
         Entry { "playlist.stretchItem",       ok() },
         Entry { "playlist.updateItem",        ok() },
